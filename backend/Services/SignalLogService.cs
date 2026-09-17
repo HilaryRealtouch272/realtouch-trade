@@ -1,3 +1,5 @@
+using RealtouchSmartTrade.Api.Models;
+
 namespace RealtouchSmartTrade.Api.Services;
 
 public record QualificationLogEntry(
@@ -114,12 +116,25 @@ public class SignalLogService
             }
         }
 
-        if (IsOpenStatus(entry.Status) && now > entry.ExpiryUtc)
+        if (IsOpenStatus(entry.Status) && now > entry.QualifiedAtUtc + HoldingWindow(entry.Timeframe))
             entry = entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = 0m };
 
         _entries[index] = entry;
         if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
     }
+
+    // A real, generous holding window scaled to the timeframe's own candle
+    // duration, measured from when THIS ledger entry started tracking - NOT
+    // the underlying signal's ExpiryUtc (a zone-planning concept from
+    // EntryStopTargetCalculator: how long to wait for a zone to trigger,
+    // measured from when the ZONE formed). That field can already be in the
+    // past the moment a still-valid, still-qualifying setup is first logged
+    // here (e.g. an old but unmitigated order block) - using it for the
+    // ledger's own lifecycle was a real bug: a genuinely still-qualifying
+    // setup was marked "Expired" within minutes, then immediately re-logged
+    // as brand new on the very next scan, over and over.
+    private static TimeSpan HoldingWindow(string timeframeLabel) =>
+        TimeframeConfig.Duration(TimeframeIntervals.ParseLabel(timeframeLabel) ?? Timeframe.H1) * 30;
 
     public IReadOnlyList<QualificationLogEntry> GetAll()
     {
