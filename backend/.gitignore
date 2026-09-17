@@ -3,3 +3,8 @@ obj/
 .env
 appsettings.*.local.json
 .cache/
+
+# --scan-once output (see Program.cs) - generated fresh by CI/local test
+# runs, never meant to be committed.
+signals.json
+signal-log.json

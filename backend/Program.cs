@@ -19,9 +19,10 @@ builder.Services.ConfigureHttpJsonOptions(options =>
 // live /api/setups endpoint below, which still runs the v1 heuristic engine
 // so the working UI keeps functioning while the real strategy engine (the
 // structure/condition classifiers in Strategy/) is built out incrementally.
-builder.Services.AddSingleton<BybitMarketDataProvider>();
+builder.Services.AddSingleton<BybitMarketDataProvider>(); // kept for the v1 /api/setups* endpoints only - see SetupDefinition.cs
 builder.Services.AddSingleton<IMarketDataProvider>(sp => sp.GetRequiredService<BybitMarketDataProvider>());
 builder.Services.AddSingleton<IMarketDataProvider, TwelveDataMarketDataProvider>();
+builder.Services.AddSingleton<IMarketDataProvider, CoinbaseMarketDataProvider>();
 builder.Services.AddSingleton<IEconomicCalendarProvider, FinnhubEconomicCalendarProvider>();
 builder.Services.AddSingleton<INewsProvider, AlphaVantageNewsProvider>();
 builder.Services.AddSingleton<TelegramNotifier>();
@@ -180,7 +181,7 @@ static OrchestratorResult PendingResult(string symbol, string timeframe) =>
 app.MapGet("/api/signals/crypto", (LatestSignalsStore store, string? timeframe) =>
 {
     var timeframes = ResolveTimeframes(timeframe);
-    var results = SetupCatalog.Instruments.Where(i => i.Source == DataSource.Bybit)
+    var results = SetupCatalog.Instruments.Where(i => i.Source == DataSource.Coinbase)
         .SelectMany(instrument => timeframes.Select(tf => (instrument, tf)))
         .Select(x =>
         {
@@ -237,10 +238,17 @@ app.MapPost("/api/telegram/test", async (TelegramNotifier telegram) =>
 // quota on an ad-hoc manual request.
 app.MapPost("/api/telegram/send-sample", async (SignalOrchestrator orchestrator, TelegramNotifier telegram, bool includeUnqualified) =>
 {
-    var results = await Task.WhenAll(
-        SetupCatalog.Instruments.Where(i => i.Source == DataSource.Bybit)
-            .SelectMany(instrument => TimeframeIntervals.All.Select(tf => (instrument, tf)))
-            .Select(x => orchestrator.Evaluate(x.instrument, x.tf)));
+    // Paced, not parallel: Coinbase's public API rate-limits at roughly
+    // 3 req/sec/IP (confirmed via a real 429 when this ran via Task.WhenAll).
+    var results = new List<OrchestratorResult>();
+    var first = true;
+    foreach (var (instrument, tf) in SetupCatalog.Instruments.Where(i => i.Source == DataSource.Coinbase)
+        .SelectMany(instrument => TimeframeIntervals.All.Select(tf => (instrument, tf))))
+    {
+        if (!first) await Task.Delay(TimeSpan.FromMilliseconds(500));
+        first = false;
+        results.Add(await orchestrator.Evaluate(instrument, tf));
+    }
 
     var successful = results.Where(r => r.Success && r.Signal is not null).ToList();
     var qualified = successful.Where(r => r.Signal!.Grade is "A+" or "A" or "B")
@@ -263,7 +271,7 @@ app.MapPost("/api/telegram/send-sample", async (SignalOrchestrator orchestrator,
         return Results.Ok(new
         {
             sent = false,
-            scanned = results.Length,
+            scanned = results.Count,
             reason = "No crypto setup currently clears the grade-B qualification bar on any timeframe - nothing was sent. (FX/Metals were not scanned for this manual request to avoid spending Twelve Data quota. Pass ?includeUnqualified=true to send the best available result anyway, clearly labeled as not tradeable.)"
         });
     }
@@ -285,10 +293,18 @@ async Task RunScanOnceAsync(IServiceProvider services)
 
     scanLogger.LogInformation("Starting one-shot scan (--scan-once)...");
 
-    var cryptoTask = Task.WhenAll(
-        SetupCatalog.Instruments.Where(i => i.Source == DataSource.Bybit)
-            .SelectMany(instrument => TimeframeIntervals.All.Select(tf => (instrument, tf)))
-            .Select(x => orchestrator.Evaluate(x.instrument, x.tf)));
+    // Coinbase's public API rate-limits at roughly 3 req/sec/IP (confirmed
+    // via a real 429 when this ran fully parallel) - paced sequentially
+    // instead, same reasoning as the FX pacing below.
+    var cryptoResults = new List<OrchestratorResult>();
+    var firstCrypto = true;
+    foreach (var (instrument, tf) in SetupCatalog.Instruments.Where(i => i.Source == DataSource.Coinbase)
+        .SelectMany(instrument => TimeframeIntervals.All.Select(tf => (instrument, tf))))
+    {
+        if (!firstCrypto) await Task.Delay(TimeSpan.FromMilliseconds(500));
+        firstCrypto = false;
+        cryptoResults.Add(await orchestrator.Evaluate(instrument, tf));
+    }
 
     // FX/Metals: every timeframe, paced 3s between calls (same reasoning as
     // the old per-request /api/signals/fx endpoint) - a one-shot run can
@@ -306,7 +322,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
         }
     }
 
-    var allResults = (await cryptoTask).Concat(fxResults).ToList();
+    var allResults = cryptoResults.Concat(fxResults).ToList();
     await alerts.CheckAndNotifyAsync(allResults);
     signalLog.RecordAndTrack(allResults);
 

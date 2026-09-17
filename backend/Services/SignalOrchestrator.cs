@@ -90,6 +90,7 @@ public class SignalOrchestrator(
     {
         DataSource.Bybit => providers.First(p => p.Name == "Bybit"),
         DataSource.TwelveData => providers.First(p => p.Name == "Twelve Data"),
+        DataSource.Coinbase => providers.First(p => p.Name == "Coinbase"),
         _ => throw new ArgumentOutOfRangeException(nameof(source))
     };
 

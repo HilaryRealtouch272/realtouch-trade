@@ -81,12 +81,25 @@ public class SignalScanBackgroundService(
         }
     }
 
+    // Coinbase's public (keyless) API rate-limits at roughly 3 req/sec/IP -
+    // confirmed via a real 429 when this ran fully parallel (fine for Bybit,
+    // which had no such limit). Paced sequentially instead, same pattern as
+    // FX below; weekly bars alone can cost several paginated calls per
+    // instrument, so this stays well under the limit rather than bursting.
     private async Task ScanCryptoAsync(CancellationToken ct)
     {
-        var results = await Task.WhenAll(
-            SetupCatalog.Instruments.Where(i => i.Source == DataSource.Bybit)
-                .SelectMany(instrument => TimeframeIntervals.All.Select(tf => (instrument, tf)))
-                .Select(x => orchestrator.Evaluate(x.instrument, x.tf)));
+        var pairs = SetupCatalog.Instruments.Where(i => i.Source == DataSource.Coinbase)
+            .SelectMany(instrument => TimeframeIntervals.All.Select(tf => (instrument, tf)))
+            .ToList();
+
+        var results = new List<OrchestratorResult>();
+        var first = true;
+        foreach (var (instrument, tf) in pairs)
+        {
+            if (!first) await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            first = false;
+            results.Add(await orchestrator.Evaluate(instrument, tf));
+        }
         foreach (var result in results) store.Set(result);
         await alerts.CheckAndNotifyAsync(results);
         signalLog.RecordAndTrack(results);
