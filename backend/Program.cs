@@ -321,13 +321,30 @@ async Task RunScanOnceAsync(IServiceProvider services)
         cryptoResults.Add(await orchestrator.Evaluate(instrument, tf));
     }
 
-    // FX/Metals: every timeframe, paced 3s between calls (same reasoning as
-    // the old per-request /api/signals/fx endpoint) - a one-shot run can
-    // afford to cover all 5 timeframes since it only happens once per
-    // scheduled invocation, not on every dashboard page load.
+    // FX/Metals: paced 3s between calls (same reasoning as the old per-request
+    // /api/signals/fx endpoint) - but NOT every timeframe every run. This
+    // workflow's cron fires every 15 minutes; scanning all 5 timeframes on
+    // every tick is 4 instruments x 5 timeframes x 96 runs/day = 1,920 Twelve
+    // Data calls/day against an 800/day/key free-plan quota - exhausted in
+    // hours. Gate each timeframe by TimeframeIntervals.FxPollInterval (the
+    // same cadence the always-on SignalScanBackgroundService uses), tracked
+    // via a persisted last-scanned timestamp so a one-shot process (no
+    // in-memory state between runs) still respects it.
+    var schedulePath = Path.Combine(env.ContentRootPath, ".cache", "fx-scan-schedule.json");
+    var schedule = DiskCache.Load<Dictionary<string, DateTime>>(schedulePath) ?? new();
+    var now = DateTime.UtcNow;
+
     var fxResults = new List<OrchestratorResult>();
     foreach (var tf in TimeframeIntervals.All)
     {
+        var label = TimeframeIntervals.Label(tf);
+        if (schedule.TryGetValue(label, out var lastScan) && now - lastScan < TimeframeIntervals.FxPollInterval(tf))
+        {
+            scanLogger.LogInformation("Skipping FX {Timeframe} - last scanned {Ago} ago, due again in {Due}",
+                label, now - lastScan, TimeframeIntervals.FxPollInterval(tf) - (now - lastScan));
+            continue;
+        }
+
         var first = true;
         foreach (var instrument in SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData))
         {
@@ -335,7 +352,9 @@ async Task RunScanOnceAsync(IServiceProvider services)
             first = false;
             fxResults.Add(await orchestrator.Evaluate(instrument, tf));
         }
+        schedule[label] = now;
     }
+    DiskCache.Save(schedulePath, schedule);
 
     var allResults = cryptoResults.Concat(fxResults).ToList();
     await alerts.CheckAndNotifyAsync(allResults);

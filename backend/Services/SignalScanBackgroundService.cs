@@ -22,15 +22,6 @@ public class SignalScanBackgroundService(
 {
     private static readonly TimeSpan CryptoInterval = TimeSpan.FromMinutes(5);
 
-    private static readonly Dictionary<Timeframe, TimeSpan> FxIntervals = new()
-    {
-        [Timeframe.M15] = TimeSpan.FromMinutes(10),
-        [Timeframe.H1] = TimeSpan.FromMinutes(20),
-        [Timeframe.H4] = TimeSpan.FromMinutes(45),
-        [Timeframe.Daily] = TimeSpan.FromHours(2),
-        [Timeframe.Weekly] = TimeSpan.FromHours(6)
-    };
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var loops = new List<Task> { RunLoop("Crypto", CryptoInterval, TimeSpan.Zero, ct => ScanCryptoAsync(ct), stoppingToken) };
@@ -40,7 +31,7 @@ public class SignalScanBackgroundService(
         var startDelay = TimeSpan.Zero;
         foreach (var tf in TimeframeIntervals.All)
         {
-            loops.Add(RunLoop($"FX-{TimeframeIntervals.Label(tf)}", FxIntervals[tf], startDelay, ct => ScanFxAsync(tf, ct), stoppingToken));
+            loops.Add(RunLoop($"FX-{TimeframeIntervals.Label(tf)}", TimeframeIntervals.FxPollInterval(tf), startDelay, ct => ScanFxAsync(tf, ct), stoppingToken));
             startDelay += TimeSpan.FromSeconds(20);
         }
 
