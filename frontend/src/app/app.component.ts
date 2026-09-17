@@ -421,18 +421,56 @@ async function fetchTrackerEntries() {
   return response.json();
 }
 
+// Client-side state for the currently-open tracker: the last fetched
+// entries (re-filtered locally as the toolbar changes, not re-fetched), and
+// which row ids are checked for a bulk delete.
+let trackerEntries = [];
+let trackerSelectedIds = new Set();
+
+function filteredTrackerEntries() {
+  const status = $("#trackerStatusFilter")?.value || "all";
+  const query = ($("#trackerSearch")?.value || "").trim().toLowerCase();
+  return trackerEntries.filter(e => {
+    const statusOk = status === "all"
+      || (status === "open" ? (e.status === "Open" || e.status === "Tp1Hit" || e.status === "Tp2Hit") : e.status === status);
+    const queryOk = !query || `${e.symbol} ${e.timeframe}`.toLowerCase().includes(query);
+    return statusOk && queryOk;
+  });
+}
+
 async function renderSignalTracker() {
   const body = $("#trackerBody");
   if (!body) return;
-  body.innerHTML = `<tr><td colspan="10" class="tracker-empty">Loading…</td></tr>`;
+  body.innerHTML = `<tr><td colspan="12" class="tracker-empty">Loading…</td></tr>`;
+  trackerSelectedIds.clear();
+
+  // Delete/reset need a live backend to act on - the static deployment is a
+  // read-only JSON snapshot with nothing listening on the other end.
+  $("#deleteSelectedRows").hidden = IS_STATIC_DEPLOYMENT;
+  $("#resetTracker").hidden = IS_STATIC_DEPLOYMENT;
+  $("#trackerReadonlyNote").hidden = !IS_STATIC_DEPLOYMENT;
+
   try {
-    const entries = await fetchTrackerEntries();
-    if (!entries.length) {
-      body.innerHTML = `<tr><td colspan="10" class="tracker-empty">No qualified signals logged yet.</td></tr>`;
-      return;
-    }
-    body.innerHTML = entries.map(e => `
+    trackerEntries = await fetchTrackerEntries();
+    renderTrackerRows();
+  } catch (err) {
+    console.error("Could not reach the signal tracker log:", err);
+    trackerEntries = [];
+    body.innerHTML = `<tr><td colspan="12" class="tracker-empty">Could not load the tracker log.</td></tr>`;
+  }
+}
+
+function renderTrackerRows() {
+  const body = $("#trackerBody");
+  if (!body) return;
+  const rows = filteredTrackerEntries();
+
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="12" class="tracker-empty">${trackerEntries.length ? "No rows match this filter." : "No qualified signals logged yet."}</td></tr>`;
+  } else {
+    body.innerHTML = rows.map(e => `
       <tr>
+        <td>${IS_STATIC_DEPLOYMENT ? "" : `<input type="checkbox" class="tracker-row-check" data-id="${e.id}" ${trackerSelectedIds.has(e.id) ? "checked" : ""} aria-label="Select row" />`}</td>
         <td>${e.symbol}</td>
         <td>${e.timeframe}</td>
         <td><span class="direction ${e.direction.toLowerCase()}">${e.direction.toUpperCase()}</span></td>
@@ -441,13 +479,90 @@ async function renderSignalTracker() {
         <td>${formatPrice(e.stop, 5)}</td>
         <td>${e.rewardToRisk.toFixed(1)}R</td>
         <td>${new Date(e.qualifiedAtUtc).toLocaleString()}</td>
+        <td>${new Date(e.trackingExpiryUtc).toLocaleString()}</td>
         <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}</td>
         <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R`}</td>
+        <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
       </tr>`).join("");
-  } catch (err) {
-    console.error("Could not reach the signal tracker log:", err);
-    body.innerHTML = `<tr><td colspan="10" class="tracker-empty">Could not load the tracker log.</td></tr>`;
   }
+  updateTrackerSelectionUi();
+}
+
+function updateTrackerSelectionUi() {
+  const count = trackerSelectedIds.size;
+  const countEl = $("#trackerSelectedCount");
+  if (countEl) { countEl.hidden = count === 0; countEl.textContent = `${count} selected`; }
+  const deleteBtn = $("#deleteSelectedRows");
+  if (deleteBtn) deleteBtn.disabled = count === 0;
+  const visibleIds = filteredTrackerEntries().map(e => e.id);
+  const selectAll = $("#trackerSelectAll");
+  if (selectAll) selectAll.checked = visibleIds.length > 0 && visibleIds.every(id => trackerSelectedIds.has(id));
+}
+
+// Generic confirmation dialog reused for single-row delete, bulk delete, and
+// reset-all - every one of these is a permanent, real-money-relevant action
+// with no undo, so none of them fire without this gate.
+let pendingConfirmAction = null;
+
+function openConfirm(message, buttonLabel, onProceed) {
+  $("#confirmMessage").textContent = message;
+  $("#proceedConfirm").textContent = buttonLabel;
+  pendingConfirmAction = onProceed;
+  $("#confirmModal").hidden = false;
+  document.body.style.overflow = "hidden";
+}
+
+function closeConfirmModal() {
+  $("#confirmModal").hidden = true;
+  document.body.style.overflow = "";
+  pendingConfirmAction = null;
+}
+
+async function deleteTrackerRow(id) {
+  const entry = trackerEntries.find(e => e.id === id);
+  const label = entry ? `${entry.symbol} · ${entry.timeframe} (qualified ${new Date(entry.qualifiedAtUtc).toLocaleString()})` : "this row";
+  openConfirm(`Permanently delete the tracker row for ${label}? This cannot be undone.`, "Delete", async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/signal-log/${id}`, { method: "DELETE" });
+      if (!response.ok) throw new Error(`Delete failed: ${response.status}`);
+      trackerSelectedIds.delete(id);
+      await renderSignalTracker();
+      showToast("Row deleted");
+    } catch (err) {
+      console.error("Could not delete tracker row:", err);
+      showToast("Could not delete - is the backend running?");
+    }
+  });
+}
+
+function deleteSelectedTrackerRows() {
+  const ids = [...trackerSelectedIds];
+  if (!ids.length) return;
+  openConfirm(`Permanently delete ${ids.length} selected row${ids.length === 1 ? "" : "s"}? This cannot be undone.`, "Delete", async () => {
+    let failures = 0;
+    for (const id of ids) {
+      try {
+        const response = await fetch(`${API_BASE}/api/signal-log/${id}`, { method: "DELETE" });
+        if (!response.ok) failures++;
+      } catch { failures++; }
+    }
+    await renderSignalTracker();
+    showToast(failures ? `Deleted ${ids.length - failures}, ${failures} failed` : `${ids.length} row${ids.length === 1 ? "" : "s"} deleted`);
+  });
+}
+
+function resetTrackerLedger() {
+  openConfirm("Permanently delete the ENTIRE tracker ledger - every logged setup and its outcome? This cannot be undone.", "Reset all", async () => {
+    try {
+      const response = await fetch(`${API_BASE}/api/signal-log`, { method: "DELETE" });
+      if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
+      await renderSignalTracker();
+      showToast("Tracker ledger reset");
+    } catch (err) {
+      console.error("Could not reset tracker ledger:", err);
+      showToast("Could not reset - is the backend running?");
+    }
+  });
 }
 
 function openSignalTracker() {
@@ -1232,6 +1347,35 @@ function initApp() {
   $("#trackerNavItem").addEventListener("click", () => { openSignalTracker(); $(".sidebar").classList.remove("open"); });
   $("#closeTracker").addEventListener("click", closeSignalTracker);
   $("#trackerModal").addEventListener("click", event => { if (event.target === $("#trackerModal")) closeSignalTracker(); });
+  $("#trackerStatusFilter").addEventListener("change", renderTrackerRows);
+  $("#trackerSearch").addEventListener("input", renderTrackerRows);
+  $("#trackerSelectAll").addEventListener("change", event => {
+    const ids = filteredTrackerEntries().map(e => e.id);
+    if (event.target.checked) ids.forEach(id => trackerSelectedIds.add(id));
+    else ids.forEach(id => trackerSelectedIds.delete(id));
+    renderTrackerRows();
+  });
+  $("#trackerBody").addEventListener("change", event => {
+    const checkbox = event.target.closest(".tracker-row-check");
+    if (!checkbox) return;
+    if (checkbox.checked) trackerSelectedIds.add(checkbox.dataset.id);
+    else trackerSelectedIds.delete(checkbox.dataset.id);
+    updateTrackerSelectionUi();
+  });
+  $("#trackerBody").addEventListener("click", event => {
+    const deleteBtn = event.target.closest("[data-delete-row]");
+    if (deleteBtn) deleteTrackerRow(deleteBtn.dataset.deleteRow);
+  });
+  $("#deleteSelectedRows").addEventListener("click", deleteSelectedTrackerRows);
+  $("#resetTracker").addEventListener("click", resetTrackerLedger);
+  $("#closeConfirm").addEventListener("click", closeConfirmModal);
+  $("#cancelConfirm").addEventListener("click", closeConfirmModal);
+  $("#confirmModal").addEventListener("click", event => { if (event.target === $("#confirmModal")) closeConfirmModal(); });
+  $("#proceedConfirm").addEventListener("click", async () => {
+    const action = pendingConfirmAction;
+    closeConfirmModal();
+    if (action) await action();
+  });
   $("#passphraseForm").addEventListener("submit", event => { event.preventDefault(); submitPassphrase(); });
   $("#cancelPassphrase").addEventListener("click", closePassphraseModal);
   $("#closePassphrase").addEventListener("click", closePassphraseModal);
@@ -1246,6 +1390,7 @@ function initApp() {
       closeComparison();
       closeSignalTracker();
       closePassphraseModal();
+      closeConfirmModal();
       $(".sidebar").classList.remove("open");
       const chart = $("#chartWrap");
       if (chart?.classList.contains("chart-expanded")) {

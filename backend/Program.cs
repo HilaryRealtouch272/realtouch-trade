@@ -213,6 +213,21 @@ app.MapGet("/api/signals/fx", (LatestSignalsStore store, string? timeframe) =>
 app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalLog.GetAll()))
 .WithName("GetSignalLog");
 
+// Permanent, deliberate actions on the ledger - local dev only, same as the
+// read above. The frontend gates both behind its own confirmation dialog
+// before ever calling these; there is no undo once a row (or everything) is
+// gone.
+app.MapDelete("/api/signal-log/{id}", (SignalLogService signalLog, string id) =>
+    signalLog.DeleteEntry(id) ? Results.Ok(new { deleted = true }) : Results.NotFound())
+.WithName("DeleteSignalLogEntry");
+
+app.MapDelete("/api/signal-log", (SignalLogService signalLog) =>
+{
+    signalLog.Reset();
+    return Results.Ok(new { reset = true });
+})
+.WithName("ResetSignalLog");
+
 // Manual test only - confirms the bot token/chat ID work. No automatic
 // signal alerts are wired up yet (see TelegramNotifier.cs for why).
 app.MapPost("/api/telegram/test", async (TelegramNotifier telegram) =>

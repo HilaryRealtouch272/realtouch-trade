@@ -5,7 +5,11 @@ namespace RealtouchSmartTrade.Api.Services;
 public record QualificationLogEntry(
     string Id, string Symbol, string Timeframe, string Direction, string SetupModel, string Grade, int Score,
     decimal Entry, decimal Stop, decimal Tp1, decimal Tp2, decimal Tp3, decimal RewardToRisk,
-    DateTime QualifiedAtUtc, DateTime ExpiryUtc,
+    // TrackingExpiryUtc is when THIS ledger entry auto-closes as "Expired"
+    // if nothing else has resolved it first - QualifiedAtUtc + a holding
+    // window scaled to the timeframe, computed once at creation and stored
+    // so the displayed value is stable (not recomputed differently later).
+    DateTime QualifiedAtUtc, DateTime TrackingExpiryUtc,
     // Open -> Tp1Hit -> Tp2Hit -> (Tp3Hit | StoppedOut | Expired). The last
     // three are terminal - RealizedR and ClosedAtUtc are only set then.
     string Status,
@@ -64,6 +68,7 @@ public class SignalLogService
         var key = Key(result.InstrumentSymbol, result.Timeframe);
         if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
 
+        var qualifiedAt = DateTime.UtcNow;
         var entry = new QualificationLogEntry(
             Id: Guid.NewGuid().ToString("N"),
             Symbol: result.InstrumentSymbol, Timeframe: result.Timeframe,
@@ -71,7 +76,7 @@ public class SignalLogService
             Grade: signal.Grade, Score: signal.SetupQualityScore,
             Entry: signal.PreferredEntry, Stop: signal.Stop, Tp1: signal.Tp1, Tp2: signal.Tp2, Tp3: signal.Tp3,
             RewardToRisk: signal.RewardToRisk,
-            QualifiedAtUtc: DateTime.UtcNow, ExpiryUtc: signal.ExpiryUtc,
+            QualifiedAtUtc: qualifiedAt, TrackingExpiryUtc: qualifiedAt + HoldingWindow(result.Timeframe),
             Status: "Open", Tp1HitAtUtc: null, Tp2HitAtUtc: null, ClosedAtUtc: null, RealizedR: null);
 
         _entries.Add(entry);
@@ -116,7 +121,7 @@ public class SignalLogService
             }
         }
 
-        if (IsOpenStatus(entry.Status) && now > entry.QualifiedAtUtc + HoldingWindow(entry.Timeframe))
+        if (IsOpenStatus(entry.Status) && now > entry.TrackingExpiryUtc)
             entry = entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = 0m };
 
         _entries[index] = entry;
@@ -139,6 +144,37 @@ public class SignalLogService
     public IReadOnlyList<QualificationLogEntry> GetAll()
     {
         lock (_lock) return _entries.OrderByDescending(e => e.QualifiedAtUtc).ToList();
+    }
+
+    // Real, deliberate user actions on real money-relevant records - deletion
+    // is permanent (no undo), which is exactly why the frontend gates both
+    // behind an explicit confirmation dialog before ever calling these.
+    public bool DeleteEntry(string id)
+    {
+        bool removed;
+        lock (_lock)
+        {
+            var index = _entries.FindIndex(e => e.Id == id);
+            if (index < 0) return false;
+            var entry = _entries[index];
+            _entries.RemoveAt(index);
+            var key = Key(entry.Symbol, entry.Timeframe);
+            if (_openKeyToEntryId.TryGetValue(key, out var openId) && openId == id)
+                _openKeyToEntryId.Remove(key);
+            removed = true;
+        }
+        if (removed) Persist();
+        return removed;
+    }
+
+    public void Reset()
+    {
+        lock (_lock)
+        {
+            _entries.Clear();
+            _openKeyToEntryId.Clear();
+        }
+        Persist();
     }
 
     private void Persist()
