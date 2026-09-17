@@ -88,9 +88,22 @@ function savePersistedIds(key: string, ids: string[]) {
   try { localStorage.setItem(key, JSON.stringify(ids)); } catch { /* storage unavailable - state stays in-memory only */ }
 }
 
+// A refresh shouldn't dump you back on Weekly if you were looking at 4H -
+// same reasoning as the watchlist/comparison persistence above.
+const TIMEFRAME_LABELS = ["Weekly", "Daily", "4H", "1H", "15m"];
+function loadPersistedTimeframe() {
+  try {
+    const saved = localStorage.getItem("rst_timeframe");
+    return TIMEFRAME_LABELS.includes(saved) ? saved : "Weekly";
+  } catch { return "Weekly"; }
+}
+function savePersistedTimeframe(timeframe) {
+  try { localStorage.setItem("rst_timeframe", timeframe); } catch { /* storage unavailable - state stays in-memory only */ }
+}
+
 const state = {
   market: "All Markets",
-  timeframe: "Weekly",
+  timeframe: loadPersistedTimeframe(),
   condition: "all",
   search: "",
   sort: "score",
@@ -1432,6 +1445,7 @@ function initApp() {
     const timeframe = event.target.closest("[data-timeframe]");
     if (timeframe) {
       state.timeframe = timeframe.dataset.timeframe;
+      savePersistedTimeframe(state.timeframe);
       if (state.view !== "all") {
         state.view = "all";
         $$(".nav-item").forEach(item => item.classList.remove("active"));
