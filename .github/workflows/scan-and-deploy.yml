@@ -69,6 +69,17 @@ jobs:
       - name: Run one-shot scan (real engine + Telegram alerts)
         env:
           ASPNETCORE_ENVIRONMENT: Production
+          # Without this, ContentRootPath defaults to the job's CWD (the repo
+          # root, since this step has no working-directory override) instead
+          # of backend/ - meaning .cache/*.json (calendar/news/context caches,
+          # alert dedup state, the qualification ledger) silently landed at
+          # <repo-root>/.cache instead of backend/.cache, which every other
+          # step in this workflow reads from/writes to. Confirmed via a real
+          # local repro: none of that state was ever actually round-tripping
+          # through the bot-state branch - every run started cold, which is
+          # why Telegram re-alerted on setups that hadn't actually changed
+          # and why the signal tracker's history wasn't accumulating.
+          ASPNETCORE_CONTENTROOT: ${{ github.workspace }}/backend
           # Right-hand side names match what's actually configured in this
           # repo's Settings -> Secrets and variables -> Actions (double
           # underscore, no separating underscore before "APIKEYS") - GitHub
