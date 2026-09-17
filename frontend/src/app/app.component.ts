@@ -184,6 +184,23 @@ function buildLevelRows(setup, signal) {
   return rows;
 }
 
+// Only a small, known set of `reason` strings mean the engine actually ran
+// on good data and honestly found nothing worth trading this scan (see
+// SignalOrchestrator.cs's non-exception `return new OrchestratorResult(false, ...)`
+// sites). Anything else - "Data unavailable or stale...", or an arbitrary
+// caught-exception message - means the scan itself didn't really happen,
+// so THAT is what should keep showing last-known data as stale, not an
+// ordinary "no setup this time" outcome.
+const GENUINE_NO_SETUP_PREFIXES = [
+  "No setup model's precondition is met",
+  "Setup model no longer applies on re-evaluation",
+  "Hard economic-calendar veto active",
+  "No valid entry/stop/target could be computed"
+];
+function isGenuineNoSetupReason(reason) {
+  return typeof reason === "string" && GENUINE_NO_SETUP_PREFIXES.some(p => reason.startsWith(p));
+}
+
 // One entry in the /api/signals/* response array: { success, signal, reason,
 // instrumentSymbol, timeframe }. Matched back onto the local setups array by
 // symbol + timeframe label (both catalogs are built from the same source of
@@ -219,24 +236,34 @@ function applySignalResult(result) {
     setup.levels = buildLevelRows(setup, signal);
     setup.newsState = signal.newsState;
     setup.economicCalendarState = signal.economicCalendarState;
+  } else if (setup.hydrated && !isGenuineNoSetupReason(result.reason)) {
+    // A real fetch/compute failure (bad data, an exception) on a setup that
+    // previously had a genuine result - keep the last-known values rather
+    // than wiping them to zero, but say plainly that this scan didn't
+    // actually refresh them.
+    setup.liveError = result.reason || "Scan failed";
+    setup.stale = true;
+    setup.live = false;
   } else {
-    // No candidate, a hard veto, or a fetch/data failure. Per the "no
-    // fabricated fallback values" rule: if this setup has never had a real
-    // result, it stays on its honest zeroed default. If it DID have one
-    // before, keep those last-known values rather than wiping them to zero -
-    // just mark them stale with the reason, instead of pretending nothing
-    // was ever found here or that this is fresh live data.
-    setup.liveError = result.reason || "No qualifying setup";
-    if (setup.hydrated) {
-      setup.stale = true;
-      setup.live = false;
-    } else {
-      setup.condition = "No qualifying setup";
-      setup.conditionFamily = "Neutral";
-      setup.grade = "No setup";
-      setup.reasoning = result.reason || "No qualifying setup was found on this scan.";
-      setup.hydrated = true;
-    }
+    // The engine DID run this scan against good data and honestly found
+    // nothing worth trading - that's a fresh, live result in its own right
+    // (not a cache miss), so it fully replaces whatever was there before
+    // instead of being mislabeled "last known"/stale just because a prior
+    // scan happened to find something.
+    setup.hydrated = true;
+    setup.stale = false;
+    setup.live = true;
+    setup.liveSource = null;
+    setup.liveError = null;
+    setup.direction = "Neutral";
+    setup.condition = "No qualifying setup";
+    setup.conditionFamily = "Neutral";
+    setup.grade = "No setup";
+    setup.score = 0;
+    setup.rr = 0;
+    setup.reasoning = result.reason || "No qualifying setup was found on this scan.";
+    setup.levels = [["—", "—", "No qualifying setup on this scan"]];
+    setup.confluences = [];
   }
   setup.cachedAtMs = Date.now();
 }
@@ -866,7 +893,7 @@ function groupFilteredSetups() {
 function sourceLabel(s) {
   if (s.comingSoon) return `${s.group} · COMING SOON`;
   if (s.stale) return `${s.group} · LAST KNOWN (${timeAgo(s.cachedAtMs)})`;
-  if (s.live) return `${s.group} · LIVE (${s.liveSource})`;
+  if (s.live) return s.liveSource ? `${s.group} · LIVE (${s.liveSource})` : `${s.group} · LIVE (scanned)`;
   if (s.hydrated && s.liveError) return `${s.group} · FAILED: ${s.liveError}`;
   return `${s.group} · Awaiting live data`;
 }
