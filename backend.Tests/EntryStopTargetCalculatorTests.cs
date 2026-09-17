@@ -63,6 +63,39 @@ public class EntryStopTargetCalculatorTests
     }
 
     [Fact]
+    public void NeverPlacesTheStopOnTheWrongSideOfEntryEvenWhenPriceHasDriftedFromTheZone()
+    {
+        // Regression: a real deployed run once produced a Long with its stop
+        // ABOVE entry (and, as a direct symptom, TP1 landing exactly on the
+        // stop) because the old candidate filter validated stop candidates
+        // against the live close instead of the actual entry price. A
+        // matching-direction sweep pivoted well ABOVE the entry zone
+        // reproduces that exact scenario - it must never be chosen as the
+        // stop regardless of where the current close sits.
+        var ctx = BuildUptrendContext();
+        var completed = ctx.candles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList();
+        var entryZoneOb = ctx.obs.First(o => o.Direction == OrderBlockDirection.Bullish);
+        var entryMidpoint = (entryZoneOb.ProximalBoundary + entryZoneOb.DistalBoundary) / 2;
+
+        var badSweep = new LiquiditySweep(
+            SweepDirection.Bullish,
+            SweptLevel: entryMidpoint + Math.Abs(entryMidpoint) * 0.05m, // above entry - the wrong side for a Long stop
+            SweepCandleTimeUtc: completed[^1].CloseTimeUtc,
+            Timeframe.Daily,
+            SweptPivot: new Pivot(completed.Count - 1, completed[^1].OpenTimeUtc, entryMidpoint, PivotType.Low, completed[^1].CloseTimeUtc));
+
+        var plan = EntryStopTargetCalculator.Compute(
+            ctx.candles, Timeframe.Daily, SetupDirection.Long, ctx.structure,
+            ctx.obs, ctx.fvgs, ctx.willis, new[] { badSweep }, ctx.levels);
+
+        if (plan is not null)
+        {
+            Assert.True(plan.Stop.Price < plan.Entry.PreferredEntry);
+            Assert.NotEqual(plan.Stop.Price, plan.Targets.Tp1);
+        }
+    }
+
+    [Fact]
     public void RejectsAnIrrationallyTightStopDistance()
     {
         // A degenerate zone (min == max) forces a near-zero stop distance once

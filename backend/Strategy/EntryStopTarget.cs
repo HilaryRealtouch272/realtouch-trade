@@ -61,7 +61,7 @@ public static class EntryStopTargetCalculator
         if (zone is null) return null;
 
         var entry = BuildEntryPlan(zone.Value, completed, timeframe, isLong, structure);
-        var stop = BuildStopPlan(zone.Value, isLong, atr.Value, orderBlocks, sweeps, completed[^1].Close);
+        var stop = BuildStopPlan(zone.Value, isLong, atr.Value, orderBlocks, sweeps, entry.PreferredEntry);
         if (!stop.IsRational) return null;
 
         var targets = BuildTargetPlan(entry.PreferredEntry, stop.Price, isLong, keyLevels, atr.Value);
@@ -123,7 +123,17 @@ public static class EntryStopTargetCalculator
         );
     }
 
-    private static StopPlan BuildStopPlan(ZoneChoice zone, bool isLong, decimal atr, IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<LiquiditySweep> sweeps, decimal currentPrice)
+    // entryPrice is the actual PreferredEntry (zone midpoint) the stop has to
+    // protect - NOT the latest live close. A forming/Watchlist setup can have
+    // its live price sitting well away from the zone (it hasn't triggered
+    // yet), so validating candidates against the live price instead of the
+    // real entry could pick - and previously did pick, for real deployed
+    // setups - a candidate that sits on the WRONG side of entry while still
+    // technically satisfying a "below/above the live price" check. That
+    // produced a Long with its stop above entry (and, as a direct
+    // consequence, TP1 landing exactly on the stop) - a real, live bug, not
+    // a hypothetical one.
+    private static StopPlan BuildStopPlan(ZoneChoice zone, bool isLong, decimal atr, IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<LiquiditySweep> sweeps, decimal entryPrice)
     {
         var buffer = StopAtrBuffer * atr;
         var candidates = new List<(decimal price, string reason)>();
@@ -138,16 +148,22 @@ public static class EntryStopTargetCalculator
 
         candidates.Add((isLong ? zone.Min : zone.Max, "zone boundary (fallback - no order block or sweep available)"));
 
-        // For a long, the stop is the LOWEST candidate (most protective/furthest away
-        // in the safe direction isn't right either - we want the nearest structural
-        // invalidation, i.e. the highest of the below-price candidates); for a short, the inverse.
+        // For a long, the stop is the nearest structural invalidation BELOW
+        // entry (the highest of the below-entry candidates); for a short,
+        // the inverse. Candidates on the wrong side of entry are excluded
+        // outright, not just deprioritized.
         var chosen = isLong
-            ? candidates.Where(c => c.price < currentPrice).OrderByDescending(c => c.price).FirstOrDefault(candidates[^1])
-            : candidates.Where(c => c.price > currentPrice).OrderBy(c => c.price).FirstOrDefault(candidates[^1]);
+            ? candidates.Where(c => c.price < entryPrice).OrderByDescending(c => c.price).FirstOrDefault(candidates[^1])
+            : candidates.Where(c => c.price > entryPrice).OrderBy(c => c.price).FirstOrDefault(candidates[^1]);
 
         var price = isLong ? chosen.price - buffer : chosen.price + buffer;
-        var distance = Math.Abs(currentPrice - price);
-        var isRational = atr > 0 && distance >= MinRationalStopAtrMultiple * atr && distance <= MaxRationalStopAtrMultiple * atr;
+        var distance = Math.Abs(entryPrice - price);
+        // The directional check is a hard requirement, independent of the
+        // ATR-distance sanity check below - a correctly-sized stop on the
+        // wrong side of entry is not "a bit off", it's a fundamentally
+        // invalid trade plan and must never qualify as rational.
+        var correctSide = isLong ? price < entryPrice : price > entryPrice;
+        var isRational = correctSide && atr > 0 && distance >= MinRationalStopAtrMultiple * atr && distance <= MaxRationalStopAtrMultiple * atr;
 
         return new StopPlan(price, $"{chosen.reason}, plus {StopAtrBuffer}xATR(14) buffer", isRational);
     }
