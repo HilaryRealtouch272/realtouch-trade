@@ -1,5 +1,7 @@
 dist/
 *.png
+# ...except real frontend assets that must actually ship in the deployed site.
+!frontend/public/*.png
 
 # .NET build output (backend/ and backend.Tests/ both) - unanchored so it
 # matches at any depth rather than duplicating this in each project folder.
