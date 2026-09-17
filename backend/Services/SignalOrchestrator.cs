@@ -25,6 +25,7 @@ public class SignalOrchestrator(
     private record CachedCondition(MarketCondition Condition, DateTime FetchedAtUtc);
     private record CalendarCacheEntry(CalendarResult Result, DateTime FetchedAtUtc);
     private record NewsCacheEntry(NewsResult Result, DateTime FetchedAtUtc);
+    private record ContextCacheEntry(string Provider, string Symbol, Timeframe Tf, MarketCondition Condition, DateTime FetchedAtUtc);
 
     private const string StrategyVersion = "v1-strategy-engine";
     private const decimal PlaceholderAccountBalance = 10000m; // no real account/user data source exists yet
@@ -59,8 +60,19 @@ public class SignalOrchestrator(
     // no benefit. Cached per (provider, symbol, timeframe) with a TTL scaled
     // to that timeframe's own candle duration, so a fast-moving main
     // timeframe can be polled often while its slow-moving context is reused.
-    // Singleton lifetime (see Program.cs), so this persists across requests.
-    private readonly ConcurrentDictionary<(string Provider, string Symbol, Timeframe Tf), CachedCondition> _contextCache = new();
+    //
+    // Warm-started from disk like calendar/news above - this one turned out
+    // to matter even more: in the always-on server this dictionary lives for
+    // the process's whole lifetime, but under GitHub Actions' --scan-once
+    // mode every invocation is a brand-new process, so without disk
+    // persistence this cache was NEVER warm and every single scheduled run
+    // paid the full "main + up to 2 context fetches" cost per instrument -
+    // multiplying real Twelve Data usage 2-3x and exhausting the 800/day/key
+    // quota far faster than the cadence was actually designed for.
+    private readonly string _contextCachePath = Path.Combine(env.ContentRootPath, ".cache", "context-cache.json");
+    private readonly ConcurrentDictionary<(string Provider, string Symbol, Timeframe Tf), CachedCondition> _contextCache =
+        new((DiskCache.Load<List<ContextCacheEntry>>(Path.Combine(env.ContentRootPath, ".cache", "context-cache.json")) ?? new())
+            .ToDictionary(e => (e.Provider, e.Symbol, e.Tf), e => new CachedCondition(e.Condition, e.FetchedAtUtc)));
 
     private static TimeSpan ContextCacheTtl(Timeframe tf) =>
         TimeSpanMax(TimeframeConfig.Duration(tf) / 2, TimeSpan.FromMinutes(10));
@@ -197,6 +209,7 @@ public class SignalOrchestrator(
                 var condition = MarketConditionClassifier.Classify(candles, tf, structure);
                 result[tf] = condition;
                 _contextCache[cacheKey] = new CachedCondition(condition, now);
+                PersistContextCache();
             }
             catch (Exception ex)
             {
@@ -219,6 +232,10 @@ public class SignalOrchestrator(
             ?? SetupModels.EvaluateLiquiditySweepReversal(candles, timeframe, condition, structure, obs, fvgs, sweeps, htf, calendarVeto)
             ?? SetupModels.EvaluateRangeBoundaryRejection(candles, timeframe, condition, structure, sweeps, rr, calendarVeto);
     }
+
+    private void PersistContextCache() =>
+        DiskCache.Save(_contextCachePath, _contextCache.Select(kv =>
+            new ContextCacheEntry(kv.Key.Provider, kv.Key.Symbol, kv.Key.Tf, kv.Value.Condition, kv.Value.FetchedAtUtc)).ToList());
 
     private async Task<CalendarVetoResult> GetCalendarVeto(IReadOnlyCollection<string> affectedCurrencies)
     {
