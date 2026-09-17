@@ -40,6 +40,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Temporary diagnostic - Bybit blocks GitHub's hosted-runner IPs by
+      # region (confirmed via a prior run's real Bybit 403/CloudFront error).
+      # This checks a few alternative crypto OHLC providers from GitHub's
+      # actual network before committing to replacing BybitMarketDataProvider
+      # with one of them. Safe to remove once a replacement is chosen.
+      - name: Probe alternative crypto data sources
+        run: |
+          echo "CoinGecko:"; curl -s -o /dev/null -w "%{http_code}\n" "https://api.coingecko.com/api/v3/coins/bitcoin/ohlc?vs_currency=usd&days=7"
+          echo "Coinbase Exchange:"; curl -s -o /dev/null -w "%{http_code}\n" "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=86400"
+          echo "Kraken:"; curl -s -o /dev/null -w "%{http_code}\n" "https://api.kraken.com/0/public/OHLC?pair=XBTUSD&interval=1440"
+          echo "Binance.US:"; curl -s -o /dev/null -w "%{http_code}\n" "https://api.binance.us/api/v3/klines?symbol=BTCUSDT&interval=1d&limit=5"
+          echo "Bybit (known-blocked, for comparison):"; curl -s -o /dev/null -w "%{http_code}\n" "https://api.bybit.com/v5/market/kline?category=linear&symbol=BTCUSDT&interval=D&limit=5"
+
       - name: Restore or create bot-state branch (persisted calendar/news/alert-dedup cache)
         run: |
           if git ls-remote --exit-code --heads origin bot-state > /dev/null 2>&1; then
