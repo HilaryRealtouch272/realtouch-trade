@@ -180,10 +180,10 @@
     </div>
     <p class="tracker-disclaimer">Every real setup that has cleared the grade-B qualification bar, with its outcome tracked against later live prices. Passphrase-gated as a casual-access deterrent only - not a substitute for real hosting-level access control.</p>
     <div class="tracker-tabs">
-      <button type="button" class="tracker-tab active" id="trackerTabLedger">Ledger</button>
-      <button type="button" class="tracker-tab" id="trackerTabStats">Performance</button>
+      <button type="button" class="tracker-tab active" id="trackerTabStats">Performance</button>
+      <button type="button" class="tracker-tab" id="trackerTabLedger">Ledger</button>
     </div>
-    <div id="trackerLedgerView">
+    <div id="trackerLedgerView" hidden>
       <div class="tracker-toolbar">
         <label class="compact-select">Status
           <select id="trackerStatusFilter">
@@ -214,7 +214,7 @@
         </table>
       </div>
     </div>
-    <div id="trackerStatsView" hidden>
+    <div id="trackerStatsView">
       <p class="tracker-disclaimer">Real win rate and average realized R computed from your own resolved trades below - reporting only, the engine's scoring and qualification rules never change based on this. Needs a meaningful number of resolved trades to mean anything; treat small samples as anecdotal, not statistically real.</p>
       <div class="tracker-table-wrap" id="trackerStatsBody"></div>
     </div>
