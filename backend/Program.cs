@@ -334,19 +334,56 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var schedule = DiskCache.Load<Dictionary<string, DateTime>>(schedulePath) ?? new();
     var now = DateTime.UtcNow;
 
+    // A gated timeframe must still show SOMETHING while it waits its turn -
+    // carry forward the previous run's own results for it instead of
+    // dropping them, and read them from the last written signals.json since
+    // that's the only record a stateless one-shot process has of what it
+    // last found. Also: "gated" only makes sense once a timeframe has real
+    // prior data to fall back on - the very first time (or after a gap with
+    // nothing carried forward), run it regardless of the cadence so a
+    // setup never just sits empty waiting for a Daily/Weekly turn that's
+    // hours away.
+    var priorSnapshotPath = Environment.GetEnvironmentVariable("SIGNALS_OUTPUT_PATH")
+        ?? Path.Combine(env.ContentRootPath, "signals.json");
+    var priorResults = new Dictionary<(string Symbol, string Timeframe), OrchestratorResult>();
+    try
+    {
+        if (File.Exists(priorSnapshotPath))
+        {
+            var priorDoc = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(priorSnapshotPath));
+            var priorJson = System.Text.Json.JsonSerializer.Serialize(priorDoc.RootElement.GetProperty("results"));
+            var priorList = System.Text.Json.JsonSerializer.Deserialize<List<OrchestratorResult>>(priorJson,
+                new System.Text.Json.JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+                    Converters = { new JsonStringEnumConverter() }
+                }) ?? new();
+            foreach (var r in priorList) priorResults[(r.InstrumentSymbol, r.Timeframe)] = r;
+        }
+    }
+    catch (Exception ex)
+    {
+        scanLogger.LogWarning(ex, "Could not read prior signals.json to carry forward gated timeframes - starting cold");
+    }
+
     var fxResults = new List<OrchestratorResult>();
+    var fxInstruments = SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData).ToList();
     foreach (var tf in TimeframeIntervals.All)
     {
         var label = TimeframeIntervals.Label(tf);
-        if (schedule.TryGetValue(label, out var lastScan) && now - lastScan < TimeframeIntervals.FxPollInterval(tf))
+        var hasFullPriorCoverage = fxInstruments.All(i => priorResults.ContainsKey((i.Symbol, label)));
+        var due = !schedule.TryGetValue(label, out var lastScan) || now - lastScan >= TimeframeIntervals.FxPollInterval(tf);
+
+        if (!due && hasFullPriorCoverage)
         {
-            scanLogger.LogInformation("Skipping FX {Timeframe} - last scanned {Ago} ago, due again in {Due}",
-                label, now - lastScan, TimeframeIntervals.FxPollInterval(tf) - (now - lastScan));
+            scanLogger.LogInformation("Skipping FX {Timeframe} - last scanned {Ago} ago, carrying forward prior results",
+                label, now - lastScan);
+            fxResults.AddRange(fxInstruments.Select(i => priorResults[(i.Symbol, label)]));
             continue;
         }
 
         var first = true;
-        foreach (var instrument in SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData))
+        foreach (var instrument in fxInstruments)
         {
             if (!first) await Task.Delay(TimeSpan.FromSeconds(3));
             first = false;
