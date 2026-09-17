@@ -570,7 +570,7 @@ function renderTrackerRows() {
         <td>${formatPrice(e.stop, 5)}</td>
         <td>${e.rewardToRisk.toFixed(1)}R</td>
         <td>${new Date(e.qualifiedAtUtc).toLocaleString()}</td>
-        <td>${new Date(e.trackingExpiryUtc).toLocaleString()}</td>
+        <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? new Date(e.closedAtUtc).toLocaleString() : new Date(e.trackingExpiryUtc).toLocaleString()}</td>
         <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}</td>
         <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R`}</td>
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
