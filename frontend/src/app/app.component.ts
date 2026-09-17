@@ -266,15 +266,30 @@ function persistSetupCache() {
   } catch { /* storage unavailable or full - fall back to live-only state */ }
 }
 
+// How often THIS setup would normally get a fresh read, absent a reload -
+// the yardstick for whether a restored cache entry still counts as current.
+function expectedPollIntervalMs(timeframeLabel: string): number {
+  return FX_POLL_MS_BY_TIMEFRAME[timeframeLabel] ?? CRYPTO_POLL_MS;
+}
+
 function restoreSetupCache() {
   try {
     const cache = JSON.parse(localStorage.getItem(SETUP_CACHE_KEY) || "{}");
+    const now = Date.now();
     for (const setup of setups) {
       const cached = cache[setup.id];
       if (!cached) continue;
       Object.assign(setup, cached);
-      setup.live = false;   // restored data is never presented as a fresh live read
-      setup.stale = true;
+      // A reload doesn't make real data stale by itself - only flag it as
+      // "last known" if it's actually older than this setup would normally
+      // wait between polls. Otherwise a page refresh moments after a good
+      // fetch would wrongly relabel perfectly current data as stale and
+      // reset "No qualifying setup" placeholders that were never re-checked.
+      const age = now - (cached.cachedAtMs || 0);
+      if (age > expectedPollIntervalMs(setup.timeframe)) {
+        setup.live = false;
+        setup.stale = true;
+      }
     }
   } catch { /* corrupt/absent cache - setups keep their honest zeroed defaults */ }
 }
