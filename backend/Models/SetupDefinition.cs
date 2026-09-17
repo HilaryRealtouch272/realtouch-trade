@@ -46,14 +46,13 @@ public static class SetupCatalog
         // crypto instruments now run on Coinbase Exchange's free, keyless
         // candle API instead (still Bybit for the old v1 /api/setups*
         // endpoints below, which stay untouched - see SetupDefinition.All).
-        // Coinbase has no perpetual-futures product, so "Crypto Futures"
-        // here honestly shares the same real spot feed as "Crypto Spot" -
-        // not fabricated, just the best real substitute, called out
-        // explicitly rather than silently mislabelled.
+        // Coinbase has no perpetual-futures product, so the former separate
+        // "BTC/USD"/"ETH/USD" Crypto Spot rows were pulling the exact same
+        // real feed as these USDT rows - a genuine duplicate, not a second
+        // real instrument, so they were removed rather than kept as
+        // relabeled clones of each other.
         new InstrumentDefinition("btc-f", "BTC/USDT", "Bitcoin Perpetual", "Crypto Futures", "₿", 0, DataSource.Coinbase, "BTC-USD", "", new[] { "USD" }),
         new InstrumentDefinition("eth-f", "ETH/USDT", "Ether Perpetual", "Crypto Futures", "Ξ", 0, DataSource.Coinbase, "ETH-USD", "", new[] { "USD" }),
-        new InstrumentDefinition("btc-spot", "BTC/USD", "Bitcoin Spot", "Crypto Spot", "₿", 0, DataSource.Coinbase, "BTC-USD", "", new[] { "USD" }),
-        new InstrumentDefinition("eth-spot", "ETH/USD", "Ether Spot", "Crypto Spot", "Ξ", 0, DataSource.Coinbase, "ETH-USD", "", new[] { "USD" }),
         new InstrumentDefinition("eurusd", "EUR/USD", "Euro / US Dollar", "FX", "€", 4, DataSource.TwelveData, "EUR/USD", "", new[] { "EUR", "USD" }),
         new InstrumentDefinition("gbpusd", "GBP/USD", "British Pound / US Dollar", "FX", "£", 4, DataSource.TwelveData, "GBP/USD", "", new[] { "GBP", "USD" }),
         new InstrumentDefinition("gbpjpy", "GBP/JPY", "British Pound / Yen", "FX", "¥", 2, DataSource.TwelveData, "GBP/JPY", "", new[] { "GBP", "JPY" }),

@@ -13,10 +13,13 @@ const API_BASE = 'http://localhost:5266';
 // Instruments list exactly (same baseId, same timeframe suffixes) so ids match
 // and live data hydrates onto the right card.
 const instruments = [
+  // The former separate BTC/USD & ETH/USD "Crypto Spot" rows were removed -
+  // Coinbase (the real data source since Bybit got geo-blocked on GitHub
+  // Actions, see backend/Models/SetupDefinition.cs) has no perpetual-futures
+  // product, so those rows were pulling the exact same real feed as these
+  // USDT ones: a genuine duplicate, not a second real instrument.
   { baseId: "btc-f", symbol: "BTC/USDT", name: "Bitcoin Perpetual", group: "Crypto Futures", icon: "₿", decimals: 0, tv: "BINANCE:BTCUSDT.P" },
   { baseId: "eth-f", symbol: "ETH/USDT", name: "Ether Perpetual", group: "Crypto Futures", icon: "Ξ", decimals: 0, tv: "BINANCE:ETHUSDT.P" },
-  { baseId: "btc-spot", symbol: "BTC/USD", name: "Bitcoin Spot", group: "Crypto Spot", icon: "₿", decimals: 0, tv: "BITSTAMP:BTCUSD" },
-  { baseId: "eth-spot", symbol: "ETH/USD", name: "Ether Spot", group: "Crypto Spot", icon: "Ξ", decimals: 0, tv: "COINBASE:ETHUSD" },
   { baseId: "eurusd", symbol: "EUR/USD", name: "Euro / US Dollar", group: "FX", icon: "€", decimals: 4, tv: "OANDA:EURUSD" },
   { baseId: "gbpusd", symbol: "GBP/USD", name: "British Pound / US Dollar", group: "FX", icon: "£", decimals: 4, tv: "OANDA:GBPUSD" },
   { baseId: "gbpjpy", symbol: "GBP/JPY", name: "British Pound / Yen", group: "FX", icon: "¥", decimals: 2, tv: "OANDA:GBPJPY" },
@@ -67,7 +70,6 @@ const setups = instruments.flatMap(inst => timeframes.map(tf => ({
 const groupMeta = {
   "All Markets": { color: "#52d49c" },
   "Crypto Futures": { color: "#c78cff" },
-  "Crypto Spot": { color: "#8cbdff" },
   FX: { color: "#58d8ce" },
   Metals: { color: "#efb95d" },
   Energy: { color: "#ff8d6b" }
@@ -497,7 +499,6 @@ async function submitPassphrase() {
 
 const catalystProfiles = {
   "Crypto Futures": ["USD rates & liquidity", "Risk sentiment", "ETF / regulation headlines", "Exchange-specific flows"],
-  "Crypto Spot": ["USD rates & liquidity", "Risk sentiment", "ETF / regulation headlines", "Spot-volume leadership"],
   FX: ["Central-bank policy", "Inflation & employment", "Yield differentials", "Affected base/quote currencies"],
   Metals: ["USD & real yields", "Fed expectations", "Inflation data", "Geopolitical risk"],
   Energy: ["Inventories & production", "OPEC+ headlines", "USD direction", "Geopolitical supply risk"]
