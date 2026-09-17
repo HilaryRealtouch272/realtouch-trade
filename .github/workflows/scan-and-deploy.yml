@@ -10,9 +10,9 @@ name: Scan and Deploy
 # One-time manual setup required (cannot be done from a workflow file):
 #   1. Repo Settings -> Pages -> Source: "GitHub Actions".
 #   2. Repo Settings -> Secrets and variables -> Actions -> add:
-#      TWELVEDATA_API_KEYS, FINNHUB_API_KEYS, ALPHAVANTAGE_API_KEYS
+#      TWELVEDATA__APIKEYS, FINNHUB__APIKEYS, ALPHAVANTAGE__APIKEYS
 #      (each comma-separated if you have more than one key),
-#      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+#      TELEGRAM__BOTTOKEN, TELEGRAM__CHATID.
 #      (GITHUB_TOKEN is automatic - no need to add it.)
 on:
   schedule:
@@ -69,11 +69,16 @@ jobs:
       - name: Run one-shot scan (real engine + Telegram alerts)
         env:
           ASPNETCORE_ENVIRONMENT: Production
-          TwelveData__ApiKeys: ${{ secrets.TWELVEDATA_API_KEYS }}
-          Finnhub__ApiKeys: ${{ secrets.FINNHUB_API_KEYS }}
-          AlphaVantage__ApiKeys: ${{ secrets.ALPHAVANTAGE_API_KEYS }}
-          Telegram__BotToken: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          Telegram__ChatId: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Right-hand side names match what's actually configured in this
+          # repo's Settings -> Secrets and variables -> Actions (double
+          # underscore, no separating underscore before "APIKEYS") - GitHub
+          # secrets can't be renamed in place, so this maps to them as-is
+          # rather than requiring six secrets to be deleted and recreated.
+          TwelveData__ApiKeys: ${{ secrets.TWELVEDATA__APIKEYS }}
+          Finnhub__ApiKeys: ${{ secrets.FINNHUB__APIKEYS }}
+          AlphaVantage__ApiKeys: ${{ secrets.ALPHAVANTAGE__APIKEYS }}
+          Telegram__BotToken: ${{ secrets.TELEGRAM__BOTTOKEN }}
+          Telegram__ChatId: ${{ secrets.TELEGRAM__CHATID }}
           SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
           SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
         run: dotnet backend-build/RealtouchSmartTrade.Api.dll --scan-once
