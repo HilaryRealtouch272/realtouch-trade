@@ -33,11 +33,28 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     private const int MaxEntries = 1000;
 
     private readonly string _path = Path.Combine(env.ContentRootPath, ".cache", "signal-log.json");
-    private readonly List<QualificationLogEntry> _entries =
-        DiskCache.Load<List<QualificationLogEntry>>(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")) ?? new();
+    private readonly List<QualificationLogEntry> _entries = LoadAndMigrate(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json"));
     private readonly Dictionary<string, string> _openKeyToEntryId = InitOpenKeys(
-        DiskCache.Load<List<QualificationLogEntry>>(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")) ?? new());
+        LoadAndMigrate(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")));
     private readonly object _lock = new();
+
+    // Ledger entries persisted before TrackingExpiryUtc existed deserialize
+    // it as default(DateTime) (0001-01-01) - which is always in the past, so
+    // IsOpenStatus + now > TrackingExpiryUtc fired instantly and mass-expired
+    // every pre-existing open entry the moment this shipped. Backfill it the
+    // same way it's computed on creation so old rows get a real expiry
+    // instead of silently detonating on the next scan.
+    private static List<QualificationLogEntry> LoadAndMigrate(string path)
+    {
+        var entries = DiskCache.Load<List<QualificationLogEntry>>(path) ?? new();
+        for (var i = 0; i < entries.Count; i++)
+        {
+            var e = entries[i];
+            if (e.TrackingExpiryUtc == default)
+                entries[i] = e with { TrackingExpiryUtc = e.QualifiedAtUtc + HoldingWindow(e.Timeframe) };
+        }
+        return entries;
+    }
 
     private static Dictionary<string, string> InitOpenKeys(List<QualificationLogEntry> entries)
     {
