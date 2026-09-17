@@ -1,0 +1,184 @@
+using RealtouchSmartTrade.Api.Models;
+
+namespace RealtouchSmartTrade.Api.Strategy;
+
+// Section 16: where and when to enter. EntryTimeframe here is the SAME
+// timeframe the setup was detected on - true "context TF / entry TF" per
+// section 7's hierarchy table needs multi-timeframe candle fetching, which
+// isn't wired yet, so this is an explicit v1 simplification, not the full rule.
+public record EntryPlan(
+    decimal ZoneMin,
+    decimal ZoneMax,
+    decimal PreferredEntry,
+    decimal Trigger,
+    DateTime? TriggerCandleTimeUtc,
+    Timeframe EntryTimeframe,
+    DateTime ExpiryUtc,
+    decimal InvalidationPrice,
+    bool Triggered,
+    string ZoneSource // "OrderBlock", "WillisZone", or "FairValueGap"
+);
+
+// Section 17: structural stop with a volatility buffer.
+public record StopPlan(decimal Price, string Reason, bool IsRational);
+
+// Section 18: TP1/TP2/TP3 with the spec's default 25/50/25 scaling.
+public record TargetPlan(
+    decimal Tp1, string Tp1Basis,
+    decimal Tp2, string Tp2Basis,
+    decimal Tp3, string Tp3Basis,
+    decimal Tp1Weight, decimal Tp2Weight, decimal Tp3Weight
+);
+
+public record TradePlan(EntryPlan Entry, StopPlan Stop, TargetPlan Targets, decimal RewardToRisk);
+
+public static class EntryStopTargetCalculator
+{
+    private const decimal StopAtrBuffer = 0.10m;
+    private const int ExpiryCandles = 10;
+    private const decimal MinRationalStopAtrMultiple = 0.25m;
+    private const decimal MaxRationalStopAtrMultiple = 8m;
+
+    public static TradePlan? Compute(
+        IReadOnlyList<NormalizedCandle> allCandles,
+        Timeframe timeframe,
+        SetupDirection direction,
+        StructureResult structure,
+        IReadOnlyList<OrderBlock> orderBlocks,
+        IReadOnlyList<FairValueGap> fvgs,
+        IReadOnlyList<RealtouchWillisZone> willisZones,
+        IReadOnlyList<LiquiditySweep> sweeps,
+        IReadOnlyList<KeyLevel> keyLevels)
+    {
+        var completed = allCandles.Where(c => c.IsComplete && c.Quality == DataQuality.Ok)
+            .OrderBy(c => c.OpenTimeUtc).ToList();
+        if (completed.Count < 30) return null;
+        var atr = Indicators.Atr(completed, 14)[^1];
+        if (atr is null) return null;
+
+        var isLong = direction == SetupDirection.Long;
+        var zone = ChooseZone(isLong, orderBlocks, willisZones, fvgs);
+        if (zone is null) return null;
+
+        var entry = BuildEntryPlan(zone.Value, completed, timeframe, isLong, structure);
+        var stop = BuildStopPlan(zone.Value, isLong, atr.Value, orderBlocks, sweeps, completed[^1].Close);
+        if (!stop.IsRational) return null;
+
+        var targets = BuildTargetPlan(entry.PreferredEntry, stop.Price, isLong, keyLevels, atr.Value);
+        var risk = Math.Abs(entry.PreferredEntry - stop.Price);
+        var reward = Math.Abs(targets.Tp2 - entry.PreferredEntry); // R:R quoted against TP2, the "logical" objective
+        var rr = risk == 0 ? 0 : reward / risk;
+
+        return new TradePlan(entry, stop, targets, rr);
+    }
+
+    private readonly record struct ZoneChoice(decimal Min, decimal Max, DateTime OriginUtc, string Source);
+
+    private static ZoneChoice? ChooseZone(bool isLong, IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<RealtouchWillisZone> willisZones, IReadOnlyList<FairValueGap> fvgs)
+    {
+        // Prefer a Willis Zone (the richest, most-confirmed zone type), then a
+        // plain order block, then a bare FVG - matches "first qualified FVG or
+        // the overlapping order-block zone" (section 16) with the Willis Zone
+        // (order block + FVG overlap + retracement) taking priority when present.
+        var willis = willisZones.LastOrDefault(z => (z.Direction == OrderBlockDirection.Bullish) == isLong);
+        if (willis is not null)
+            return new ZoneChoice(Math.Min(willis.ProximalBoundary, willis.DistalBoundary), Math.Max(willis.ProximalBoundary, willis.DistalBoundary), willis.CandleTimeUtc, "WillisZone");
+
+        var ob = orderBlocks.LastOrDefault(o => OrderBlockDetector.IsValid(o) && (o.Direction == OrderBlockDirection.Bullish) == isLong);
+        if (ob is not null)
+            return new ZoneChoice(Math.Min(ob.ProximalBoundary, ob.DistalBoundary), Math.Max(ob.ProximalBoundary, ob.DistalBoundary), ob.CandleTimeUtc, "OrderBlock");
+
+        var fvg = fvgs.LastOrDefault(f => f.Status != MitigationStatus.Invalidated && (f.Direction == FvgDirection.Bullish) == isLong);
+        if (fvg is not null)
+            return new ZoneChoice(fvg.Lower, fvg.Upper, fvg.OriginCandleTimeUtc, "FairValueGap");
+
+        return null;
+    }
+
+    private static EntryPlan BuildEntryPlan(ZoneChoice zone, List<NormalizedCandle> completed, Timeframe timeframe, bool isLong, StructureResult structure)
+    {
+        var preferred = (zone.Min + zone.Max) / 2; // midpoint, per section 16 rule 5
+        var duration = TimeframeConfig.Duration(timeframe);
+        var expiry = zone.OriginUtc + TimeSpan.FromTicks(duration.Ticks * ExpiryCandles);
+
+        // Triggered = price has actually traded into the zone AND a matching-direction
+        // structure event occurred at/after the zone's origin (the CHoCH/BOS trigger).
+        var triggerEvent = structure.Events.LastOrDefault(e => e.CandleTimeUtc >= zone.OriginUtc &&
+            ((isLong && e.Type is StructureEventType.BullishBos or StructureEventType.BullishChoch) ||
+             (!isLong && e.Type is StructureEventType.BearishBos or StructureEventType.BearishChoch)));
+
+        var lastClose = completed[^1].Close;
+        var priceInZone = lastClose >= zone.Min && lastClose <= zone.Max;
+        var triggered = triggerEvent is not null && priceInZone;
+
+        return new EntryPlan(
+            zone.Min, zone.Max, preferred,
+            Trigger: preferred,
+            TriggerCandleTimeUtc: triggerEvent?.CandleTimeUtc,
+            EntryTimeframe: timeframe,
+            ExpiryUtc: expiry,
+            InvalidationPrice: isLong ? zone.Min : zone.Max,
+            Triggered: triggered,
+            ZoneSource: zone.Source
+        );
+    }
+
+    private static StopPlan BuildStopPlan(ZoneChoice zone, bool isLong, decimal atr, IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<LiquiditySweep> sweeps, decimal currentPrice)
+    {
+        var buffer = StopAtrBuffer * atr;
+        var candidates = new List<(decimal price, string reason)>();
+
+        var matchingOb = orderBlocks.LastOrDefault(o => (o.Direction == OrderBlockDirection.Bullish) == isLong);
+        if (matchingOb is not null)
+            candidates.Add((matchingOb.DistalBoundary, "order-block distal boundary"));
+
+        var matchingSweep = sweeps.LastOrDefault(s => (s.Direction == SweepDirection.Bullish) == isLong);
+        if (matchingSweep is not null)
+            candidates.Add((matchingSweep.SweptLevel, "liquidity-sweep level"));
+
+        candidates.Add((isLong ? zone.Min : zone.Max, "zone boundary (fallback - no order block or sweep available)"));
+
+        // For a long, the stop is the LOWEST candidate (most protective/furthest away
+        // in the safe direction isn't right either - we want the nearest structural
+        // invalidation, i.e. the highest of the below-price candidates); for a short, the inverse.
+        var chosen = isLong
+            ? candidates.Where(c => c.price < currentPrice).OrderByDescending(c => c.price).FirstOrDefault(candidates[^1])
+            : candidates.Where(c => c.price > currentPrice).OrderBy(c => c.price).FirstOrDefault(candidates[^1]);
+
+        var price = isLong ? chosen.price - buffer : chosen.price + buffer;
+        var distance = Math.Abs(currentPrice - price);
+        var isRational = atr > 0 && distance >= MinRationalStopAtrMultiple * atr && distance <= MaxRationalStopAtrMultiple * atr;
+
+        return new StopPlan(price, $"{chosen.reason}, plus {StopAtrBuffer}xATR(14) buffer", isRational);
+    }
+
+    private static TargetPlan BuildTargetPlan(decimal entry, decimal stop, bool isLong, IReadOnlyList<KeyLevel> keyLevels, decimal atr)
+    {
+        var riskDistance = Math.Abs(entry - stop);
+        var tp1 = isLong ? entry + riskDistance : entry - riskDistance; // ~1R, section 18 default
+
+        // TP2: nearest opposing key level beyond 1R, else a flat 2R.
+        var opposingLevels = keyLevels
+            .Where(l => !l.Invalidated)
+            .Select(l => isLong ? l.Upper : l.Lower)
+            .Where(p => isLong ? p > tp1 : p < tp1)
+            .ToList();
+        var tp2 = opposingLevels.Count > 0
+            ? (isLong ? opposingLevels.Min() : opposingLevels.Max())
+            : (isLong ? entry + riskDistance * 2 : entry - riskDistance * 2);
+        var tp2Basis = opposingLevels.Count > 0 ? "nearest opposing key level" : "2R projection (no further key level found)";
+
+        // TP3: the furthest opposing key level beyond TP2 ("external liquidity"), else 3R.
+        var externalLevels = keyLevels
+            .Where(l => !l.Invalidated)
+            .Select(l => isLong ? l.Upper : l.Lower)
+            .Where(p => isLong ? p > tp2 : p < tp2)
+            .ToList();
+        var tp3 = externalLevels.Count > 0
+            ? (isLong ? externalLevels.Max() : externalLevels.Min())
+            : (isLong ? entry + riskDistance * 3 : entry - riskDistance * 3);
+        var tp3Basis = externalLevels.Count > 0 ? "external/higher-timeframe liquidity level" : "3R measured-move projection (no further key level found)";
+
+        return new TargetPlan(tp1, "~1R (nearest opposing internal liquidity)", tp2, tp2Basis, tp3, tp3Basis, 0.25m, 0.50m, 0.25m);
+    }
+}

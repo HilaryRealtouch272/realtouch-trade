@@ -1,0 +1,191 @@
+<div class="app-shell">
+  <aside class="sidebar" aria-label="Primary navigation">
+    <a class="brand" href="#" aria-label="Realtouch Smart Trade home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 44 44" role="img"><path d="M9 30.5 17.4 22l6.2 5.7L35 13.5"/><path d="M27.5 13.5H35V21"/></svg>
+      </span>
+      <span><strong>Realtouch</strong><small>SMART TRADE</small></span>
+    </a>
+
+    <nav class="nav-list">
+      <button class="nav-item active" data-scroll="workspace" type="button"><span class="nav-icon">⌁</span><span>Workspace</span></button>
+      <button class="nav-item" data-scroll="intelligence" type="button"><span class="nav-icon">◉</span><span>Live intelligence</span></button>
+      <button class="nav-item" data-scroll="sessions" type="button"><span class="nav-icon">◷</span><span>Trading sessions</span></button>
+      <button class="nav-item" data-view="compare" type="button"><span class="nav-icon">⇄</span><span>Compare</span><span class="nav-count" id="navCompareCount">0</span></button>
+      <button class="nav-item" data-view="watchlist" type="button"><span class="nav-icon">☆</span><span>Watchlist</span><span class="nav-count" id="watchCount">0</span></button>
+      <button class="nav-item" id="trackerNavItem" type="button"><span class="nav-icon">🔒</span><span>Signal Tracker</span></button>
+    </nav>
+
+    <div class="sidebar-section">
+      <p class="eyebrow">Market groups</p>
+      <div class="market-nav" id="marketNav"></div>
+    </div>
+
+    <div class="sidebar-footer">
+      <div class="status-dot"><i></i><span>Analysis engine ready</span></div>
+      <div class="demo-tag" id="liveStatusTag">DEMONSTRATION DATA</div>
+      <p>Educational analysis workspace. No trade execution.</p>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <button class="mobile-menu" id="mobileMenu" aria-label="Open navigation" type="button">☰</button>
+      <div class="title-block">
+        <p class="eyebrow">MULTI-MARKET INTELLIGENCE</p>
+        <h1>Setup Analysis Workspace</h1>
+      </div>
+      <div class="top-actions">
+        <label class="search-box">
+          <span aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="Search markets" autocomplete="off" />
+        </label>
+        <div class="scan-time"><span>Live data layer</span><strong id="liveDataStatus">Connecting…</strong></div>
+        <button class="avatar" type="button" aria-label="Account">DO</button>
+      </div>
+    </header>
+
+    <div class="content">
+      <section class="summary-strip" id="workspace" aria-label="Workspace summary">
+        <article><span>Markets scanned</span><strong id="marketCount">12</strong><small>Across 5 groups</small></article>
+        <article><span>Qualified setups</span><strong id="qualifiedCount">8</strong><small>Grade B or better</small></article>
+        <article><span>Bullish / Bearish</span><strong><b class="positive" id="bullishCount">5</b> / <b class="negative" id="bearishCount">4</b></strong><small>Directional bias</small></article>
+        <article><span>Average R:R</span><strong id="averageRR">2.8R</strong><small>Qualified setups</small></article>
+      </section>
+
+      <section class="workspace-toolbar">
+        <div class="filter-row" id="timeframeFilters" aria-label="Filter by timeframe"></div>
+        <div class="toolbar-right">
+          <label class="compact-select">Market Condition
+            <select id="conditionFilter">
+              <option value="all">All conditions</option>
+              <option value="Trending">Trending</option>
+              <option value="Ranging">Ranging</option>
+              <option value="Breakout">Breakout</option>
+              <option value="Reversal">Reversal</option>
+              <option value="Neutral">Neutral / no setup</option>
+            </select>
+          </label>
+          <label class="compact-select">Sort
+            <select id="sortSelect">
+              <option value="score">Highest score</option>
+              <option value="rr">Best R:R</option>
+              <option value="recent">Most recent</option>
+            </select>
+          </label>
+        </div>
+      </section>
+
+      <section class="workspace-grid">
+        <div class="setups-panel">
+          <div class="panel-heading">
+            <div><p class="eyebrow">OPPORTUNITY SCANNER</p><h2>Setups</h2></div>
+            <span id="resultCount">12 results</span>
+          </div>
+          <div class="setup-list" id="setupList" aria-live="polite"></div>
+          <div class="empty-state" id="emptyState" hidden>
+            <div>⌕</div><h3>No matching setups</h3><p>Adjust your market, timeframe, or condition filters.</p>
+          </div>
+
+          <section class="sessions-section" id="sessions">
+            <div class="section-title-row">
+              <div><p class="eyebrow">GLOBAL VOLATILITY CLOCK</p><h2>Trading sessions</h2></div>
+              <div class="utc-clock"><span>UTC</span><strong id="utcClock">--:--:--</strong></div>
+            </div>
+            <div class="session-cards" id="sessionCards"></div>
+            <div class="volatility-lab">
+              <div class="heatmap-panel">
+                <div class="section-heading"><h3 id="heatmapTitle">Typical volatility by UTC hour</h3><span>LOW → PEAK</span></div>
+                <div class="volatility-heatmap" id="volatilityHeatmap"></div>
+                <div class="heatmap-axis" id="heatmapAxis"></div>
+                <p class="session-note">A planning guide, not a guarantee. Confirm live spread, ATR, liquidity and calendar risk before entry.</p>
+              </div>
+              <div class="best-window-panel">
+                <div class="section-heading"><h3>Highest-opportunity periods</h3><span id="windowMarket">Selected market</span></div>
+                <div class="best-window-list" id="bestWindowList"></div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <article class="inspection-panel" id="inspectionPanel" aria-live="polite"></article>
+      </section>
+
+      <section class="intelligence-section" id="intelligence">
+        <div class="section-title-row">
+          <div><p class="eyebrow">LIVE CATALYST DESK</p><h2>News × economic calendar</h2><p>Compare market headlines with scheduled macro events before accepting a technical setup.</p></div>
+          <div class="live-source"><i></i><span>TradingView live feeds</span></div>
+        </div>
+        <div class="catalyst-summary" id="catalystSummary"></div>
+        <div class="intelligence-grid">
+          <article class="live-widget-card">
+            <header><div><span class="widget-kicker">SYMBOL NEWS</span><h3 id="newsTitle">Selected-market headlines</h3></div><span class="source-badge">LIVE</span></header>
+            <div class="tradingview-widget" id="newsWidget"><div class="widget-loading">Loading live market news…</div></div>
+          </article>
+          <article class="live-widget-card">
+            <header><div><span class="widget-kicker">MACRO EVENTS</span><h3>Economic calendar</h3></div><span class="source-badge">LIVE</span></header>
+            <div class="tradingview-widget" id="calendarWidget"><div class="widget-loading">Loading economic calendar…</div></div>
+          </article>
+        </div>
+        <div class="catalyst-gate">
+          <div><p class="eyebrow">PRE-TRADE GATE</p><strong>Does the live catalyst picture support the technical case?</strong><small>Record your judgement after comparing both feeds. High-impact events override the normal session rating.</small></div>
+          <div class="gate-options" id="catalystGate">
+            <button data-catalyst="Aligned" type="button">✓ Aligned</button>
+            <button data-catalyst="Mixed" type="button">◇ Mixed</button>
+            <button data-catalyst="Conflict" type="button">! Conflict</button>
+            <button class="active" data-catalyst="Unchecked" type="button">— Unchecked</button>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<div class="compare-tray" id="compareTray" hidden>
+  <div><p class="eyebrow">SETUP COMPARISON</p><strong><span id="compareCount">0</span>/3 selected</strong></div>
+  <div class="compare-chips" id="compareChips"></div>
+  <button class="btn primary" id="openCompare" type="button">Compare setups</button>
+  <button class="icon-button" id="closeCompare" type="button" aria-label="Clear comparison">×</button>
+</div>
+
+<div class="modal-backdrop" id="compareModal" hidden>
+  <section class="compare-modal" role="dialog" aria-modal="true" aria-labelledby="compareTitle">
+    <div class="modal-header"><div><p class="eyebrow">SIDE-BY-SIDE</p><h2 id="compareTitle">Setup comparison</h2></div><button class="icon-button" id="closeModal" type="button" aria-label="Close comparison">×</button></div>
+    <div class="comparison-grid" id="comparisonGrid"></div>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="passphraseModal" hidden>
+  <section class="compare-modal passphrase-modal" role="dialog" aria-modal="true" aria-labelledby="passphraseTitle">
+    <div class="modal-header">
+      <div><p class="eyebrow">RESTRICTED</p><h2 id="passphraseTitle">Enter tracker passphrase</h2></div>
+      <button class="icon-button" id="closePassphrase" type="button" aria-label="Cancel">×</button>
+    </div>
+    <form id="passphraseForm" class="passphrase-form">
+      <input type="password" id="passphraseInput" placeholder="Passphrase" autocomplete="off" />
+      <p class="passphrase-error" id="passphraseError" hidden>Incorrect passphrase.</p>
+      <div class="passphrase-actions">
+        <button type="button" class="btn" id="cancelPassphrase">Cancel</button>
+        <button type="submit" class="btn primary">Unlock</button>
+      </div>
+    </form>
+  </section>
+</div>
+
+<div class="modal-backdrop" id="trackerModal" hidden>
+  <section class="compare-modal tracker-modal" role="dialog" aria-modal="true" aria-labelledby="trackerTitle">
+    <div class="modal-header">
+      <div><p class="eyebrow">RESTRICTED · QUALIFIED SIGNAL LEDGER</p><h2 id="trackerTitle">Signal tracker</h2></div>
+      <button class="icon-button" id="closeTracker" type="button" aria-label="Close tracker">×</button>
+    </div>
+    <p class="tracker-disclaimer">Every real setup that has cleared the grade-B qualification bar, with its outcome tracked against later live prices. Passphrase-gated as a casual-access deterrent only - not a substitute for real hosting-level access control.</p>
+    <div class="tracker-table-wrap">
+      <table class="tracker-table">
+        <thead><tr><th>Symbol</th><th>TF</th><th>Bias</th><th>Grade</th><th>Entry</th><th>Stop</th><th>R:R</th><th>Qualified</th><th>Status</th><th>Realized</th></tr></thead>
+        <tbody id="trackerBody"></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<div class="toast" id="toast" role="status" aria-live="polite"></div>

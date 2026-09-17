@@ -1,0 +1,123 @@
+name: Scan and Deploy
+
+# Runs the real Strategy/ engine once (backend --scan-once - see Program.cs),
+# sends any qualifying Telegram alerts, publishes a signals.json snapshot
+# alongside the built Angular frontend to GitHub Pages, and persists the
+# engine's calendar/news/dedup caches to the bot-state branch so the next
+# scheduled run warm-starts instead of re-spending quota-limited providers'
+# daily budgets from zero.
+#
+# One-time manual setup required (cannot be done from a workflow file):
+#   1. Repo Settings -> Pages -> Source: "GitHub Actions".
+#   2. Repo Settings -> Secrets and variables -> Actions -> add:
+#      TWELVEDATA_API_KEYS, FINNHUB_API_KEYS, ALPHAVANTAGE_API_KEYS
+#      (each comma-separated if you have more than one key),
+#      TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID.
+#      (GITHUB_TOKEN is automatic - no need to add it.)
+on:
+  schedule:
+    - cron: "*/15 * * * *" # every 15 minutes - GitHub may delay this under load
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # push updated cache state to the bot-state branch
+  pages: write # deploy to GitHub Pages
+  id-token: write # required by actions/deploy-pages
+
+concurrency:
+  group: scan-and-deploy
+  cancel-in-progress: false # never cancel a run mid-scan; let it finish and land its state
+
+jobs:
+  scan-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Restore or create bot-state branch (persisted calendar/news/alert-dedup cache)
+        run: |
+          if git ls-remote --exit-code --heads origin bot-state > /dev/null 2>&1; then
+            git clone --branch bot-state --single-branch --depth 1 \
+              "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" state
+          else
+            git clone --depth 1 \
+              "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" state
+            cd state
+            git checkout --orphan bot-state
+            git rm -rf . > /dev/null 2>&1 || true
+          fi
+
+      - name: Warm-start backend/.cache from bot-state
+        run: |
+          mkdir -p backend/.cache
+          cp -v state/cache/*.json backend/.cache/ 2>/dev/null || echo "No prior state to restore - first run."
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build backend
+        run: dotnet build backend/RealtouchSmartTrade.Api.csproj -c Release -o backend-build
+
+      - name: Run one-shot scan (real engine + Telegram alerts)
+        env:
+          ASPNETCORE_ENVIRONMENT: Production
+          TwelveData__ApiKeys: ${{ secrets.TWELVEDATA_API_KEYS }}
+          Finnhub__ApiKeys: ${{ secrets.FINNHUB_API_KEYS }}
+          AlphaVantage__ApiKeys: ${{ secrets.ALPHAVANTAGE_API_KEYS }}
+          Telegram__BotToken: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          Telegram__ChatId: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
+          SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
+        run: dotnet backend-build/RealtouchSmartTrade.Api.dll --scan-once
+
+      - name: Persist updated cache state to bot-state branch
+        run: |
+          mkdir -p state/cache
+          cp -v backend/.cache/*.json state/cache/ 2>/dev/null || true
+          cd state
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -q -m "Update scan state"
+            git push -q origin bot-state
+          else
+            echo "No state changes to persist."
+          fi
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npx ng build --configuration production --base-href "/${{ github.event.repository.name }}/"
+
+      - name: Copy signals snapshot into the frontend build
+        run: |
+          cp signals.json frontend/dist/frontend/browser/signals.json
+          cp signal-log.json frontend/dist/frontend/browser/signal-log.json
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: frontend/dist/frontend/browser
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
