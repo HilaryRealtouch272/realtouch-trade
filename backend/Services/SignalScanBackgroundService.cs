@@ -102,7 +102,7 @@ public class SignalScanBackgroundService(
         }
         foreach (var result in results) store.Set(result);
         await alerts.CheckAndNotifyAsync(results);
-        signalLog.RecordAndTrack(results);
+        await signalLog.RecordAndTrackAsync(results);
     }
 
     private async Task ScanFxAsync(Timeframe timeframe, CancellationToken ct)
@@ -118,6 +118,6 @@ public class SignalScanBackgroundService(
             results.Add(result);
         }
         await alerts.CheckAndNotifyAsync(results);
-        signalLog.RecordAndTrack(results);
+        await signalLog.RecordAndTrackAsync(results);
     }
 }

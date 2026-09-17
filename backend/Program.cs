@@ -339,7 +339,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
 
     var allResults = cryptoResults.Concat(fxResults).ToList();
     await alerts.CheckAndNotifyAsync(allResults);
-    signalLog.RecordAndTrack(allResults);
+    await signalLog.RecordAndTrackAsync(allResults);
 
     // Must match the live API's casing exactly (camelCase) - the frontend's
     // field mapping (applySignalResult in app.component.ts) is written

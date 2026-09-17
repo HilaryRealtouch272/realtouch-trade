@@ -1,4 +1,5 @@
 using RealtouchSmartTrade.Api.Models;
+using RealtouchSmartTrade.Api.Providers;
 
 namespace RealtouchSmartTrade.Api.Services;
 
@@ -27,36 +28,53 @@ public record QualificationLogEntry(
 // (symbol, timeframe) still returns a successful result with a live price -
 // if it later fails to evaluate (stale data, no candidate at all), that
 // entry simply doesn't move until a future successful scan resumes it.
-public class SignalLogService
+public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, ILogger<SignalLogService> logger)
 {
     private const int MaxEntries = 1000;
 
-    private readonly string _path;
-    private readonly List<QualificationLogEntry> _entries;
-    private readonly Dictionary<string, string> _openKeyToEntryId = new();
+    private readonly string _path = Path.Combine(env.ContentRootPath, ".cache", "signal-log.json");
+    private readonly List<QualificationLogEntry> _entries =
+        DiskCache.Load<List<QualificationLogEntry>>(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")) ?? new();
+    private readonly Dictionary<string, string> _openKeyToEntryId = InitOpenKeys(
+        DiskCache.Load<List<QualificationLogEntry>>(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")) ?? new());
     private readonly object _lock = new();
 
-    public SignalLogService(IHostEnvironment env)
+    private static Dictionary<string, string> InitOpenKeys(List<QualificationLogEntry> entries)
     {
-        _path = Path.Combine(env.ContentRootPath, ".cache", "signal-log.json");
-        _entries = DiskCache.Load<List<QualificationLogEntry>>(_path) ?? new();
-        foreach (var e in _entries.Where(e => IsOpenStatus(e.Status)))
-            _openKeyToEntryId[Key(e.Symbol, e.Timeframe)] = e.Id;
+        var map = new Dictionary<string, string>();
+        foreach (var e in entries.Where(e => IsOpenStatus(e.Status)))
+            map[Key(e.Symbol, e.Timeframe)] = e.Id;
+        return map;
     }
 
     private static string Key(string symbol, string timeframe) => $"{symbol}|{timeframe}";
     private static bool IsOpenStatus(string status) => status is "Open" or "Tp1Hit" or "Tp2Hit";
 
-    public void RecordAndTrack(IEnumerable<OrchestratorResult> results)
+    // Fire-and-forget from the caller's point of view (same reasoning as
+    // SignalAlertService): a Telegram outage must never slow down or fail
+    // the scan itself, so outcome notifications happen after the ledger is
+    // already updated and persisted, and any send failure is only logged.
+    public async Task RecordAndTrackAsync(IEnumerable<OrchestratorResult> results)
     {
         var resultList = results.ToList();
+        var changed = new List<QualificationLogEntry>();
         lock (_lock)
         {
-            foreach (var result in resultList) UpdatePerformanceLocked(result);
+            foreach (var result in resultList)
+            {
+                var updated = UpdatePerformanceLocked(result);
+                if (updated is not null) changed.Add(updated);
+            }
             foreach (var result in resultList) RecordIfNewLocked(result);
             if (_entries.Count > MaxEntries) _entries.RemoveRange(0, _entries.Count - MaxEntries);
         }
         Persist();
+
+        foreach (var entry in changed)
+        {
+            var (success, error) = await telegram.SendAsync(FormatOutcomeMessage(entry));
+            if (!success) logger.LogWarning("Outcome Telegram alert failed for {Symbol} {Timeframe} ({Status}): {Error}", entry.Symbol, entry.Timeframe, entry.Status, error);
+        }
     }
 
     private void RecordIfNewLocked(OrchestratorResult result)
@@ -83,14 +101,17 @@ public class SignalLogService
         _openKeyToEntryId[key] = entry.Id;
     }
 
-    private void UpdatePerformanceLocked(OrchestratorResult result)
+    // Returns the updated entry only when its Status actually changed this
+    // call (a real, notification-worthy event), null otherwise.
+    private QualificationLogEntry? UpdatePerformanceLocked(OrchestratorResult result)
     {
         var key = Key(result.InstrumentSymbol, result.Timeframe);
-        if (!_openKeyToEntryId.TryGetValue(key, out var entryId)) return;
+        if (!_openKeyToEntryId.TryGetValue(key, out var entryId)) return null;
 
         var index = _entries.FindIndex(e => e.Id == entryId);
-        if (index < 0) { _openKeyToEntryId.Remove(key); return; }
+        if (index < 0) { _openKeyToEntryId.Remove(key); return null; }
         var entry = _entries[index];
+        var statusBefore = entry.Status;
         var now = DateTime.UtcNow;
 
         if (result.Success && result.Signal is not null)
@@ -126,6 +147,26 @@ public class SignalLogService
 
         _entries[index] = entry;
         if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
+        return entry.Status != statusBefore ? entry : null;
+    }
+
+    private static string FormatOutcomeMessage(QualificationLogEntry entry)
+    {
+        var (icon, label) = entry.Status switch
+        {
+            "Tp1Hit" => ("🎯", "TP1 hit"),
+            "Tp2Hit" => ("🎯", "TP2 hit"),
+            "Tp3Hit" => ("🏆", "TP3 hit — WIN"),
+            "StoppedOut" => ("🛑", "Stopped out — LOSS"),
+            "Expired" => ("⌛", "Expired — flat"),
+            _ => ("ℹ️", entry.Status)
+        };
+        var directionIcon = entry.Direction == "Long" ? "🟢" : "🔴";
+        var realized = entry.RealizedR.HasValue ? $"\n⚖️ Realized: {entry.RealizedR.Value:0.00}R" : "";
+
+        return
+            $"{icon} *{entry.Symbol}* · {entry.Timeframe} · {directionIcon} {entry.Direction.ToUpperInvariant()} — *{label}*\n" +
+            $"Original setup: Entry {entry.Entry} · Stop {entry.Stop} · Grade {entry.Grade} ({entry.Score}/100){realized}";
     }
 
     // A real, generous holding window scaled to the timeframe's own candle
