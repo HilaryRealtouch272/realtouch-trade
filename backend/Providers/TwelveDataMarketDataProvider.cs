@@ -1,13 +1,14 @@
 using System.Globalization;
 using System.Text.Json;
 using RealtouchSmartTrade.Api.Models;
+using RealtouchSmartTrade.Api.Services;
 
 namespace RealtouchSmartTrade.Api.Providers;
 
 // FX / Metals / Energy adapter. Requires a free Twelve Data API key, kept
 // server-side (TwelveData:ApiKey / TwelveData:ApiKeys via dotnet user-secrets
 // or env var) - never shipped to the frontend.
-public class TwelveDataMarketDataProvider(IHttpClientFactory httpClientFactory, IConfiguration config) : IMarketDataProvider
+public class TwelveDataMarketDataProvider(IHttpClientFactory httpClientFactory, IConfiguration config, IHostEnvironment env) : IMarketDataProvider
 {
     public string Name => "Twelve Data";
 
@@ -20,6 +21,47 @@ public class TwelveDataMarketDataProvider(IHttpClientFactory httpClientFactory, 
     };
 
     private static int _keyRoundRobinCounter = -1;
+
+    // Once a key confirms itself out of daily credits, round-robin used to
+    // keep retrying it on every subsequent, unrelated request for the rest
+    // of the day - each attempt still a real HTTP call that Twelve Data
+    // counts against that key's daily total. With several keys, that meant
+    // once the FIRST key ran dry, every later evaluation walked the ENTIRE
+    // remaining key list before finding one with headroom (or failing
+    // outright), driving every key several hundred credits past 800 well
+    // before the day was over - not sharing 800/key evenly, actively
+    // wasting each one further after it was already confirmed dead. Track
+    // confirmed-exhausted keys (persisted so a one-shot process remembers
+    // across runs) and skip them outright until the next UTC day.
+    private readonly string _exhaustedKeysPath = Path.Combine(env.ContentRootPath, ".cache", "twelvedata-exhausted-keys.json");
+    private static readonly object ExhaustedKeysLock = new();
+
+    private Dictionary<string, DateTime> LoadExhaustedKeys()
+    {
+        lock (ExhaustedKeysLock)
+        {
+            var loaded = DiskCache.Load<Dictionary<string, DateTime>>(_exhaustedKeysPath) ?? new();
+            var today = DateTime.UtcNow.Date;
+            // Anything marked exhausted on a previous UTC day has already reset.
+            var stale = loaded.Where(kv => kv.Value.Date < today).Select(kv => kv.Key).ToList();
+            foreach (var key in stale) loaded.Remove(key);
+            if (stale.Count > 0) DiskCache.Save(_exhaustedKeysPath, loaded);
+            return loaded;
+        }
+    }
+
+    private void MarkKeyExhausted(string apiKey)
+    {
+        lock (ExhaustedKeysLock)
+        {
+            var current = DiskCache.Load<Dictionary<string, DateTime>>(_exhaustedKeysPath) ?? new();
+            current[apiKey] = DateTime.UtcNow;
+            DiskCache.Save(_exhaustedKeysPath, current);
+        }
+    }
+
+    private static bool IsOutOfDailyCredits(string? message) =>
+        message?.Contains("run out of API credits for the day", StringComparison.OrdinalIgnoreCase) == true;
 
     private static string Interval(Timeframe tf) => tf switch
     {
@@ -41,10 +83,15 @@ public class TwelveDataMarketDataProvider(IHttpClientFactory httpClientFactory, 
         if (apiKeys.Count == 0)
             throw new InvalidOperationException("Twelve Data API key not configured (TwelveData:ApiKey or TwelveData:ApiKeys).");
 
+        var exhausted = LoadExhaustedKeys();
+        var candidateKeys = apiKeys.Where(k => !exhausted.ContainsKey(k)).ToList();
+        if (candidateKeys.Count == 0)
+            throw new InvalidOperationException($"Twelve Data: all {apiKeys.Count} configured key(s) already confirmed out of daily credits today - not retrying until the next UTC day.");
+
         // Round-robin the starting key so repeated calls spread load across
         // all configured keys instead of hammering key 0 every time.
         var start = Interlocked.Increment(ref _keyRoundRobinCounter);
-        var ordered = Enumerable.Range(0, apiKeys.Count).Select(i => apiKeys[(start + i) % apiKeys.Count]);
+        var ordered = Enumerable.Range(0, candidateKeys.Count).Select(i => candidateKeys[(start + i) % candidateKeys.Count]);
 
         Exception? lastError = null;
         foreach (var apiKey in ordered)
@@ -61,10 +108,11 @@ public class TwelveDataMarketDataProvider(IHttpClientFactory httpClientFactory, 
             }
             catch (Exception ex)
             {
+                if (IsOutOfDailyCredits(ex.Message)) MarkKeyExhausted(apiKey);
                 lastError = ex;
             }
         }
-        throw new InvalidOperationException($"Twelve Data: all {apiKeys.Count} API key(s) failed. Last error: {lastError?.Message}", lastError);
+        throw new InvalidOperationException($"Twelve Data: all {candidateKeys.Count} available API key(s) failed. Last error: {lastError?.Message}", lastError);
     }
 
     private async Task<IReadOnlyList<NormalizedCandle>> FetchWithKey(
