@@ -179,34 +179,44 @@
       <button class="icon-button" id="closeTracker" type="button" aria-label="Close tracker">×</button>
     </div>
     <p class="tracker-disclaimer">Every real setup that has cleared the grade-B qualification bar, with its outcome tracked against later live prices. Passphrase-gated as a casual-access deterrent only - not a substitute for real hosting-level access control.</p>
-    <div class="tracker-toolbar">
-      <label class="compact-select">Status
-        <select id="trackerStatusFilter">
-          <option value="all">All</option>
-          <option value="open">Open (incl. TP1/TP2 hit)</option>
-          <option value="Tp3Hit">TP3 hit (win)</option>
-          <option value="StoppedOut">Stopped out (loss)</option>
-          <option value="Expired">Expired (flat)</option>
-        </select>
-      </label>
-      <label class="tracker-search">
-        <input type="text" id="trackerSearch" placeholder="Filter symbol or timeframe…" autocomplete="off" />
-      </label>
-      <span class="tracker-toolbar-spacer"></span>
-      <span class="tracker-selected-count" id="trackerSelectedCount" hidden></span>
-      <button type="button" class="btn" id="deleteSelectedRows" disabled>Delete selected</button>
-      <button type="button" class="btn" id="resetTracker">Reset all</button>
+    <div class="tracker-tabs">
+      <button type="button" class="tracker-tab active" id="trackerTabLedger">Ledger</button>
+      <button type="button" class="tracker-tab" id="trackerTabStats">Performance</button>
     </div>
-    <p class="tracker-readonly-note" id="trackerReadonlyNote" hidden>Read-only on this deployment - deleting or resetting the ledger needs a live backend to act on, which this static dashboard doesn't have.</p>
-    <div class="tracker-table-wrap">
-      <table class="tracker-table">
-        <thead><tr>
-          <th><input type="checkbox" id="trackerSelectAll" aria-label="Select all rows" /></th>
-          <th>Symbol</th><th>TF</th><th>Bias</th><th>Grade</th><th>Entry</th><th>Stop</th><th>R:R</th>
-          <th>Qualified</th><th>Expires</th><th>Status</th><th>Realized</th><th></th>
-        </tr></thead>
-        <tbody id="trackerBody"></tbody>
-      </table>
+    <div id="trackerLedgerView">
+      <div class="tracker-toolbar">
+        <label class="compact-select">Status
+          <select id="trackerStatusFilter">
+            <option value="all">All</option>
+            <option value="open">Open (incl. TP1/TP2 hit)</option>
+            <option value="Tp3Hit">TP3 hit (win)</option>
+            <option value="StoppedOut">Stopped out (loss)</option>
+            <option value="Expired">Expired (flat)</option>
+          </select>
+        </label>
+        <label class="tracker-search">
+          <input type="text" id="trackerSearch" placeholder="Filter symbol or timeframe…" autocomplete="off" />
+        </label>
+        <span class="tracker-toolbar-spacer"></span>
+        <span class="tracker-selected-count" id="trackerSelectedCount" hidden></span>
+        <button type="button" class="btn" id="deleteSelectedRows" disabled>Delete selected</button>
+        <button type="button" class="btn" id="resetTracker">Reset all</button>
+      </div>
+      <p class="tracker-readonly-note" id="trackerReadonlyNote" hidden>Read-only on this deployment - deleting or resetting the ledger needs a live backend to act on, which this static dashboard doesn't have.</p>
+      <div class="tracker-table-wrap">
+        <table class="tracker-table">
+          <thead><tr>
+            <th><input type="checkbox" id="trackerSelectAll" aria-label="Select all rows" /></th>
+            <th>Symbol</th><th>TF</th><th>Bias</th><th>Grade</th><th>Entry</th><th>Stop</th><th>R:R</th>
+            <th>Qualified</th><th>Expires</th><th>Status</th><th>Realized</th><th></th>
+          </tr></thead>
+          <tbody id="trackerBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="trackerStatsView" hidden>
+      <p class="tracker-disclaimer">Real win rate and average realized R computed from your own resolved trades below - reporting only, the engine's scoring and qualification rules never change based on this. Needs a meaningful number of resolved trades to mean anything; treat small samples as anecdotal, not statistically real.</p>
+      <div class="tracker-table-wrap" id="trackerStatsBody"></div>
     </div>
   </section>
 </div>

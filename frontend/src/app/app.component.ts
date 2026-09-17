@@ -468,11 +468,87 @@ async function renderSignalTracker() {
   try {
     trackerEntries = await fetchTrackerEntries();
     renderTrackerRows();
+    renderTrackerStats();
   } catch (err) {
     console.error("Could not reach the signal tracker log:", err);
     trackerEntries = [];
     body.innerHTML = `<tr><td colspan="12" class="tracker-empty">Could not load the tracker log.</td></tr>`;
+    renderTrackerStats();
   }
+}
+
+// Reporting only - real win rate / average realized R computed from your
+// own resolved trades. This never feeds back into the scoring or
+// qualification engine; it's purely informational until there's a real,
+// meaningful sample size to justify anything more automated.
+const RESOLVED_STATUSES = ["Tp3Hit", "StoppedOut", "Expired"];
+
+function computeTrackerBreakdown(entries, keyFn) {
+  const groups = new Map();
+  for (const e of entries) {
+    const key = keyFn(e);
+    if (!groups.has(key)) groups.set(key, { key, resolved: 0, wins: 0, losses: 0, flat: 0, sumR: 0 });
+    const g = groups.get(key);
+    g.resolved++;
+    if (e.status === "Tp3Hit") g.wins++;
+    else if (e.status === "StoppedOut") g.losses++;
+    else g.flat++;
+    g.sumR += e.realizedR || 0;
+  }
+  return [...groups.values()]
+    .map(g => ({ ...g, winRate: g.resolved ? (g.wins / g.resolved) * 100 : 0, avgR: g.resolved ? g.sumR / g.resolved : 0 }))
+    .sort((a, b) => b.resolved - a.resolved);
+}
+
+function renderStatsTable(title, rows) {
+  if (!rows.length) return "";
+  return `
+    <div class="tracker-stats-section">
+      <h3>${title}</h3>
+      <table class="tracker-stats-table">
+        <thead><tr><th>${title}</th><th>Resolved</th><th>Wins</th><th>Losses</th><th>Flat</th><th>Win rate</th><th>Avg R</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr>
+            <td>${r.key}</td>
+            <td>${r.resolved}</td>
+            <td class="positive">${r.wins}</td>
+            <td class="negative">${r.losses}</td>
+            <td>${r.flat}</td>
+            <td>${r.winRate.toFixed(0)}%</td>
+            <td class="${r.avgR > 0 ? "positive" : r.avgR < 0 ? "negative" : ""}">${r.avgR.toFixed(2)}R</td>
+          </tr>`).join("")}</tbody>
+      </table>
+    </div>`;
+}
+
+function renderTrackerStats() {
+  const container = $("#trackerStatsBody");
+  if (!container) return;
+  const resolved = trackerEntries.filter(e => RESOLVED_STATUSES.includes(e.status));
+  const openCount = trackerEntries.length - resolved.length;
+
+  if (!resolved.length) {
+    container.innerHTML = `<p class="markup-tip" style="padding:18px;">No resolved trades yet${openCount ? ` (${openCount} still open)` : ""} - performance stats need at least a few closed setups to show anything meaningful.</p>`;
+    return;
+  }
+
+  const wins = resolved.filter(e => e.status === "Tp3Hit").length;
+  const losses = resolved.filter(e => e.status === "StoppedOut").length;
+  const flat = resolved.filter(e => e.status === "Expired").length;
+  const winRate = (wins / resolved.length) * 100;
+  const avgR = resolved.reduce((sum, e) => sum + (e.realizedR || 0), 0) / resolved.length;
+
+  container.innerHTML = `
+    <div class="tracker-stats-grid">
+      <div class="tracker-stat-tile"><span>Resolved trades</span><strong>${resolved.length}${openCount ? ` <small style="font-size:9px;color:var(--muted-2)">(+${openCount} open)</small>` : ""}</strong></div>
+      <div class="tracker-stat-tile"><span>Win rate</span><strong>${winRate.toFixed(0)}%</strong></div>
+      <div class="tracker-stat-tile"><span>Avg realized R</span><strong class="${avgR > 0 ? "positive" : avgR < 0 ? "negative" : ""}">${avgR.toFixed(2)}R</strong></div>
+      <div class="tracker-stat-tile"><span>W / L / Flat</span><strong>${wins} / ${losses} / ${flat}</strong></div>
+    </div>
+    ${renderStatsTable("Setup model", computeTrackerBreakdown(resolved, e => e.setupModel))}
+    ${renderStatsTable("Grade", computeTrackerBreakdown(resolved, e => e.grade))}
+    ${renderStatsTable("Timeframe", computeTrackerBreakdown(resolved, e => e.timeframe))}
+    ${renderStatsTable("Symbol", computeTrackerBreakdown(resolved, e => e.symbol))}`;
 }
 
 function renderTrackerRows() {
@@ -1362,6 +1438,18 @@ function initApp() {
   $("#trackerNavItem").addEventListener("click", () => { openSignalTracker(); $(".sidebar").classList.remove("open"); });
   $("#closeTracker").addEventListener("click", closeSignalTracker);
   $("#trackerModal").addEventListener("click", event => { if (event.target === $("#trackerModal")) closeSignalTracker(); });
+  $("#trackerTabLedger").addEventListener("click", () => {
+    $("#trackerTabLedger").classList.add("active");
+    $("#trackerTabStats").classList.remove("active");
+    $("#trackerLedgerView").hidden = false;
+    $("#trackerStatsView").hidden = true;
+  });
+  $("#trackerTabStats").addEventListener("click", () => {
+    $("#trackerTabStats").classList.add("active");
+    $("#trackerTabLedger").classList.remove("active");
+    $("#trackerStatsView").hidden = false;
+    $("#trackerLedgerView").hidden = true;
+  });
   $("#trackerStatusFilter").addEventListener("change", renderTrackerRows);
   $("#trackerSearch").addEventListener("input", renderTrackerRows);
   $("#trackerSelectAll").addEventListener("change", event => {
