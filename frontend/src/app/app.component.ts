@@ -54,7 +54,7 @@ const setups = instruments.flatMap(inst => timeframes.map(tf => ({
   symbol: inst.symbol, name: inst.name, group: inst.group, icon: inst.icon,
   timeframe: tf.label, tvSymbol: inst.tv, decimals: inst.decimals,
   comingSoon: !!inst.comingSoon,
-  hydrated: false, stale: false, cachedAtMs: 0,
+  hydrated: false, stale: false, cachedAtMs: 0, triggered: false,
   live: false, liveSource: null, liveError: null,
   direction: "Neutral", condition: inst.comingSoon ? "Coming soon" : "Not yet scanned",
   conditionFamily: "Unscanned", grade: null,
@@ -237,6 +237,7 @@ function applySignalResult(result) {
     setup.rr = Number(signal.rewardToRisk) || 0;
     setup.price = Number(signal.livePrice) || 0;
     setup.entry = Number(signal.preferredEntry) || 0;
+    setup.triggered = signal.triggered === true;
     setup.stop = Number(signal.stop) || 0;
     setup.tp1 = Number(signal.tp1) || 0;
     setup.target = Number(signal.tp2) || 0; // R:R is quoted against TP2 - see EntryStopTarget.cs
@@ -274,6 +275,7 @@ function applySignalResult(result) {
     setup.grade = "No setup";
     setup.score = 0;
     setup.rr = 0;
+    setup.triggered = false;
     setup.reasoning = result.reason || "No qualifying setup was found on this scan.";
     setup.levels = [["—", "—", "No qualifying setup on this scan"]];
     setup.confluences = [];
@@ -934,7 +936,7 @@ function renderSetupList() {
         <div class="asset-symbol"><span class="asset-icon" style="--group-color:${groupMeta[s.group].color}">${s.icon}</span><span><strong>${s.symbol}</strong><small title="${s.liveError || ""}" ${s.comingSoon || s.stale ? 'class="coming-soon-text"' : ""}>${sourceLabel(s)}</small></span></div>
         <span class="score-ring" style="--score:${s.score};--score-color:${scoreColor(s.score)}"><b>${s.comingSoon ? "—" : s.score}</b></span>
       </div>
-      <div class="setup-card-middle"><span class="direction ${directionClass(s.direction)}">${s.comingSoon ? "NOT LIVE" : s.direction.toUpperCase()}</span><span class="condition">${s.condition}${s.grade ? ` · ${s.grade}` : ""}</span><span class="timeframe">${s.timeframe}</span></div>
+      <div class="setup-card-middle"><span class="direction ${directionClass(s.direction)}">${s.comingSoon ? "NOT LIVE" : s.direction.toUpperCase()}</span><span class="condition">${s.condition}${s.grade ? ` · ${s.grade}` : ""}</span>${!s.comingSoon && s.grade && s.grade !== "No setup" ? `<span class="entry-status-tag ${s.triggered ? "triggered" : "pending"}">${s.triggered ? "Triggered" : "Pending"}</span>` : ""}<span class="timeframe">${s.timeframe}</span></div>
       <div class="setup-card-bottom">
         <span class="mini-stat"><span>Entry</span><strong>${s.comingSoon ? "—" : formatPrice(s.entry, s.decimals)}</strong></span>
         <span class="mini-stat"><span>R:R</span><strong>${s.comingSoon ? "—" : `${s.rr.toFixed(1)}R`}</strong></span>
@@ -1137,7 +1139,10 @@ function renderInspection() {
         <div class="signal-stat"><span>Grade</span><strong>${setup.grade || "—"}</strong></div>
         <div class="signal-stat"><span>Confidence</span><strong>${setup.comingSoon ? "—" : `${setup.score}/100`}</strong></div>
         <div class="signal-stat"><span>Projected R:R</span><strong>${setup.comingSoon ? "—" : `${setup.rr.toFixed(1)}R`}</strong></div>
+        ${!setup.comingSoon && setup.grade && setup.grade !== "No setup" ? `
+        <div class="signal-stat"><span>Entry Status</span><strong class="${setup.triggered ? "positive" : "pending"}">${setup.triggered ? "Triggered" : "Pending"}</strong></div>` : ""}
       </div>
+      ${!setup.comingSoon && setup.grade && setup.grade !== "No setup" && !setup.triggered ? `<div class="demo-tag pending-tag" style="margin:12px 0 0">PENDING. Price has not traded into the entry zone yet. This is not a live position. Do not treat it as an active trade.</div>` : ""}
     </header>
     <div class="inspection-body">
       <section>
