@@ -129,8 +129,10 @@ public class SignalOrchestrator(
             var calendarVeto = await GetCalendarVeto(instrument.AffectedCurrencies);
             var newsCatalyst = await GetNewsCatalyst(instrument.Symbol, candidate.Direction);
 
-            // Pass 2: re-evaluate with real HTF alignment, R:R and news veto now available.
-            candidate = TryModels(mainCandles, displayTimeframe, condition, structure, obs, fvgs, willis, sweeps, htfAlignment, tradePlan?.RewardToRisk, calendarVeto.State);
+            // Pass 2: re-evaluate with real HTF alignment, R:R, news veto and
+            // the real computed target (for RangeBoundaryRejection's "logical
+            // target" check) now available.
+            candidate = TryModels(mainCandles, displayTimeframe, condition, structure, obs, fvgs, willis, sweeps, htfAlignment, tradePlan?.RewardToRisk, calendarVeto.State, tradePlan?.Targets.Tp2);
             if (candidate is null)
                 return new OrchestratorResult(false, null, "Setup model no longer applies on re-evaluation", instrument.Symbol, timeframeLabel);
 
@@ -163,7 +165,18 @@ public class SignalOrchestrator(
                     instrument.Symbol, timeframeLabel);
             }
 
-            var positionSize = RiskSizing.Compute(PlaceholderAccountBalance, 0m, score.Grade == "No setup" || score.Grade == "Watchlist" ? "B" : score.Grade,
+            // LiquiditySweepReversal is a counter-trend reversal call by nature -
+            // real, elevated risk when it also runs against the broader Weekly
+            // trend (see SetupModels.cs's "reduced risk when against the
+            // broader Weekly trend" requirement, which reports whether this
+            // reduction has actually been applied). Halving the default risk
+            // rather than skipping the trade: the setup can still be genuinely
+            // valid HTF-conflicting or not, just sized for the added risk.
+            var effectiveGrade = score.Grade == "No setup" || score.Grade == "Watchlist" ? "B" : score.Grade;
+            var requestedRiskPercent = candidate.Model == SetupModelType.LiquiditySweepReversal && htfAlignment == HtfAlignment.Conflicting
+                ? RiskSizing.DefaultRiskPercent(effectiveGrade) / 2
+                : 0m;
+            var positionSize = RiskSizing.Compute(PlaceholderAccountBalance, requestedRiskPercent, effectiveGrade,
                 tradePlan.Entry.PreferredEntry, tradePlan.Stop.Price, isFx: instrument.Source == DataSource.TwelveData);
 
             var lastPrice = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).Last().Close;
@@ -226,12 +239,13 @@ public class SignalOrchestrator(
     private static SetupCandidate? TryModels(
         IReadOnlyList<NormalizedCandle> candles, Timeframe timeframe, MarketCondition condition, StructureResult structure,
         IReadOnlyList<OrderBlock> obs, IReadOnlyList<FairValueGap> fvgs, IReadOnlyList<RealtouchWillisZone> willis,
-        IReadOnlyList<LiquiditySweep> sweeps, HtfAlignment? htf, decimal? rr, CalendarVetoState? calendarVeto = null)
+        IReadOnlyList<LiquiditySweep> sweeps, HtfAlignment? htf, decimal? rr, CalendarVetoState? calendarVeto = null,
+        decimal? targetPrice = null)
     {
         return SetupModels.EvaluateTrendContinuationPullback(candles, timeframe, condition, structure, obs, fvgs, willis, sweeps, htf, rr, calendarVeto)
             ?? SetupModels.EvaluateBreakoutAndRetest(candles, timeframe, condition, structure, obs, fvgs, rr, calendarVeto)
             ?? SetupModels.EvaluateLiquiditySweepReversal(candles, timeframe, condition, structure, obs, fvgs, sweeps, htf, calendarVeto)
-            ?? SetupModels.EvaluateRangeBoundaryRejection(candles, timeframe, condition, structure, sweeps, rr, calendarVeto);
+            ?? SetupModels.EvaluateRangeBoundaryRejection(candles, timeframe, condition, structure, sweeps, rr, calendarVeto, targetPrice);
     }
 
     private void PersistContextCache() =>

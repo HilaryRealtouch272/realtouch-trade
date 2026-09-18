@@ -276,6 +276,30 @@ score and the checklist could disagree. `ScoringInput` now carries
 HTF verdict zeroes that family outright regardless of the single-timeframe
 match, tested explicitly.
 
+**`SetupModels.cs`'s last three permanently-`NotEvaluated` requirements are
+now real checks**, closing the model-completeness gap flagged in the
+"Setup models" section above:
+- LiquiditySweepReversal's **"Entry on the controlled retest"** now checks
+  whether price has actually come back to the FVG/order block the reversal
+  displacement left behind (ATR-scaled tolerance), reusing the same
+  `NearAnyZone` helper `BreakoutAndRetest` already used for its own retest
+  check - rather than accepting entry on the CHoCH candle itself.
+- LiquiditySweepReversal's **"Reduced risk when against the broader Weekly
+  trend"** now reports whether that reduction has genuinely been applied:
+  `SignalOrchestrator` halves the position size when this model's HTF
+  alignment comes back `Conflicting`, real behavior, not just a label.
+- RangeBoundaryRejection's **"Logical target at equilibrium or opposite
+  boundary"** now validates the real computed target (threaded through on
+  Pass 2, the same pattern already used for R:R) against the range's own
+  equilibrium/opposite boundary rather than an arbitrary ATR extension.
+
+Note: none of the four models' own `Qualified`/requirements-checklist flags
+gate live signal issuance - that runs entirely through `ConfluenceScorer`'s
+model-agnostic `ScoringInput` (HTF alignment and R:R are scored for every
+model uniformly, regardless of which specific sub-items that model's own
+checklist happens to enumerate). This checklist is diagnostic/display data
+(and a real behavioral input to the two changes above), not a live gate.
+
 ## Not yet implemented
 
 - **Extending Section 7's live wiring to FX/Metals/Energy** - blocked on

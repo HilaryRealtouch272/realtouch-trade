@@ -181,14 +181,32 @@ public static class SetupModels
             orderBlocks.Any(o => MatchesOrderBlockDirection(o.Direction, direction) && OrderBlockDetector.IsValid(o))
                 ? RequirementStatus.Met : RequirementStatus.NotMet);
 
+        // Entry should wait for price to actually come back to the zone the
+        // reversal displacement left behind, not chase the CHoCH candle
+        // itself - same "near the evidence zone" reasoning BreakoutAndRetest
+        // uses for its own retest check, reusing the same ATR-scaled tolerance.
+        var atr = Indicators.Atr(completed, 14)[^1];
+        var retestTolerance = atr is null ? decimal.MaxValue : atr.Value * 0.5m;
+        var controlledRetestReq = new RequirementCheck(
+            "Entry on the controlled retest",
+            NearAnyZone(lastClose, orderBlocks, fvgs, direction, retestTolerance) ? RequirementStatus.Met : RequirementStatus.NotMet);
+
+        // A reversal AGAINST the broader Weekly trend is real, elevated risk -
+        // this only reports whether that's been accounted for (real risk
+        // reduction happens in SignalOrchestrator's position sizing once
+        // htfAlignment is known), not whether the trade happens to align.
+        var riskAdjustmentReq = new RequirementCheck(
+            "Reduced risk when against the broader Weekly trend",
+            htfAlignment is not null ? RequirementStatus.Met : RequirementStatus.NotEvaluated);
+
         var requirements = new List<RequirementCheck>
         {
             EvaluateHtf(htfAlignment), // "Weekly, Daily or 4H key level" context
             sweepReq,
             chochReq,
             evidenceReq,
-            new("Entry on the controlled retest", RequirementStatus.NotEvaluated),
-            new("Reduced risk when against the broader Weekly trend", RequirementStatus.NotEvaluated),
+            controlledRetestReq,
+            riskAdjustmentReq,
             EvaluateNewsVeto(calendarVeto)
         };
 
@@ -197,7 +215,8 @@ public static class SetupModels
 
     public static SetupCandidate? EvaluateRangeBoundaryRejection(
         IReadOnlyList<NormalizedCandle> candles, Timeframe timeframe, MarketCondition condition, StructureResult structure,
-        IReadOnlyList<LiquiditySweep> sweeps, decimal? rewardToRisk = null, CalendarVetoState? calendarVeto = null)
+        IReadOnlyList<LiquiditySweep> sweeps, decimal? rewardToRisk = null, CalendarVetoState? calendarVeto = null,
+        decimal? targetPrice = null)
     {
         if (condition != MarketCondition.Ranging) return null;
 
@@ -236,8 +255,20 @@ public static class SetupModels
         var notDuringBreakout = new RequirementCheck(
             "Not during a confirmed breakout", RequirementStatus.Met); // guarded by the Ranging precondition above
 
+        // The logical objective for a boundary rejection is the range's own
+        // equilibrium or its opposite boundary - not some arbitrary ATR
+        // extension. Only checkable once a real target exists (Pass 2, after
+        // EntryStopTargetCalculator has run), same pattern as R:R below.
+        var oppositeBoundary = direction == SetupDirection.Long ? rangeHigh : rangeLow;
+        var targetTolerance = atr is null ? decimal.MaxValue : atr.Value * 0.5m;
+        var logicalTargetReq = targetPrice is null
+            ? new RequirementCheck("Logical target at equilibrium or opposite boundary", RequirementStatus.NotEvaluated)
+            : new RequirementCheck("Logical target at equilibrium or opposite boundary",
+                Math.Abs(targetPrice.Value - equilibrium) <= targetTolerance || Math.Abs(targetPrice.Value - oppositeBoundary) <= targetTolerance
+                    ? RequirementStatus.Met : RequirementStatus.NotMet);
+
         var requirements = new List<RequirementCheck> { boundaryReq, sweepReq, confirmReq, notDuringBreakout,
-            new("Logical target at equilibrium or opposite boundary", RequirementStatus.NotEvaluated),
+            logicalTargetReq,
             EvaluateRr(rewardToRisk),
             EvaluateNewsVeto(calendarVeto) };
 
