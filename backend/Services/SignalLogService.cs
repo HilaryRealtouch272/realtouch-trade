@@ -286,9 +286,23 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         var directionIcon = entry.Direction == "Long" ? "🟢" : "🔴";
         var realized = entry.RealizedR.HasValue ? $"\n⚖️ Realized: {entry.RealizedR.Value:0.00}R" : "";
 
+        // Show whichever level actually drove this outcome - the stop only
+        // for a real stop-out, the specific TP that was hit for a TP event -
+        // rather than always printing the stop regardless of what happened.
+        // Expired has no such level (it timed out, nothing was hit), so it's
+        // omitted rather than falsely implying the stop was reached.
+        var levelLine = entry.Status switch
+        {
+            "Tp1Hit" => $"TP1 {TelegramSignalFormatter.FormatPrice(entry.Tp1)} · ",
+            "Tp2Hit" => $"TP2 {TelegramSignalFormatter.FormatPrice(entry.Tp2)} · ",
+            "Tp3Hit" => $"TP3 {TelegramSignalFormatter.FormatPrice(entry.Tp3)} · ",
+            "StoppedOut" => $"Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} · ",
+            _ => ""
+        };
+
         return
             $"{icon} *{entry.Symbol}* · {entry.Timeframe} · {directionIcon} {entry.Direction.ToUpperInvariant()} — *{label}*\n" +
-            $"Original setup: Entry {TelegramSignalFormatter.FormatPrice(entry.Entry)} · Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} · Grade {entry.Grade} ({entry.Score}/100){realized}";
+            $"Original setup: Entry {TelegramSignalFormatter.FormatPrice(entry.Entry)} · {levelLine}Grade {entry.Grade} ({entry.Score}/100){realized}";
     }
 
     // A real, generous holding window scaled to the timeframe's own candle
