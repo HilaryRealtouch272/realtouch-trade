@@ -221,7 +221,13 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             }
             else if (Reached(entry.Tp2) && entry.Status != "Tp2Hit")
             {
-                entry = entry with { Status = "Tp2Hit", Tp2HitAtUtc = entry.Tp2HitAtUtc ?? now };
+                // Price can jump straight past TP1 to TP2 between two scans
+                // without a separate scan ever catching it exactly at TP1 -
+                // it still genuinely traversed that level (TP1 sits closer to
+                // entry than TP2), so backfill Tp1HitAtUtc here too. Otherwise
+                // BlendedRealizedR would wrongly deny the 25% TP1 leg credit
+                // for a trade that plainly did reach it.
+                entry = entry with { Status = "Tp2Hit", Tp1HitAtUtc = entry.Tp1HitAtUtc ?? now, Tp2HitAtUtc = entry.Tp2HitAtUtc ?? now };
             }
             else if (Reached(entry.Tp1) && entry.Status == "Open")
             {

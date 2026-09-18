@@ -13,6 +13,23 @@ public class SignalLogServiceOutcomeTests
         Status: status, Tp1HitAtUtc: tp1HitAtUtc, Tp2HitAtUtc: tp2HitAtUtc, ClosedAtUtc: null, RealizedR: null);
 
     [Fact]
+    public void JumpingStraightPastTp1ToTp2BackfillsTp1HitAtUtcToo()
+    {
+        // Regression: a real production entry (GBP/USD 15m) reached
+        // Tp2Hit with Tp1HitAtUtc still null - price legitimately crossed
+        // TP1 (closer to entry) on its way to TP2, a scan gap just never
+        // caught it exactly there. Denying that TP1 credit would silently
+        // undercount BlendedRealizedR if this trade later stops out/expires.
+        var entry = NewEntry("Open");
+
+        var result = SignalLogService.ApplyPriceAndExpiry(entry, livePrice: 120m, DateTime.UtcNow);
+
+        Assert.Equal("Tp2Hit", result.Status);
+        Assert.NotNull(result.Tp1HitAtUtc);
+        Assert.NotNull(result.Tp2HitAtUtc);
+    }
+
+    [Fact]
     public void StoppedOutWithNoPriorTargetHitIsAFullMinusOneR()
     {
         var entry = NewEntry("Open");
