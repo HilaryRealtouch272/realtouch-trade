@@ -82,6 +82,21 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
                 var updated = UpdatePerformanceLocked(result);
                 if (updated is not null) changed.Add(updated);
             }
+
+            // A 15m result is fresh for EVERY open trade on that symbol, not
+            // just ones qualified on 15m itself - the M15 cadence (checked
+            // every ~10min, effectively every scan run) is far faster than
+            // 1H/4H/Daily/Weekly's own (20min/45min/2h/6h), so a Weekly-
+            // logged trade's stop/TP would otherwise only get re-checked
+            // once every 6 hours. Entry/stop/targets are fixed at
+            // qualification time; only the live price needs to be current,
+            // and market price doesn't care which timeframe's chart you're
+            // looking at it on. Deliberately one-directional: this never
+            // runs the other way (a stale Daily/Weekly close checking a
+            // fast trade), since that price could be hours to days old.
+            foreach (var result in resultList.Where(r => r.Timeframe == "15m" && r.Success && r.Signal is not null))
+                changed.AddRange(PropagateFastPriceToOtherTimeframesLocked(result.InstrumentSymbol, result.Signal!.LivePrice, result.Timeframe));
+
             foreach (var result in resultList) RecordIfNewLocked(result);
             if (_entries.Count > MaxEntries) _entries.RemoveRange(0, _entries.Count - MaxEntries);
         }
@@ -127,13 +142,53 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
         var index = _entries.FindIndex(e => e.Id == entryId);
         if (index < 0) { _openKeyToEntryId.Remove(key); return null; }
+
         var entry = _entries[index];
         var statusBefore = entry.Status;
-        var now = DateTime.UtcNow;
+        var livePrice = result.Success && result.Signal is not null ? result.Signal.LivePrice : (decimal?)null;
+        entry = ApplyPriceAndExpiry(entry, livePrice, DateTime.UtcNow);
 
-        if (result.Success && result.Signal is not null)
+        _entries[index] = entry;
+        if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
+        return entry.Status != statusBefore ? entry : null;
+    }
+
+    // Checks a fresh price against every OTHER open entry for the same
+    // symbol (any timeframe but the one this price already came from -
+    // that one was just handled by UpdatePerformanceLocked above).
+    private List<QualificationLogEntry> PropagateFastPriceToOtherTimeframesLocked(string symbol, decimal livePrice, string sourceTimeframe)
+    {
+        var changed = new List<QualificationLogEntry>();
+        var now = DateTime.UtcNow;
+        var sourceKey = Key(symbol, sourceTimeframe);
+        var keys = _openKeyToEntryId.Keys.Where(k => k != sourceKey && k.StartsWith(symbol + "|", StringComparison.Ordinal)).ToList();
+
+        foreach (var key in keys)
         {
-            var price = result.Signal.LivePrice;
+            var entryId = _openKeyToEntryId[key];
+            var index = _entries.FindIndex(e => e.Id == entryId);
+            if (index < 0) { _openKeyToEntryId.Remove(key); continue; }
+
+            var entry = _entries[index];
+            var statusBefore = entry.Status;
+            entry = ApplyPriceAndExpiry(entry, livePrice, now);
+
+            _entries[index] = entry;
+            if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
+            if (entry.Status != statusBefore) changed.Add(entry);
+        }
+        return changed;
+    }
+
+    // Shared by both the exact-timeframe update and the fast-price
+    // propagation above: applies a live price (when one is available) then
+    // the time-based expiry check, honestly - never invents a status change
+    // without either real price movement or real elapsed time behind it.
+    private static QualificationLogEntry ApplyPriceAndExpiry(QualificationLogEntry entry, decimal? livePrice, DateTime now)
+    {
+        if (livePrice.HasValue)
+        {
+            var price = livePrice.Value;
             var isLong = entry.Direction == "Long";
             var riskDistance = Math.Abs(entry.Entry - entry.Stop);
 
@@ -162,9 +217,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         if (IsOpenStatus(entry.Status) && now > entry.TrackingExpiryUtc)
             entry = entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = 0m };
 
-        _entries[index] = entry;
-        if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
-        return entry.Status != statusBefore ? entry : null;
+        return entry;
     }
 
     private static string FormatOutcomeMessage(QualificationLogEntry entry)
