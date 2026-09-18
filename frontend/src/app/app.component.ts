@@ -1331,10 +1331,11 @@ function calculateRisk() {
   );
   // Real QA finding: with no determined bias (setup.direction is "Neutral"),
   // this whole check was skipped entirely - an equally nonsensical stop
-  // silently produced a confident-looking R:R with no warning at all. If
-  // there's no direction to validate against, say so instead of computing
-  // anything off it.
-  const biasUndetermined = !effectiveDirection;
+  // silently produced a confident-looking R:R with no warning at all. Bug
+  // in the first attempt at this fix: effectiveDirection for a Neutral
+  // setup is the literal string "Neutral" (truthy), so `!effectiveDirection`
+  // never actually fired - has to check membership, not truthiness.
+  const biasUndetermined = effectiveDirection !== "Long" && effectiveDirection !== "Short";
 
   balanceInput?.classList.toggle("input-invalid", balanceInvalid);
   stopInput?.classList.toggle("input-invalid", directionInvalid);
@@ -1586,7 +1587,20 @@ function initApp() {
     // misrepresent what zone is actually being used.
     const known = TIMEZONE_OPTIONS.some(t => t.zone === state.timezone);
     const options = known ? TIMEZONE_OPTIONS : [{ label: state.timezone, zone: state.timezone }, ...TIMEZONE_OPTIONS];
-    timezoneSelect.innerHTML = options.map(t => `<option value="${t.zone}" ${t.zone === state.timezone ? "selected" : ""}>${t.label}</option>`).join("");
+    timezoneSelect.innerHTML = options.map(t => `<option value="${t.zone}">${t.label}</option>`).join("");
+    // Set the selection via the element's own value property rather than
+    // baking a "selected" attribute into the template string - real QA
+    // finding: the deployed build defaulted to the wrong option (Sydney)
+    // despite the detected zone (Africa/Lagos) genuinely being in the list,
+    // and this is the more robust, standard way to drive a <select>'s
+    // initial value. Verify it actually took - if the browser didn't
+    // accept it for any reason, fall back to UTC explicitly rather than
+    // silently leaving the browser's own first-option default in place.
+    timezoneSelect.value = state.timezone;
+    if (timezoneSelect.value !== state.timezone) {
+      state.timezone = "Etc/UTC";
+      timezoneSelect.value = "Etc/UTC";
+    }
     timezoneSelect.addEventListener("change", event => {
       state.timezone = event.target.value;
       savePersistedTimezone(state.timezone);
