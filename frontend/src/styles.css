@@ -311,6 +311,7 @@ body.chart-expanded-open { overflow: hidden; }
 .tracker-table tbody tr:hover { background: rgba(255,255,255,.015); }
 .tracker-table .icon-button.small { width: 22px; height: 22px; font-size: 12px; }
 .tracker-empty { text-align: center; color: var(--muted); padding: 34px !important; white-space: normal; }
+.tracker-progress-note { color: var(--muted-2); font-size: 8px; }
 .confirm-body { padding: 18px; }
 .confirm-body p { margin: 0 0 14px; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .comparison-row { display: grid; grid-template-columns: 130px repeat(var(--columns), minmax(160px, 1fr)); gap: 8px; }

@@ -469,6 +469,20 @@ function trackerStatusClass(status) {
   return "";
 }
 
+// Tp1HitAtUtc/Tp2HitAtUtc stay on the entry forever, even once it later
+// expires or stops out - real partial progress that the final Status alone
+// erases from view (an expired trade that hit TP1 first looks identical to
+// one that never moved at all). Tp3Hit already implies both were passed
+// through, so only worth calling out for the other terminal/open states.
+function trackerProgressNote(e) {
+  if (e.status === "Tp3Hit") return "";
+  const hits = [];
+  if (e.tp1HitAtUtc) hits.push("TP1");
+  if (e.tp2HitAtUtc) hits.push("TP2");
+  if (!hits.length) return "";
+  return ` <span class="tracker-progress-note" title="${hits.join(" and ")} hit before this trade's final outcome">(${hits.join("+")} hit first)</span>`;
+}
+
 async function fetchTrackerEntries() {
   const path = IS_STATIC_DEPLOYMENT ? `signal-log.json?_=${Date.now()}` : `${API_BASE}/api/signal-log`;
   const response = await fetch(path, IS_STATIC_DEPLOYMENT ? { cache: "no-store" } : undefined);
@@ -611,7 +625,7 @@ function renderTrackerRows() {
         <td>${e.rewardToRisk.toFixed(1)}R</td>
         <td>${new Date(e.qualifiedAtUtc).toLocaleString()}</td>
         <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? new Date(e.closedAtUtc).toLocaleString() : "—"}</td>
-        <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}</td>
+        <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
         <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R`}</td>
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
       </tr>`).join("");
