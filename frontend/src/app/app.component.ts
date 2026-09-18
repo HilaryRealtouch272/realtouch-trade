@@ -101,9 +101,65 @@ function savePersistedTimeframe(timeframe) {
   try { localStorage.setItem("rst_timeframe", timeframe); } catch { /* storage unavailable - state stays in-memory only */ }
 }
 
+// Country -> IANA timezone, for the "your timezone" selector - covers the
+// major trading-session regions plus a spread of common non-market
+// countries so most viewers can find their own. Real IANA zone names only
+// (never a fixed UTC offset), so DST is handled correctly by the browser's
+// own Intl engine rather than being hardcoded and going stale twice a year.
+const TIMEZONE_OPTIONS = [
+  { label: "United Kingdom (London)", zone: "Europe/London" },
+  { label: "United States - Eastern (New York)", zone: "America/New_York" },
+  { label: "United States - Central (Chicago)", zone: "America/Chicago" },
+  { label: "United States - Pacific (Los Angeles)", zone: "America/Los_Angeles" },
+  { label: "Nigeria (Lagos)", zone: "Africa/Lagos" },
+  { label: "South Africa (Johannesburg)", zone: "Africa/Johannesburg" },
+  { label: "Ghana (Accra)", zone: "Africa/Accra" },
+  { label: "Kenya (Nairobi)", zone: "Africa/Nairobi" },
+  { label: "Egypt (Cairo)", zone: "Africa/Cairo" },
+  { label: "United Arab Emirates (Dubai)", zone: "Asia/Dubai" },
+  { label: "India (Mumbai/Delhi)", zone: "Asia/Kolkata" },
+  { label: "Singapore", zone: "Asia/Singapore" },
+  { label: "Japan (Tokyo)", zone: "Asia/Tokyo" },
+  { label: "China (Shanghai)", zone: "Asia/Shanghai" },
+  { label: "Australia (Sydney)", zone: "Australia/Sydney" },
+  { label: "Germany (Berlin)", zone: "Europe/Berlin" },
+  { label: "France (Paris)", zone: "Europe/Paris" },
+  { label: "Canada - Eastern (Toronto)", zone: "America/Toronto" },
+  { label: "Brazil (Sao Paulo)", zone: "America/Sao_Paulo" },
+  { label: "UTC", zone: "Etc/UTC" }
+];
+
+function loadPersistedTimezone() {
+  try {
+    const saved = localStorage.getItem("rst_timezone");
+    if (saved && TIMEZONE_OPTIONS.some(t => t.zone === saved)) return saved;
+  } catch { /* storage unavailable */ }
+  // Honest default: the browser's own detected zone if it's real, else UTC -
+  // never silently assume a specific country.
+  try {
+    const detected = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return detected || "Etc/UTC";
+  } catch { return "Etc/UTC"; }
+}
+function savePersistedTimezone(zone) {
+  try { localStorage.setItem("rst_timezone", zone); } catch { /* storage unavailable - state stays in-memory only */ }
+}
+
+// Every ledger/qualification timestamp displayed to the user goes through
+// this, so switching the selector immediately re-renders everything in the
+// newly chosen zone rather than only affecting the personal clock readout.
+function formatInUserTimezone(value) {
+  try {
+    return new Date(value).toLocaleString("en-GB", { timeZone: state.timezone });
+  } catch {
+    return new Date(value).toLocaleString("en-GB"); // unknown/unsupported zone - fall back to the browser's own
+  }
+}
+
 const state = {
   market: "All Markets",
   timeframe: loadPersistedTimeframe(),
+  timezone: loadPersistedTimezone(),
   condition: "all",
   search: "",
   sort: "score",
@@ -641,8 +697,8 @@ function renderTrackerRows() {
         <td>${formatPrice(e.entry, 5)}</td>
         <td>${formatPrice(e.stop, 5)}</td>
         <td>${e.rewardToRisk.toFixed(1)}R</td>
-        <td>${new Date(e.qualifiedAtUtc).toLocaleString()}</td>
-        <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? new Date(e.closedAtUtc).toLocaleString() : "—"}</td>
+        <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
+        <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
         <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
         <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R`}</td>
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
@@ -683,7 +739,7 @@ function closeConfirmModal() {
 
 async function deleteTrackerRow(id) {
   const entry = trackerEntries.find(e => e.id === id);
-  const label = entry ? `${entry.symbol} · ${entry.timeframe} (qualified ${new Date(entry.qualifiedAtUtc).toLocaleString()})` : "this row";
+  const label = entry ? `${entry.symbol} · ${entry.timeframe} (qualified ${formatInUserTimezone(entry.qualifiedAtUtc)})` : "this row";
   openConfirm(`Permanently delete the tracker row for ${label}? This cannot be undone.`, "Delete", async () => {
     try {
       const response = await fetch(`${API_BASE}/api/signal-log/${id}`, { method: "DELETE" });
@@ -1057,6 +1113,17 @@ function formatWindow(start, end, now = new Date()) {
 function renderSessions(setup) {
   const now = new Date();
   $("#utcClock").textContent = now.toLocaleTimeString("en-GB", { timeZone: "UTC", hour12: false });
+  const timezoneClock = $("#timezoneClock");
+  if (timezoneClock) {
+    try {
+      timezoneClock.textContent = now.toLocaleTimeString("en-GB", { timeZone: state.timezone, hour12: false });
+    } catch {
+      timezoneClock.textContent = now.toLocaleTimeString("en-GB", { hour12: false }); // unsupported zone string - fall back honestly
+    }
+  }
+  const timezoneLabel = TIMEZONE_OPTIONS.find(t => t.zone === state.timezone)?.label;
+  const timezoneClockLabel = $("#timezoneClockLabel");
+  if (timezoneClockLabel) timezoneClockLabel.textContent = timezoneLabel ? timezoneLabel.replace(/ \(.+\)$/, "") : state.timezone;
   $("#sessionCards").innerHTML = sessions.map(session => {
     const parts = zoneParts(now, session.zone);
     const hour = Number(parts.hour);
@@ -1510,6 +1577,24 @@ function initApp() {
     const scenario = event.target.closest("[data-scenario]");
     if (scenario) { state.scenario = scenario.dataset.scenario; renderInspection(); }
   });
+
+  const timezoneSelect = $("#timezoneSelect");
+  if (timezoneSelect) {
+    // If the detected/persisted zone isn't in the curated list (e.g. a less
+    // common IANA zone the browser reports), add it as its own option
+    // rather than silently falling back to a different country - never
+    // misrepresent what zone is actually being used.
+    const known = TIMEZONE_OPTIONS.some(t => t.zone === state.timezone);
+    const options = known ? TIMEZONE_OPTIONS : [{ label: state.timezone, zone: state.timezone }, ...TIMEZONE_OPTIONS];
+    timezoneSelect.innerHTML = options.map(t => `<option value="${t.zone}" ${t.zone === state.timezone ? "selected" : ""}>${t.label}</option>`).join("");
+    timezoneSelect.addEventListener("change", event => {
+      state.timezone = event.target.value;
+      savePersistedTimezone(state.timezone);
+      renderTrackerRows();
+      const selected = setups.find(setup => setup.id === state.selected) || setups[0];
+      renderSessions(selected);
+    });
+  }
 
   $("#conditionFilter").addEventListener("change", event => { state.condition = event.target.value; refresh(); });
   $("#sortSelect").addEventListener("change", event => { state.sort = event.target.value; renderSetupList(); });

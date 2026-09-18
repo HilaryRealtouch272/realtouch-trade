@@ -40,6 +40,10 @@
           <span aria-hidden="true">⌕</span>
           <input id="searchInput" type="search" placeholder="Search markets" autocomplete="off" />
         </label>
+        <label class="compact-select timezone-select">Your timezone
+          <select id="timezoneSelect" aria-label="Display timestamps in this timezone"></select>
+        </label>
+        <div class="scan-time"><span id="timezoneClockLabel">Your local time</span><strong id="timezoneClock">--:--:--</strong></div>
         <div class="scan-time"><span>Live data layer</span><strong id="liveDataStatus">Connecting…</strong></div>
         <button class="avatar" type="button" aria-label="Account">DO</button>
       </div>
