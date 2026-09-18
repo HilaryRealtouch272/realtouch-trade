@@ -1,1 +1,1 @@
-{"Result":{"Available":false,"UnavailableReason":"Finnhub: all 2 API key(s) failed. Last error: Finnhub 401: {\u0022error\u0022:\u0022Invalid API key\u0022}","Events":[]},"FetchedAtUtc":"2026-09-18T15:42:55.9977459Z"}
+{"Result":{"Available":false,"UnavailableReason":"Finnhub: all 2 API key(s) failed. Last error: Finnhub 401: {\u0022error\u0022:\u0022Invalid API key\u0022}","Events":[]},"FetchedAtUtc":"2026-09-18T16:46:13.4565838Z"}
