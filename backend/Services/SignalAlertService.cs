@@ -12,7 +12,7 @@ namespace RealtouchSmartTrade.Api.Services;
 // alerts only fire while something is actively polling those endpoints (the
 // running frontend) - there is no always-on server-side scan independent of
 // that yet.
-public class SignalAlertService(TelegramNotifier telegram, IHostEnvironment env, ILogger<SignalAlertService> logger)
+public class SignalAlertService(TelegramNotifier telegram, SignalLogService signalLog, IHostEnvironment env, ILogger<SignalAlertService> logger)
 {
     // What "the same setup" means for dedup purposes: same symbol, same
     // timeframe, same direction, same setup model, same grade. If any of
@@ -53,6 +53,19 @@ public class SignalAlertService(TelegramNotifier telegram, IHostEnvironment env,
                 }
 
                 var signal = result.Signal!;
+
+                // The ledger only ever tracks one open trade per (symbol,
+                // timeframe), regardless of direction - a reversal signal
+                // while the original is still open gets no ledger row (see
+                // SignalLogService.RecordIfNewLocked). Suppress the alert too
+                // rather than pinging about a setup that will never have a
+                // corresponding tracked record.
+                var openDirection = signalLog.GetOpenDirection(result.InstrumentSymbol, result.Timeframe);
+                if (openDirection is not null && openDirection != signal.Direction.ToString())
+                {
+                    continue;
+                }
+
                 var current = new AlertedState(signal.Direction.ToString(), signal.SetupModel.ToString(), signal.Grade);
 
                 bool isDuplicate;

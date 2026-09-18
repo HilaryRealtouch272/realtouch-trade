@@ -324,6 +324,21 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         lock (_lock) return _entries.OrderByDescending(e => e.QualifiedAtUtc).ToList();
     }
 
+    // Used by SignalAlertService to keep alerts consistent with what the
+    // ledger actually tracks: one open trade per (symbol, timeframe)
+    // regardless of direction (see RecordIfNewLocked) - an opposite-
+    // direction reversal while the original is still open never gets a
+    // ledger row, so it shouldn't get a fresh Telegram alert either. Returns
+    // the currently open entry's direction, or null if nothing is open.
+    public string? GetOpenDirection(string symbol, string timeframe)
+    {
+        lock (_lock)
+        {
+            if (!_openKeyToEntryId.TryGetValue(Key(symbol, timeframe), out var entryId)) return null;
+            return _entries.FirstOrDefault(e => e.Id == entryId)?.Direction;
+        }
+    }
+
     // Real, deliberate user actions on real money-relevant records - deletion
     // is permanent (no undo), which is exactly why the frontend gates both
     // behind an explicit confirmation dialog before ever calling these.
