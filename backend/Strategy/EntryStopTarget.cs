@@ -39,6 +39,14 @@ public static class EntryStopTargetCalculator
     private const decimal MinRationalStopAtrMultiple = 0.25m;
     private const decimal MaxRationalStopAtrMultiple = 8m;
 
+    // Position-scaling weights per target - public so anything computing
+    // real blended P&L on a partially-resolved trade (see
+    // Services/SignalLogService.cs) uses the exact same split rather than
+    // duplicating these as separate magic numbers.
+    public const decimal Tp1Weight = 0.25m;
+    public const decimal Tp2Weight = 0.50m;
+    public const decimal Tp3Weight = 0.25m;
+
     public static TradePlan? Compute(
         IReadOnlyList<NormalizedCandle> allCandles,
         Timeframe timeframe,
@@ -195,6 +203,6 @@ public static class EntryStopTargetCalculator
             : (isLong ? entry + riskDistance * 3 : entry - riskDistance * 3);
         var tp3Basis = externalLevels.Count > 0 ? "external/higher-timeframe liquidity level" : "3R measured-move projection (no further key level found)";
 
-        return new TargetPlan(tp1, "~1R (nearest opposing internal liquidity)", tp2, tp2Basis, tp3, tp3Basis, 0.25m, 0.50m, 0.25m);
+        return new TargetPlan(tp1, "~1R (nearest opposing internal liquidity)", tp2, tp2Basis, tp3, tp3Basis, Tp1Weight, Tp2Weight, Tp3Weight);
     }
 }

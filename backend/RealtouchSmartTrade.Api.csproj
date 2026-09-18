@@ -11,4 +11,12 @@
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Lets the test project directly exercise SignalLogService's internal,
+         dependency-free outcome-calculation logic (real money math like the
+         weighted blended R below) without needing to stand up its full DI
+         graph (TelegramNotifier, IHostEnvironment, disk-cache paths). -->
+    <InternalsVisibleTo Include="RealtouchSmartTrade.Tests" />
+  </ItemGroup>
+
 </Project>

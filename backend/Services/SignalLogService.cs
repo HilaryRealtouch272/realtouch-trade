@@ -1,5 +1,6 @@
 using RealtouchSmartTrade.Api.Models;
 using RealtouchSmartTrade.Api.Providers;
+using RealtouchSmartTrade.Api.Strategy;
 
 namespace RealtouchSmartTrade.Api.Services;
 
@@ -184,7 +185,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     // propagation above: applies a live price (when one is available) then
     // the time-based expiry check, honestly - never invents a status change
     // without either real price movement or real elapsed time behind it.
-    private static QualificationLogEntry ApplyPriceAndExpiry(QualificationLogEntry entry, decimal? livePrice, DateTime now)
+    internal static QualificationLogEntry ApplyPriceAndExpiry(QualificationLogEntry entry, decimal? livePrice, DateTime now)
     {
         if (livePrice.HasValue)
         {
@@ -197,11 +198,25 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
             if (StoppedOut())
             {
-                entry = entry with { Status = "StoppedOut", ClosedAtUtc = now, RealizedR = -1m };
+                // The strategy's own target plan scales out 25%/50%/25% of the
+                // position at TP1/TP2/TP3 (EntryStopTargetCalculator's fixed
+                // weights) - a trade that already banked TP1 and/or TP2 before
+                // the REMAINING runner hit the original stop is a net win or a
+                // smaller loss, not the flat -1R a full-position stop implies.
+                // This model has no breakeven-stop adjustment, so the unclosed
+                // remainder is honestly assumed to take the full stop loss.
+                var r = BlendedRealizedR(entry, riskDistance, remainingOutcomeR: -1m);
+                entry = entry with { Status = "StoppedOut", ClosedAtUtc = now, RealizedR = r };
             }
             else if (Reached(entry.Tp3))
             {
-                var r = riskDistance == 0 ? 0 : Math.Abs(entry.Tp3 - entry.Entry) / riskDistance;
+                // Price physically traversed TP1 and TP2 to reach TP3 even if a
+                // scan gap meant they were never separately recorded - the full
+                // three-way blend is the honest outcome here, not just the R at TP3.
+                var r1 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp1 - entry.Entry) / riskDistance;
+                var r2 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp2 - entry.Entry) / riskDistance;
+                var r3 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp3 - entry.Entry) / riskDistance;
+                var r = EntryStopTargetCalculator.Tp1Weight * r1 + EntryStopTargetCalculator.Tp2Weight * r2 + EntryStopTargetCalculator.Tp3Weight * r3;
                 entry = entry with { Status = "Tp3Hit", ClosedAtUtc = now, RealizedR = r };
             }
             else if (Reached(entry.Tp2) && entry.Status != "Tp2Hit")
@@ -215,9 +230,40 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         }
 
         if (IsOpenStatus(entry.Status) && now > entry.TrackingExpiryUtc)
-            entry = entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = 0m };
+        {
+            // Whatever wasn't closed by a real target hit just times out with
+            // no further information - honestly treated as flat (0R) on that
+            // remaining slice, not assumed to have kept moving favorably.
+            var riskDistance = Math.Abs(entry.Entry - entry.Stop);
+            var r = BlendedRealizedR(entry, riskDistance, remainingOutcomeR: 0m);
+            entry = entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = r };
+        }
 
         return entry;
+    }
+
+    // Blends whatever TP1/TP2 profit has already been banked (per the
+    // position's own real Tp1HitAtUtc/Tp2HitAtUtc record, not just its
+    // current Status) with the outcome applied to whatever weight remains
+    // unclosed - the same weights EntryStopTargetCalculator actually plans
+    // the position around, not an assumption that only the final event matters.
+    internal static decimal BlendedRealizedR(QualificationLogEntry entry, decimal riskDistance, decimal remainingOutcomeR)
+    {
+        decimal Multiple(decimal level) => riskDistance == 0 ? 0 : Math.Abs(level - entry.Entry) / riskDistance;
+
+        var banked = 0m;
+        var remainingWeight = 1m;
+        if (entry.Tp1HitAtUtc is not null)
+        {
+            banked += EntryStopTargetCalculator.Tp1Weight * Multiple(entry.Tp1);
+            remainingWeight -= EntryStopTargetCalculator.Tp1Weight;
+        }
+        if (entry.Tp2HitAtUtc is not null)
+        {
+            banked += EntryStopTargetCalculator.Tp2Weight * Multiple(entry.Tp2);
+            remainingWeight -= EntryStopTargetCalculator.Tp2Weight;
+        }
+        return banked + remainingWeight * remainingOutcomeR;
     }
 
     private static string FormatOutcomeMessage(QualificationLogEntry entry)
