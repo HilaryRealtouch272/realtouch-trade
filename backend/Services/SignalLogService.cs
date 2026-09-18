@@ -287,16 +287,17 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         var realized = entry.RealizedR.HasValue ? $"\n⚖️ Realized: {entry.RealizedR.Value:0.00}R" : "";
 
         // Show whichever level actually drove this outcome - the stop only
-        // for a real stop-out, the specific TP that was hit for a TP event -
-        // rather than always printing the stop regardless of what happened.
-        // Expired has no such level (it timed out, nothing was hit), so it's
-        // omitted rather than falsely implying the stop was reached.
+        // for a real stop-out, the specific TP that was hit for a TP event.
+        // Expired never actually reached either one (it just ran out of
+        // tracking time), so its stop is shown too but explicitly labeled
+        // "not reached" rather than looking like a real stop-out.
         var levelLine = entry.Status switch
         {
             "Tp1Hit" => $"TP1 {TelegramSignalFormatter.FormatPrice(entry.Tp1)} · ",
             "Tp2Hit" => $"TP2 {TelegramSignalFormatter.FormatPrice(entry.Tp2)} · ",
             "Tp3Hit" => $"TP3 {TelegramSignalFormatter.FormatPrice(entry.Tp3)} · ",
             "StoppedOut" => $"Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} · ",
+            "Expired" => $"Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} (not reached) · ",
             _ => ""
         };
 
