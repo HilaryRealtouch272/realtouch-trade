@@ -39,7 +39,13 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
             foreach (var result in results)
             {
                 var key = Key(result.InstrumentSymbol, result.Timeframe);
-                var qualifies = result.Success && result.Signal is not null && result.Signal.Grade is "A+" or "A" or "B";
+                // Triggered = price has genuinely traded into the entry zone
+                // (see EntryPlan.Triggered / SignalLogService.RecordIfNewLocked) -
+                // a real setup that's still waiting for price to arrive isn't
+                // a live trade yet, and alerting "here's your trade" for one
+                // sent a real Telegram message about a position that was
+                // never actually filled.
+                var qualifies = result.Success && result.Signal is not null && result.Signal.Grade is "A+" or "A" or "B" && result.Signal.Triggered;
 
                 if (!qualifies)
                 {

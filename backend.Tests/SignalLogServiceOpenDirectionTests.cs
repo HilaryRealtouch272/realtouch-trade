@@ -36,7 +36,7 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
         public HttpClient CreateClient(string name) => new();
     }
 
-    private static OrchestratorResult QualifyingResult(string symbol, string timeframe, string direction)
+    private static OrchestratorResult QualifyingResult(string symbol, string timeframe, string direction, bool triggered = true)
     {
         var isLong = direction == "Long";
         var signal = new SignalResult(
@@ -45,7 +45,7 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
             Direction: isLong ? SetupDirection.Long : SetupDirection.Short, Condition: MarketCondition.TrendingBullish,
             SetupModel: SetupModelType.TrendContinuationPullback, Status: SignalState.Triggered,
             SetupQualityScore: 76, Grade: "B", DetectedAtUtc: DateTime.UtcNow, ExpiryUtc: DateTime.UtcNow.AddDays(1),
-            LivePrice: 100m, EntryZoneMin: 99m, EntryZoneMax: 101m, PreferredEntry: 100m,
+            LivePrice: 100m, EntryZoneMin: 99m, EntryZoneMax: 101m, PreferredEntry: 100m, Triggered: triggered,
             Stop: isLong ? 90m : 110m, Tp1: isLong ? 110m : 90m, Tp2: isLong ? 120m : 80m, Tp3: isLong ? 140m : 60m,
             RewardToRisk: 2m, RiskPercent: 0.5m, PositionSize: 1m,
             KeyLevels: Array.Empty<KeyLevel>(), ConfluenceFamilies: Array.Empty<ConfluenceFamilyScore>(),
@@ -79,6 +79,23 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
 
         Assert.Single(service.GetAll());
         Assert.Equal("Short", service.GetOpenDirection("GBP/USD", "15m"));
+    }
+
+    [Fact]
+    public async Task AGradeQualifyingResultThatHasNotActuallyTriggeredIsNeverLogged()
+    {
+        // Regression: a real production trade (GBP/USD 15m) was logged as
+        // "Open" from a Grade-B result whose entry zone (1.3368-1.3373) real
+        // price had never actually traded into - EntryPlan.Triggered was
+        // false, but nothing checked it. The very next scan found real price
+        // already past TP1/TP2 (since those sit below the never-reached
+        // entry zone), reporting a "TP2 hit" trade nobody could have filled.
+        var service = NewService();
+
+        await service.RecordAndTrackAsync(new[] { QualifyingResult("GBP/USD", "15m", "Short", triggered: false) });
+
+        Assert.Empty(service.GetAll());
+        Assert.Null(service.GetOpenDirection("GBP/USD", "15m"));
     }
 
     public void Dispose()

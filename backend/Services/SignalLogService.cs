@@ -115,6 +115,17 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         if (!result.Success || result.Signal is null) return;
         var signal = result.Signal;
         if (signal.Grade is not ("A+" or "A" or "B")) return;
+        // A real, meeting-the-bar setup that price hasn't actually traded
+        // into yet is a genuine setup - just not a filled position. Logging
+        // it as "Open" immediately meant the very first price check could
+        // find current price already past TP1/TP2 (since those targets sit
+        // below - or above, for a Long - the entry zone, and price never
+        // needed to enter that zone to already be past them), reporting a
+        // "TP2 hit" trade that was never actually entered. Wait for
+        // EntryPlan.Triggered (price genuinely in the zone + a real
+        // matching-direction structure event) before this becomes a tracked,
+        // P&L-bearing position.
+        if (!signal.Triggered) return;
 
         var key = Key(result.InstrumentSymbol, result.Timeframe);
         if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
