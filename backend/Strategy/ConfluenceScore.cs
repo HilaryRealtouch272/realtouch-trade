@@ -53,7 +53,11 @@ public static class ConfluenceScorer
             >= 90 => "A+",
             >= 85 => "A",
             >= 75 => "B",
-            >= 65 => "Watchlist",
+            // Named "Tracking", not "Watchlist" - the frontend already has a
+            // real, separate personal watchlist (the star icon), and reusing
+            // the same word for this grade tier read as if the two features
+            // were connected when they aren't (real QA finding).
+            >= 65 => "Tracking",
             _ => "No setup"
         };
 

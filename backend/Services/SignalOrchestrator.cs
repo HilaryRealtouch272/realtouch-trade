@@ -172,7 +172,7 @@ public class SignalOrchestrator(
             // reduction has actually been applied). Halving the default risk
             // rather than skipping the trade: the setup can still be genuinely
             // valid HTF-conflicting or not, just sized for the added risk.
-            var effectiveGrade = score.Grade == "No setup" || score.Grade == "Watchlist" ? "B" : score.Grade;
+            var effectiveGrade = score.Grade == "No setup" || score.Grade == "Tracking" ? "B" : score.Grade;
             var requestedRiskPercent = candidate.Model == SetupModelType.LiquiditySweepReversal && htfAlignment == HtfAlignment.Conflicting
                 ? RiskSizing.DefaultRiskPercent(effectiveGrade) / 2
                 : 0m;

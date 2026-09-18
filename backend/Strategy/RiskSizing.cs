@@ -24,7 +24,7 @@ public static class RiskSizing
         "A+" => 1.25m,
         "A" => 1.0m,
         "B" => 0.5m,
-        _ => 0m // Watchlist / No setup - no default risk, spec requires a qualified grade to size at all
+        _ => 0m // Tracking / No setup - no default risk, spec requires a qualified grade to size at all
     };
 
     public static PositionSizeResult Compute(

@@ -11,7 +11,7 @@ public class RiskSizingTests
         Assert.Equal(1.25m, RiskSizing.DefaultRiskPercent("A+"));
         Assert.Equal(1.0m, RiskSizing.DefaultRiskPercent("A"));
         Assert.Equal(0.5m, RiskSizing.DefaultRiskPercent("B"));
-        Assert.Equal(0m, RiskSizing.DefaultRiskPercent("Watchlist"));
+        Assert.Equal(0m, RiskSizing.DefaultRiskPercent("Tracking"));
     }
 
     [Fact]

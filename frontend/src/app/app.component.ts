@@ -159,9 +159,15 @@ function markPolled(key: string) {
 }
 
 // Grades come straight from Strategy/ConfluenceScore.cs's real 100-point
-// model (A+ >=90, A >=85, B >=75, Watchlist >=65, else "No setup") - "qualified"
+// model (A+ >=90, A >=85, B >=75, Tracking >=65, else "No setup") - "qualified"
 // here means the same thing that model means by it, not an arbitrary frontend rule.
 const QUALIFIED_GRADES = new Set(["A+", "A", "B"]);
+// "No setup" and "Tracking" are lifecycle STATUSES, not letter grades - real
+// QA finding: showing them under a field literally labeled "Grade" read as
+// if the app were grading a setup that doesn't have a grade yet. Every
+// letter grade happens to also be a qualified one right now, so this
+// reuses QUALIFIED_GRADES rather than maintaining a second identical set.
+function isLetterGrade(grade) { return QUALIFIED_GRADES.has(grade); }
 
 // PascalCase enum names ("TrendingBullish") -> readable display text and a
 // coarser family used for the Market Condition filter dropdown (whose options
@@ -276,6 +282,16 @@ function applySignalResult(result) {
     setup.score = 0;
     setup.rr = 0;
     setup.triggered = false;
+    // Entry/stop/targets must be zeroed too, not just rr - otherwise the
+    // list correctly shows "0.0R" while the detail panel's scenario math
+    // (scenarioData) computes a real-looking R:R off leftover nonzero
+    // numbers from whatever setup was last found here, disagreeing with
+    // the list for no real reason.
+    setup.entry = 0;
+    setup.stop = 0;
+    setup.tp1 = 0;
+    setup.target = 0;
+    setup.tp3 = 0;
     setup.reasoning = result.reason || "No qualifying setup was found on this scan.";
     setup.levels = [["—", "—", "No qualifying setup on this scan"]];
     setup.confluences = [];
@@ -1136,7 +1152,7 @@ function renderInspection() {
         <div class="signal-stat"><span>Bias</span><strong class="${setup.direction === "Long" ? "positive" : setup.direction === "Short" ? "negative" : ""}">${setup.direction}</strong></div>
         <div class="signal-stat"><span>Timeframe</span><strong>${setup.timeframe}</strong></div>
         <div class="signal-stat"><span>Market Condition</span><strong>${setup.condition}</strong></div>
-        <div class="signal-stat"><span>Grade</span><strong>${setup.grade || "—"}</strong></div>
+        <div class="signal-stat"><span>${isLetterGrade(setup.grade) ? "Grade" : "Status"}</span><strong>${setup.grade || "—"}</strong></div>
         <div class="signal-stat"><span>Confidence</span><strong>${setup.comingSoon ? "—" : `${setup.score}/100`}</strong></div>
         <div class="signal-stat"><span>Projected R:R</span><strong>${setup.comingSoon ? "—" : `${setup.rr.toFixed(1)}R`}</strong></div>
         ${!setup.comingSoon && setup.grade && setup.grade !== "No setup" ? `
@@ -1246,9 +1262,16 @@ function calculateRisk() {
     (effectiveDirection === "Long" && stop >= entry) ||
     (effectiveDirection === "Short" && stop <= entry)
   );
+  // Real QA finding: with no determined bias (setup.direction is "Neutral"),
+  // this whole check was skipped entirely - an equally nonsensical stop
+  // silently produced a confident-looking R:R with no warning at all. If
+  // there's no direction to validate against, say so instead of computing
+  // anything off it.
+  const biasUndetermined = !effectiveDirection;
 
   balanceInput?.classList.toggle("input-invalid", balanceInvalid);
   stopInput?.classList.toggle("input-invalid", directionInvalid);
+  stopInput?.classList.toggle("input-warning", biasUndetermined && !directionInvalid);
 
   const riskAmount = balance * riskPct / 100;
   const distance = Math.abs(entry - stop);
@@ -1259,13 +1282,14 @@ function calculateRisk() {
   if (warning) {
     if (balanceInvalid) warning.textContent = "Account balance must be a positive number.";
     else if (directionInvalid) warning.textContent = `Stop must be ${effectiveDirection === "Long" ? "below" : "above"} entry for this ${effectiveDirection.toLowerCase()} case - the current values don't form a valid trade.`;
+    else if (biasUndetermined) warning.textContent = "This setup has no determined bias, so R:R cannot be directionally validated. Treat any number here as informational only.";
     else warning.textContent = "";
-    warning.hidden = !(balanceInvalid || directionInvalid);
+    warning.hidden = !(balanceInvalid || directionInvalid || biasUndetermined);
   }
 
   if ($("#riskAmount")) $("#riskAmount").textContent = balanceInvalid ? "—" : `£${riskAmount.toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if ($("#positionUnits")) $("#positionUnits").textContent = (!balanceInvalid && units) ? units.toLocaleString("en-GB", { maximumFractionDigits: 4 }) : "—";
-  if ($("#calculatedRR")) $("#calculatedRR").textContent = (!directionInvalid && rr) ? `${rr.toFixed(2)}R` : "—";
+  if ($("#calculatedRR")) $("#calculatedRR").textContent = (!directionInvalid && !biasUndetermined && rr) ? `${rr.toFixed(2)}R` : "—";
   if (riskInput && Number(riskInput.value) > 2) riskInput.value = 2;
 }
 
