@@ -9,20 +9,22 @@ namespace RealtouchSmartTrade.Api.Providers;
 // the same shape and are easy to tell apart only by the qualified banner.
 public static class TelegramSignalFormatter
 {
+    // Decimal places scaled to price magnitude (a $77k BTC print doesn't need
+    // 5 decimals; a sub-1 FX/metal-style price does) - callers don't carry
+    // the instrument's own display-decimals setting, so this is a reasonable
+    // general rule, not a per-instrument lookup. Public so any human-facing
+    // Telegram message formats prices the same way, not just the initial
+    // qualification alert (see SignalLogService.FormatOutcomeMessage).
+    public static string FormatPrice(decimal v)
+    {
+        var abs = Math.Abs(v);
+        var decimals = abs >= 100 ? 2 : abs >= 1 ? 4 : 6;
+        return Math.Round(v, decimals).ToString($"F{decimals}");
+    }
+
     public static string Format(SignalResult s, bool qualified)
     {
-        string Fmt(decimal v)
-        {
-            // Decimal places scaled to price magnitude (a $77k BTC print
-            // doesn't need 5 decimals; a sub-1 FX/metal-style price does) -
-            // SignalResult doesn't carry the instrument's own display-decimals
-            // setting, so this is a reasonable general rule, not a per-
-            // instrument lookup.
-            var abs = Math.Abs(v);
-            var decimals = abs >= 100 ? 2 : abs >= 1 ? 4 : 6;
-            return Math.Round(v, decimals).ToString($"F{decimals}");
-        }
-
+        var Fmt = FormatPrice;
         var directionIcon = s.Direction.ToString() == "Long" ? "🟢" : "🔴";
         var topConfluences = s.ConfluenceFamilies
             .Where(f => f.Points > 0)

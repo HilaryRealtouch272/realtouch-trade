@@ -282,7 +282,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
         return
             $"{icon} *{entry.Symbol}* · {entry.Timeframe} · {directionIcon} {entry.Direction.ToUpperInvariant()} — *{label}*\n" +
-            $"Original setup: Entry {entry.Entry} · Stop {entry.Stop} · Grade {entry.Grade} ({entry.Score}/100){realized}";
+            $"Original setup: Entry {TelegramSignalFormatter.FormatPrice(entry.Entry)} · Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} · Grade {entry.Grade} ({entry.Score}/100){realized}";
     }
 
     // A real, generous holding window scaled to the timeframe's own candle
