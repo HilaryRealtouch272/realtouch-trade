@@ -96,18 +96,41 @@ jobs:
 
       - name: Persist updated cache state to bot-state branch
         run: |
-          mkdir -p state/cache
-          cp -v backend/.cache/*.json state/cache/ 2>/dev/null || true
           cd state
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if ! git diff --cached --quiet; then
+          # This branch got a bare `git push` here before, which fails outright
+          # (no retry) whenever ANYTHING else has moved bot-state since this
+          # run's checkout at the start of the job - a manual data fix pushed
+          # directly to bot-state, or another concurrent run. That real run
+          # (#108) lost its entire scan's state because of exactly this: the
+          # push was rejected and nothing retried. Re-copying backend/.cache's
+          # real output fresh on every attempt (it's untouched by git ops in
+          # here) means a retry never re-sends stale data - it's always this
+          # run's actual latest result, just rebased onto whatever the
+          # remote's current tip turns out to be.
+          for attempt in 1 2 3 4 5; do
+            mkdir -p cache
+            cp -v ../backend/.cache/*.json cache/ 2>/dev/null || true
+            git add -A
+            if git diff --cached --quiet; then
+              echo "No state changes to persist."
+              break
+            fi
             git commit -q -m "Update scan state"
-            git push -q origin bot-state
-          else
-            echo "No state changes to persist."
-          fi
+            if git push -q origin bot-state; then
+              echo "Pushed on attempt $attempt."
+              break
+            fi
+            if [ "$attempt" = "5" ]; then
+              echo "::error::Failed to push bot-state after 5 attempts - this run's scan state was NOT persisted."
+              exit 1
+            fi
+            echo "Push rejected (attempt $attempt) - bot-state moved concurrently. Re-syncing and retrying..."
+            git fetch -q origin bot-state
+            git reset -q --hard origin/bot-state
+            sleep $((attempt * 3))
+          done
 
       - name: Setup Node
         uses: actions/setup-node@v4
