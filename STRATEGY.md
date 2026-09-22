@@ -300,6 +300,121 @@ model uniformly, regardless of which specific sub-items that model's own
 checklist happens to enumerate). This checklist is diagnostic/display data
 (and a real behavioral input to the two changes above), not a live gate.
 
+## Multi-Strategy Scoring Enhancement and Pip Performance Engine (2026-09-22)
+
+Audit requested first: only Trend Continuation Pullback was ever qualifying.
+Root causes found by tracing the actual selection path, not by guessing:
+
+1. `TryModels` was a first-match chain (`Trend ?? Breakout ?? Reversal ??
+   Range`) - a qualifying Trend candidate silently prevented the other
+   three from ever being tried, and a rejected candidate left no record at
+   all (audit items: early-return logic, rejected candidates not stored).
+2. Breakout and Reversal detection both keyed off a single structure event
+   - either the classifier's current-instant Market Condition label (which
+   only reports `BreakoutBullish/Bearish` for ~3 candles after the actual
+   break) or the literal last structure event overall (for Reversal's
+   CHoCH check). A real retest, or a real post-CHoCH entry, that developed
+   even slightly later than that narrow window was silently undetectable -
+   this is the actual "entry-trigger logic that cannot be satisfied by
+   other strategies" the audit asked about.
+3. The shared `ConfluenceScorer` only credited "premium/discount location"
+   (15 pts) and structural HTF-context-match to models whose own
+   requirements could describe them in those exact terms - Range Boundary
+   Rejection topped out around 70/100 against a 75 threshold regardless of
+   setup quality (confirmed: incorrect score normalisation for non-trend
+   models, not inappropriate global rules or volume penalties - the
+   strategy code never reads volume at all, and all 5 timeframes were
+   already being scanned for every instrument).
+
+Fixed:
+
+- **`Strategy/SetupModels.cs`**: `EvaluateBreakoutAndRetest` and
+  `EvaluateLiquiditySweepReversal` now search a 30-candle window (via
+  `Strategy/ModelEvidence.cs`) for the most recent matching event, not the
+  classifier's current-instant label or the literal last event. Two
+  regression tests reproduce the exact failure mode - a real CHoCH/breakout
+  with a later, unrelated structure event is still detected.
+- **`Services/SignalOrchestrator.cs`**: all four models now evaluate
+  independently every scan (`EvaluateOneModel` looped over `AllModels`, no
+  early return), and every evaluation - qualified or not - is recorded via
+  `Services/StrategyDiagnosticsStore.cs`. The highest-scoring qualified
+  model becomes the tracked trade; the rest are diagnostics only, never a
+  second trade for the same symbol+timeframe (this preserves the existing,
+  explicitly-chosen one-open-trade rule rather than tracking every
+  simultaneously-qualifying model as a separate position).
+- **`Strategy/ModelScoring.cs`**: each model scores against its own 100-point
+  weight table (sections 6.1-6.4, weights transcribed exactly) and its own
+  threshold (75/75/78/78). Grade banding is per-model, not fixed: a 76 on a
+  threshold-78 model is `Tracking`, not `B`, per section 11's explicit rule
+  - verified by test. `Strategy/ModelEvidence.cs` computes the graded
+  evidence each table needs (breakout close-body ratio, ATR-scaled sweep
+  quality, range containment ratio) from the same detector outputs already
+  computed once per scan - no duplicate structure/order-block/FVG
+  detection.
+- Fixed a real scoring bug found during the rewrite: `EntryStructureEvent`
+  used the literal last structure event of *any* direction, so a Range
+  short could be credited a bullish CHoCH. Now matched to the candidate's
+  own direction.
+- **`Strategy/RangeTradePlan.cs`**: Range Boundary Rejection gets its own
+  trade plan - target is the range's own equilibrium/opposite boundary
+  (section 6.4), not the pullback planner's order-block/FVG logic, which a
+  bare range boundary usually doesn't have sitting on it.
+- **`Models/InstrumentMetadata.cs` + `Strategy/PipCalculator.cs`** (sections
+  13-14): central pip/point config per symbol (GBP/JPY's pip is the 2nd
+  decimal, 0.01, not the 4th; crypto reports quote-currency points, never
+  "pips"), decimal-safe gross/net movement matching the brief's exact
+  Long/Short formulas and its section-15 partial-exit worked example.
+- **`Strategy/WilsonInterval.cs`** (section 12): 95% Wilson score interval +
+  the exact sample-size bands from the brief. Verified against the brief's
+  own baseline (7 trades, 4 wins, 57.14%): the true win rate could honestly
+  be anywhere from ~25% to ~84%. Wired into the frontend Performance tab
+  with a visible Provisional banner under 30 resolved trades.
+- **`/api/strategy-diagnostics`** (+ `/raw`): per-model detected/qualified/
+  rejected counts, average score, near-miss count (within 5 points of
+  threshold), top rejection reasons - section 9's diagnostics view, as an
+  API for now (see "Not done" below for the dedicated UI).
+
+**A real, important finding, not just a code fix**: the "4 TP3 winners, 3
+stops, 57.14%" baseline cited at the start of this work was checked against
+this session's `Triggered`-gating fix (already shipped earlier the same
+day, see the "Fix mass-expiry..." and "Don't log or alert a trade as live"
+entries above) and against real market data cross-referenced on
+TradingView. Both of the only two trades ever logged (including the one
+this baseline was built from) were entered without price ever actually
+trading into the stated entry zone - the ledger was reset to empty as a
+result. **The 7-trade baseline in the brief does not exist in the current,
+corrected ledger.** Section 12's own instruction - do not optimise around a
+small, unverified sample - applies doubly here.
+
+**Not done in this pass** (explicit, not silently skipped):
+
+- **Per-trade record (section 17)**: `QualificationLogEntry` does not yet
+  carry every field section 17 lists (position size, spread/slippage,
+  MFE/MAE, asset class, holding duration as a stored field). The R-multiple
+  and partial-exit weighting it already computes (`SignalLogService.cs`'s
+  `BlendedRealizedR`, from an earlier session) work correctly and now have
+  a pip/point calculator to sit alongside them, but the two aren't wired
+  together yet - a resolved trade's ledger row does not yet show pips
+  alongside its R-multiple.
+- **Fill integrity / same-candle sequencing (section 16)**: the live engine
+  checks price once per scan against real current price, not once per
+  candle against an OHLC bar's internal path - there is no "target and stop
+  both inside the same candle" ambiguity to resolve in this architecture
+  the way a bar-by-bar backtest would have it, since it isn't replaying
+  historical bars. Spread/slippage/commission are modeled in
+  `PipCalculator` but not yet threaded through the live scan into an actual
+  paper fill.
+- **Historical backtesting / walk-forward / out-of-sample testing (section
+  12)**: no historical OHLC ingestion or backtest runner exists. This is a
+  separate subsystem, not a threshold change, and building it wasn't
+  attempted here - flagged rather than faked.
+- **Dedicated diagnostics UI**: the data exists and is queryable
+  (`/api/strategy-diagnostics`); a dashboard view presenting it (mirroring
+  the Signal Tracker's own Performance tab) wasn't built in this pass.
+- **Instrument-specific spread/slippage defaults**: `PipCalculator` accepts
+  them as parameters; nothing yet supplies real per-instrument default
+  values to it automatically.
+
 ## Not yet implemented
 
 - **Extending Section 7's live wiring to FX/Metals/Energy** - blocked on
