@@ -186,6 +186,7 @@
     <div class="tracker-tabs">
       <button type="button" class="tracker-tab active" id="trackerTabStats">Performance</button>
       <button type="button" class="tracker-tab" id="trackerTabLedger">Ledger</button>
+      <button type="button" class="tracker-tab" id="trackerTabDiagnostics">Diagnostics</button>
     </div>
     <div id="trackerLedgerView" hidden>
       <div class="tracker-toolbar">
@@ -221,6 +222,10 @@
     <div id="trackerStatsView">
       <p class="tracker-disclaimer">Real win rate and average realized R computed from your own resolved trades below - reporting only, the engine's scoring and qualification rules never change based on this. Needs a meaningful number of resolved trades to mean anything; treat small samples as anecdotal, not statistically real.</p>
       <div class="tracker-table-wrap" id="trackerStatsBody"></div>
+    </div>
+    <div id="trackerDiagnosticsView" hidden>
+      <p class="tracker-disclaimer">Every candidate each of the 4 setup models produced this scan, qualified and rejected alike - lets a genuine lack of opportunity be told apart from a scoring or gate fault. Local-dev only; this static deployment has no live backend to ask.</p>
+      <div class="tracker-table-wrap" id="trackerDiagnosticsBody"></div>
     </div>
   </section>
 </div>

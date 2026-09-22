@@ -564,6 +564,52 @@ async function fetchTrackerEntries() {
   return response.json();
 }
 
+// Section 9's diagnostics view - no static-deployment fallback exists (the
+// scheduled scan workflow never writes a diagnostics snapshot file, only
+// signal-log.json), so this is genuinely unavailable outside a live backend.
+async function renderDiagnostics() {
+  const body = $("#trackerDiagnosticsBody");
+  if (!body) return;
+  if (IS_STATIC_DEPLOYMENT) {
+    body.innerHTML = `<p class="tracker-empty">Not available on this static deployment - diagnostics need a live backend.</p>`;
+    return;
+  }
+  body.innerHTML = `<p class="tracker-empty">Loading…</p>`;
+  try {
+    const response = await fetch(`${API_BASE}/api/strategy-diagnostics`);
+    if (!response.ok) throw new Error(`Diagnostics fetch ${response.status}`);
+    const summary = await response.json();
+    if (!summary.models.length) {
+      body.innerHTML = `<p class="tracker-empty">No scans recorded yet.</p>`;
+      return;
+    }
+    body.innerHTML = `
+      <table class="tracker-table">
+        <thead><tr>
+          <th>Model</th><th>Scans</th><th>Detected</th><th>Qualified</th><th>Rejected</th>
+          <th>Avg score</th><th>Near-miss</th><th>Top rejection reasons</th>
+        </tr></thead>
+        <tbody>
+          ${summary.models.map(m => `
+            <tr>
+              <td>${m.strategyId}</td>
+              <td>${m.totalScans}</td>
+              <td>${m.detected}</td>
+              <td class="${m.qualified > 0 ? "positive" : ""}">${m.qualified}</td>
+              <td>${m.rejected}</td>
+              <td>${m.averageScore.toFixed(1)}</td>
+              <td>${m.nearMissCount}</td>
+              <td>${m.topRejectionReasons.length ? m.topRejectionReasons.join(", ") : "—"}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>
+      <p class="tracker-readonly-note">${summary.totalRecords} total per-model evaluations recorded across all scans.</p>`;
+  } catch (err) {
+    console.error("Could not reach strategy diagnostics:", err);
+    body.innerHTML = `<p class="tracker-empty">Could not load diagnostics.</p>`;
+  }
+}
+
 // Client-side state for the currently-open tracker: the last fetched
 // entries (re-filtered locally as the toolbar changes, not re-fetched), and
 // which row ids are checked for a bulk delete.
@@ -1650,17 +1696,17 @@ function initApp() {
   $("#trackerNavItem").addEventListener("click", () => { openSignalTracker(); $(".sidebar").classList.remove("open"); });
   $("#closeTracker").addEventListener("click", closeSignalTracker);
   $("#trackerModal").addEventListener("click", event => { if (event.target === $("#trackerModal")) closeSignalTracker(); });
-  $("#trackerTabLedger").addEventListener("click", () => {
-    $("#trackerTabLedger").classList.add("active");
-    $("#trackerTabStats").classList.remove("active");
-    $("#trackerLedgerView").hidden = false;
-    $("#trackerStatsView").hidden = true;
-  });
-  $("#trackerTabStats").addEventListener("click", () => {
-    $("#trackerTabStats").classList.add("active");
-    $("#trackerTabLedger").classList.remove("active");
-    $("#trackerStatsView").hidden = false;
-    $("#trackerLedgerView").hidden = true;
+  function activateTrackerTab(activeId, activeViewId) {
+    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
+      $(`#${tabId}`).classList.toggle("active", tabId === activeId);
+      $(`#${viewId}`).hidden = viewId !== activeViewId;
+    }
+  }
+  $("#trackerTabLedger").addEventListener("click", () => activateTrackerTab("trackerTabLedger", "trackerLedgerView"));
+  $("#trackerTabStats").addEventListener("click", () => activateTrackerTab("trackerTabStats", "trackerStatsView"));
+  $("#trackerTabDiagnostics").addEventListener("click", () => {
+    activateTrackerTab("trackerTabDiagnostics", "trackerDiagnosticsView");
+    renderDiagnostics();
   });
   $("#trackerStatusFilter").addEventListener("change", renderTrackerRows);
   $("#trackerSearch").addEventListener("input", renderTrackerRows);
