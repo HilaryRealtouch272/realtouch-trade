@@ -133,8 +133,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             // looking at it on. Deliberately one-directional: this never
             // runs the other way (a stale Daily/Weekly close checking a
             // fast trade), since that price could be hours to days old.
-            foreach (var result in resultList.Where(r => r.Timeframe == "15m" && r.Success && r.Signal is not null))
-                changed.AddRange(PropagateFastPriceToOtherTimeframesLocked(result.InstrumentSymbol, result.Signal!.LivePrice, result.Timeframe));
+            foreach (var result in resultList.Where(r => r.Timeframe == "15m" && r.LivePrice.HasValue))
+                changed.AddRange(PropagateFastPriceToOtherTimeframesLocked(result.InstrumentSymbol, result.LivePrice!.Value, result.Timeframe));
 
             foreach (var result in resultList) RecordIfNewLocked(result);
             if (_entries.Count > MaxEntries) _entries.RemoveRange(0, _entries.Count - MaxEntries);
@@ -203,8 +203,11 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
         var entry = _entries[index];
         var statusBefore = entry.Status;
-        var livePrice = result.Success && result.Signal is not null ? result.Signal.LivePrice : (decimal?)null;
-        entry = ApplyPriceAndExpiry(entry, livePrice, DateTime.UtcNow);
+        // The real fetched price for this scan, regardless of whether a NEW
+        // candidate qualified - an open trade's stop/targets must be
+        // checked on every scan it's still tracked, not only on scans where
+        // a fresh setup happens to qualify (see OrchestratorResult.LivePrice).
+        entry = ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
 
         _entries[index] = entry;
         if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);

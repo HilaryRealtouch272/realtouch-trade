@@ -82,6 +82,38 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
     }
 
     [Fact]
+    public async Task AnOpenTradeStillGetsStoppedOutOnAScanWhereNoNewCandidateQualifies()
+    {
+        // Regression: a real production trade (XAU/USD) hit its stop but
+        // the ledger kept showing it as Open. Root cause - once price moves
+        // toward/through an already-open trade's stop, the ORIGINAL
+        // structure that qualified it is usually the first thing to break,
+        // so the orchestrator stops finding a fresh qualifying candidate
+        // that scan and returns Success=false. UpdatePerformanceLocked used
+        // to only read live price off a successful result's Signal, so a
+        // failed scan silently skipped the stop/target check entirely -
+        // the open entry then sat untouched until its (possibly days-away)
+        // tracking expiry. OrchestratorResult.LivePrice now carries the
+        // real fetched price on every scan, success or not.
+        var service = NewService();
+        await service.RecordAndTrackAsync(new[] { QualifyingResult("XAU/USD", "1H", "Short") });
+        Assert.Equal("Short", service.GetOpenDirection("XAU/USD", "1H"));
+
+        // Same symbol+timeframe, but this scan found no qualifying candidate
+        // (Success: false) - only the real current price is attached, which
+        // has traded up through the short's stop (110, per QualifyingResult).
+        var failedScanWithRealPrice = new OrchestratorResult(
+            Success: false, Signal: null, Reason: "No setup model's precondition is met (Market Condition: NeutralOrTransition)",
+            InstrumentSymbol: "XAU/USD", Timeframe: "1H", LivePrice: 111m);
+
+        await service.RecordAndTrackAsync(new[] { failedScanWithRealPrice });
+
+        Assert.Null(service.GetOpenDirection("XAU/USD", "1H"));
+        var entry = service.GetAll().Single(e => e.Symbol == "XAU/USD");
+        Assert.Equal("StoppedOut", entry.Status);
+    }
+
+    [Fact]
     public async Task AGradeQualifyingResultThatHasNotActuallyTriggeredIsNeverLogged()
     {
         // Regression: a real production trade (GBP/USD 15m) was logged as
