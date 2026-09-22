@@ -104,4 +104,55 @@ public class SignalLogServiceOutcomeTests
         Assert.Equal("Expired", result.Status);
         Assert.Equal(0m, result.RealizedR);
     }
+
+    [Fact]
+    public void MaxFavorableAndAdverseExcursionTrackTheRunningBestAndWorstRegardlessOfFinalOutcome()
+    {
+        // Long fixture: risk distance is 10 (100 -> 90). A price check at 115
+        // is +1.5R favorable; a later dip to 95 is -0.5R adverse, even though
+        // the trade is still open and neither is the final result.
+        var entry = NewEntry("Open");
+
+        var afterRun = SignalLogService.ApplyPriceAndExpiry(entry, livePrice: 115m, DateTime.UtcNow);
+        Assert.Equal(1.5m, afterRun.MaxFavorableExcursionR);
+        Assert.Equal(1.5m, afterRun.MaxAdverseExcursionR);
+
+        var afterDip = SignalLogService.ApplyPriceAndExpiry(afterRun, livePrice: 95m, DateTime.UtcNow);
+        Assert.Equal(1.5m, afterDip.MaxFavorableExcursionR);
+        Assert.Equal(-0.5m, afterDip.MaxAdverseExcursionR);
+    }
+
+    [Fact]
+    public void StoppedOutFullLossPopulatesClosureFieldsWithAConfiguredInstrument()
+    {
+        // EUR/USD IS configured in InstrumentMetadataCatalog (pip = 0.0001),
+        // so gross/net movement and monetary P&L should resolve, unlike the
+        // TEST/USD fixture used elsewhere in this file which deliberately
+        // exercises the "unconfigured symbol" honest-gap path.
+        var entry = NewEntry("Open") with { Symbol = "EUR/USD", RiskAmount = 50m, RiskPercent = 0.5m };
+
+        var result = SignalLogService.ApplyPriceAndExpiry(entry, livePrice: 90m, DateTime.UtcNow);
+
+        Assert.Equal("StoppedOut", result.Status);
+        Assert.Equal("Stopped Out", result.FinalOutcome);
+        Assert.Equal(-50m, result.MonetaryPnL);
+        Assert.Equal(-0.5m, result.PercentageReturn);
+        Assert.NotNull(result.GrossMovementUnits);
+        Assert.Equal("pips", result.MovementUnitLabel);
+        Assert.NotNull(result.ClosureReason);
+        Assert.NotNull(result.HoldingDurationHours);
+    }
+
+    [Fact]
+    public void Tp3HitPopulatesTp3HitAtUtcAndTheWinOutcomeCategory()
+    {
+        var entry = NewEntry("Open") with { Symbol = "EUR/USD", RiskAmount = 50m, RiskPercent = 0.5m };
+
+        var result = SignalLogService.ApplyPriceAndExpiry(entry, livePrice: 140m, DateTime.UtcNow);
+
+        Assert.Equal("Tp3Hit", result.Status);
+        Assert.NotNull(result.Tp3HitAtUtc);
+        Assert.Equal("TP3 Win", result.FinalOutcome);
+        Assert.Equal(112.5m, result.MonetaryPnL);
+    }
 }

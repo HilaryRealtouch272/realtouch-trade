@@ -47,7 +47,7 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
             SetupQualityScore: 76, Grade: "B", DetectedAtUtc: DateTime.UtcNow, ExpiryUtc: DateTime.UtcNow.AddDays(1),
             LivePrice: 100m, EntryZoneMin: 99m, EntryZoneMax: 101m, PreferredEntry: 100m, Triggered: triggered,
             Stop: isLong ? 90m : 110m, Tp1: isLong ? 110m : 90m, Tp2: isLong ? 120m : 80m, Tp3: isLong ? 140m : 60m,
-            RewardToRisk: 2m, RiskPercent: 0.5m, PositionSize: 1m,
+            RewardToRisk: 2m, RiskPercent: 0.5m, RiskAmount: 50m, PositionSize: 1m,
             KeyLevels: Array.Empty<KeyLevel>(), ConfluenceFamilies: Array.Empty<ConfluenceFamilyScore>(),
             ReasoningSummary: "test", NewsState: "Unchecked", EconomicCalendarState: "Unavailable",
             VolatilityState: "Unavailable", SessionState: "Unavailable", DataFreshness: "test",

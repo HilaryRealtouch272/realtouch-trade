@@ -4,6 +4,10 @@ using RealtouchSmartTrade.Api.Strategy;
 
 namespace RealtouchSmartTrade.Api.Services;
 
+// Section 17's per-trade record. The original 19 fields stay first, in
+// their original order, so every existing named-argument call site (and
+// every persisted historical row) keeps working unchanged - all new fields
+// are appended at the end with defaults, never inserted into the middle.
 public record QualificationLogEntry(
     string Id, string Symbol, string Timeframe, string Direction, string SetupModel, string Grade, int Score,
     decimal Entry, decimal Stop, decimal Tp1, decimal Tp2, decimal Tp3, decimal RewardToRisk,
@@ -15,7 +19,41 @@ public record QualificationLogEntry(
     // Open -> Tp1Hit -> Tp2Hit -> (Tp3Hit | StoppedOut | Expired). The last
     // three are terminal - RealizedR and ClosedAtUtc are only set then.
     string Status,
-    DateTime? Tp1HitAtUtc, DateTime? Tp2HitAtUtc, DateTime? ClosedAtUtc, decimal? RealizedR
+    DateTime? Tp1HitAtUtc, DateTime? Tp2HitAtUtc, DateTime? ClosedAtUtc, decimal? RealizedR,
+    // --- Section 17 extension: everything below is set once at creation
+    // (StrategyVersion..SlippageUnits), updated on every live price check
+    // (MaxFavorableExcursionR/MaxAdverseExcursionR), or computed once at
+    // closure (everything from Tp3HitAtUtc down) - never recomputed
+    // differently later, same "computed once, stored stable" rule as
+    // TrackingExpiryUtc above.
+    string StrategyVersion = "v1-strategy-engine",
+    string AssetClass = "",
+    string MarketCondition = "",
+    decimal FinalStop = 0m, // no breakeven-stop adjustment exists yet - always equals Stop for now, field kept for when it does
+    decimal RiskPercent = 0m,
+    decimal RiskAmount = 0m,
+    decimal PositionSize = 0m,
+    decimal EntrySpreadUnits = 0m,
+    decimal SlippageUnits = 0m,
+    DateTime? Tp3HitAtUtc = null,
+    DateTime? StopHitAtUtc = null,
+    // Running excursion in R-multiples, updated on every live price check
+    // regardless of whether the trade closes this call - MFE/MAE capture
+    // the BEST and WORST the trade ever did, which the final Status alone
+    // cannot: a trade that ran to +3R before eventually stopping out at
+    // -1R looks identical to one that never moved, if all you store is the
+    // final R.
+    decimal? MaxFavorableExcursionR = null,
+    decimal? MaxAdverseExcursionR = null,
+    decimal? GrossMovementUnits = null,
+    decimal? CostMovementUnits = null,
+    decimal? NetMovementUnits = null,
+    string? MovementUnitLabel = null,
+    decimal? MonetaryPnL = null,
+    decimal? PercentageReturn = null,
+    string? FinalOutcome = null,
+    string? ClosureReason = null,
+    double? HoldingDurationHours = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -131,6 +169,11 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
 
         var qualifiedAt = DateTime.UtcNow;
+        // Real per-instrument metadata when configured; an unconfigured
+        // symbol still gets tracked (never silently drop a real qualifying
+        // trade over missing pip-display config) but with empty asset
+        // class/zeroed cost fields rather than a guessed unit size.
+        InstrumentMetadataCatalog.TryGet(result.InstrumentSymbol, out var meta);
         var entry = new QualificationLogEntry(
             Id: Guid.NewGuid().ToString("N"),
             Symbol: result.InstrumentSymbol, Timeframe: result.Timeframe,
@@ -139,7 +182,10 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             Entry: signal.PreferredEntry, Stop: signal.Stop, Tp1: signal.Tp1, Tp2: signal.Tp2, Tp3: signal.Tp3,
             RewardToRisk: signal.RewardToRisk,
             QualifiedAtUtc: qualifiedAt, TrackingExpiryUtc: qualifiedAt + HoldingWindow(result.Timeframe),
-            Status: "Open", Tp1HitAtUtc: null, Tp2HitAtUtc: null, ClosedAtUtc: null, RealizedR: null);
+            Status: "Open", Tp1HitAtUtc: null, Tp2HitAtUtc: null, ClosedAtUtc: null, RealizedR: null,
+            StrategyVersion: signal.StrategyVersion, AssetClass: meta?.AssetClass ?? "", MarketCondition: signal.Condition.ToString(),
+            FinalStop: signal.Stop, RiskPercent: signal.RiskPercent, RiskAmount: signal.RiskAmount, PositionSize: signal.PositionSize,
+            EntrySpreadUnits: meta?.DefaultSpreadUnits ?? 0m, SlippageUnits: meta?.DefaultSlippageUnits ?? 0m);
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;
@@ -204,6 +250,21 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             var isLong = entry.Direction == "Long";
             var riskDistance = Math.Abs(entry.Entry - entry.Stop);
 
+            // Section 17's MFE/MAE: the running best/worst excursion in
+            // R-multiples, updated on EVERY live price check regardless of
+            // whether the trade closes this call - a trade that ran to +3R
+            // before eventually stopping out at -1R looks identical to one
+            // that never moved, if only the final R is ever stored.
+            if (riskDistance > 0)
+            {
+                var currentR = isLong ? (price - entry.Entry) / riskDistance : (entry.Entry - price) / riskDistance;
+                entry = entry with
+                {
+                    MaxFavorableExcursionR = Math.Max(entry.MaxFavorableExcursionR ?? currentR, currentR),
+                    MaxAdverseExcursionR = Math.Min(entry.MaxAdverseExcursionR ?? currentR, currentR)
+                };
+            }
+
             bool Reached(decimal level) => isLong ? price >= level : price <= level;
             bool StoppedOut() => isLong ? price <= entry.Stop : price >= entry.Stop;
 
@@ -217,7 +278,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
                 // This model has no breakeven-stop adjustment, so the unclosed
                 // remainder is honestly assumed to take the full stop loss.
                 var r = BlendedRealizedR(entry, riskDistance, remainingOutcomeR: -1m);
-                entry = entry with { Status = "StoppedOut", ClosedAtUtc = now, RealizedR = r };
+                entry = Finalize(entry with { Status = "StoppedOut", StopHitAtUtc = now, ClosedAtUtc = now, RealizedR = r }, now,
+                    "Original stop hit" + (entry.Tp2HitAtUtc is not null ? " after TP1+TP2 already banked" : entry.Tp1HitAtUtc is not null ? " after TP1 already banked" : ""));
             }
             else if (Reached(entry.Tp3))
             {
@@ -228,7 +290,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
                 var r2 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp2 - entry.Entry) / riskDistance;
                 var r3 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp3 - entry.Entry) / riskDistance;
                 var r = EntryStopTargetCalculator.Tp1Weight * r1 + EntryStopTargetCalculator.Tp2Weight * r2 + EntryStopTargetCalculator.Tp3Weight * r3;
-                entry = entry with { Status = "Tp3Hit", ClosedAtUtc = now, RealizedR = r };
+                entry = Finalize(entry with { Status = "Tp3Hit", Tp3HitAtUtc = now, ClosedAtUtc = now, RealizedR = r }, now, "Full target (TP3) reached");
             }
             else if (Reached(entry.Tp2) && entry.Status != "Tp2Hit")
             {
@@ -253,10 +315,54 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             // remaining slice, not assumed to have kept moving favorably.
             var riskDistance = Math.Abs(entry.Entry - entry.Stop);
             var r = BlendedRealizedR(entry, riskDistance, remainingOutcomeR: 0m);
-            entry = entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = r };
+            entry = Finalize(entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = r }, now,
+                $"Tracking window expired ({(now - entry.QualifiedAtUtc).TotalHours:0.#}h) with no further target reached");
         }
 
         return entry;
+    }
+
+    // Section 17's closure-time fields, computed once and stored stable -
+    // gross/net movement (derived from the SAME blended RealizedR the trade
+    // already settled on, scaled into the instrument's own pip/point unit
+    // rather than re-deriving a separate blended-pip calculation), monetary
+    // P&L and % return (both exact multiples of RiskAmount/RiskPercent,
+    // since RealizedR is itself defined in units of "the risk that was
+    // taken"), the section-17 outcome category, and holding duration.
+    private static QualificationLogEntry Finalize(QualificationLogEntry entry, DateTime closedAtUtc, string closureReason)
+    {
+        var riskDistance = Math.Abs(entry.Entry - entry.Stop);
+        var realizedR = entry.RealizedR ?? 0m;
+
+        decimal? gross = null, cost = null, net = null;
+        string? unitLabel = null;
+        if (Models.InstrumentMetadataCatalog.TryGet(entry.Symbol, out var meta) && meta is not null)
+        {
+            gross = realizedR * (riskDistance / meta.MovementUnitSize);
+            cost = entry.EntrySpreadUnits + entry.SlippageUnits;
+            net = gross - cost;
+            unitLabel = Strategy.PipCalculator.UnitLabel(meta.MovementUnitName);
+        }
+
+        var monetaryPnl = entry.RiskAmount * realizedR;
+        var percentageReturn = entry.RiskPercent * realizedR;
+
+        // Breakeven check first (a partial win that nets to ~flat), then the
+        // reachable section-17 categories in order of how far the trade got.
+        var outcome = Math.Abs(realizedR) <= 0.05m ? "Breakeven"
+            : entry.Status == "Tp3Hit" ? "TP3 Win"
+            : entry.Tp2HitAtUtc is not null ? "TP2 Partial Win"
+            : entry.Tp1HitAtUtc is not null ? "TP1 Partial Win"
+            : entry.Status == "StoppedOut" ? "Stopped Out"
+            : "Expired Flat";
+
+        return entry with
+        {
+            GrossMovementUnits = gross, CostMovementUnits = cost, NetMovementUnits = net, MovementUnitLabel = unitLabel,
+            MonetaryPnL = monetaryPnl, PercentageReturn = percentageReturn,
+            FinalOutcome = outcome, ClosureReason = closureReason,
+            HoldingDurationHours = (closedAtUtc - entry.QualifiedAtUtc).TotalHours
+        };
     }
 
     // Blends whatever TP1/TP2 profit has already been banked (per the
