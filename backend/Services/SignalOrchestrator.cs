@@ -17,7 +17,13 @@ namespace RealtouchSmartTrade.Api.Services;
 // structure breaks, so "no signal this scan" and "the open trade just got
 // stopped out" are not mutually exclusive. Null only when no usable candle
 // data was fetched at all (nothing to price against).
-public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe, IReadOnlyList<StrategyEvaluation>? AllEvaluations = null, decimal? LivePrice = null);
+// Candles: the same completed candles LivePrice was derived from, kept in
+// full so the ledger can walk each one's real High/Low in order rather
+// than only ever comparing against the latest Close - a scan-interval
+// price check that only looks at "where is price right now" can miss a
+// stop that was crossed and later reversed away from within the same gap
+// between checks. Same null-only-on-no-data rule as LivePrice.
+public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe, IReadOnlyList<StrategyEvaluation>? AllEvaluations = null, decimal? LivePrice = null, IReadOnlyList<Models.NormalizedCandle>? Candles = null);
 
 // Wires the entire Strategy/ engine together into one real, live evaluation:
 // fetch candles -> structure/condition -> zones/sweeps/key levels -> HTF
@@ -134,10 +140,11 @@ public class SignalOrchestrator(
                 return new OrchestratorResult(false, null, "Data unavailable or stale - refusing to generate a signal on incomplete data", instrument.Symbol, timeframeLabel);
 
             // Computed once, right after the data-quality gate, and threaded
-            // into every return below (success or not) - see LivePrice's
-            // doc comment on OrchestratorResult for why this can't wait
-            // until only the success path needs it.
-            var lastPrice = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).Last().Close;
+            // into every return below (success or not) - see LivePrice's and
+            // Candles' doc comments on OrchestratorResult for why this can't
+            // wait until only the success path needs it.
+            var completedCandles = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList();
+            var lastPrice = completedCandles[^1].Close;
 
             var structure = StructureAnalyzer.Analyze(mainCandles, displayTimeframe);
             var condition = MarketConditionClassifier.Classify(mainCandles, displayTimeframe, structure);
@@ -170,7 +177,7 @@ public class SignalOrchestrator(
                 var reason = best is null
                     ? $"No setup model's precondition is met (Market Condition: {condition})"
                     : $"No model qualified this scan - closest was {best.StrategyId} at {best.Score}/{best.Threshold} (Market Condition: {condition})";
-                return new OrchestratorResult(false, null, reason, instrument.Symbol, timeframeLabel, evaluations, lastPrice);
+                return new OrchestratorResult(false, null, reason, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
             var primary = qualified[0];
@@ -182,13 +189,13 @@ public class SignalOrchestrator(
             {
                 return new OrchestratorResult(false, null,
                     $"{primary.StrategyId}: No valid entry/stop/target could be computed (score {primary.Score}/{primary.Threshold}) - no qualifying zone or an irrational stop distance",
-                    instrument.Symbol, timeframeLabel, evaluations, lastPrice);
+                    instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
             if (calendarVeto.State == CalendarVetoState.HardVeto)
             {
                 return new OrchestratorResult(false, null,
-                    $"Hard economic-calendar veto active: {calendarVeto.Reason}", instrument.Symbol, timeframeLabel, evaluations, lastPrice);
+                    $"Hard economic-calendar veto active: {calendarVeto.Reason}", instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
             var newsCatalyst = await GetNewsCatalyst(instrument.Symbol, candidate.Direction);
@@ -214,7 +221,7 @@ public class SignalOrchestrator(
                 lifecycleState, keyLevels, lastPrice, DateTime.UtcNow,
                 calendarVeto, newsCatalyst);
 
-            return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations, lastPrice);
+            return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
         }
         catch (Exception ex)
         {

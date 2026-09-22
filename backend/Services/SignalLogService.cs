@@ -133,8 +133,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             // looking at it on. Deliberately one-directional: this never
             // runs the other way (a stale Daily/Weekly close checking a
             // fast trade), since that price could be hours to days old.
-            foreach (var result in resultList.Where(r => r.Timeframe == "15m" && r.LivePrice.HasValue))
-                changed.AddRange(PropagateFastPriceToOtherTimeframesLocked(result.InstrumentSymbol, result.LivePrice!.Value, result.Timeframe));
+            foreach (var result in resultList.Where(r => r.Timeframe == "15m" && (r.Candles is { Count: > 0 } || r.LivePrice.HasValue)))
+                changed.AddRange(PropagateFastPriceToOtherTimeframesLocked(result.InstrumentSymbol, result.Candles, result.LivePrice, result.Timeframe));
 
             foreach (var result in resultList) RecordIfNewLocked(result);
             if (_entries.Count > MaxEntries) _entries.RemoveRange(0, _entries.Count - MaxEntries);
@@ -203,11 +203,16 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
         var entry = _entries[index];
         var statusBefore = entry.Status;
-        // The real fetched price for this scan, regardless of whether a NEW
+        // The real candle history for this scan, regardless of whether a NEW
         // candidate qualified - an open trade's stop/targets must be
         // checked on every scan it's still tracked, not only on scans where
-        // a fresh setup happens to qualify (see OrchestratorResult.LivePrice).
-        entry = ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
+        // a fresh setup happens to qualify (see OrchestratorResult.LivePrice
+        // and .Candles). Prefer the full candle sequence (catches a stop hit
+        // and later reversal within the same scan gap); fall back to the
+        // single scalar price when no candle list was supplied.
+        entry = result.Candles is { Count: > 0 }
+            ? ApplyCandleSequence(entry, result.Candles, DateTime.UtcNow)
+            : ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
 
         _entries[index] = entry;
         if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
@@ -217,7 +222,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     // Checks a fresh price against every OTHER open entry for the same
     // symbol (any timeframe but the one this price already came from -
     // that one was just handled by UpdatePerformanceLocked above).
-    private List<QualificationLogEntry> PropagateFastPriceToOtherTimeframesLocked(string symbol, decimal livePrice, string sourceTimeframe)
+    private List<QualificationLogEntry> PropagateFastPriceToOtherTimeframesLocked(string symbol, IReadOnlyList<Models.NormalizedCandle>? candles, decimal? livePrice, string sourceTimeframe)
     {
         var changed = new List<QualificationLogEntry>();
         var now = DateTime.UtcNow;
@@ -232,7 +237,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
             var entry = _entries[index];
             var statusBefore = entry.Status;
-            entry = ApplyPriceAndExpiry(entry, livePrice, now);
+            entry = candles is { Count: > 0 } ? ApplyCandleSequence(entry, candles, now) : ApplyPriceAndExpiry(entry, livePrice, now);
 
             _entries[index] = entry;
             if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
@@ -246,6 +251,41 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     // the time-based expiry check, honestly - never invents a status change
     // without either real price movement or real elapsed time behind it.
     internal static QualificationLogEntry ApplyPriceAndExpiry(QualificationLogEntry entry, decimal? livePrice, DateTime now)
+    {
+        entry = ApplyPrice(entry, livePrice, now);
+        return ApplyExpiry(entry, now);
+    }
+
+    // Regression: a real production trade (XAU/USD 1H, short) hit its real
+    // stop, but because only a SINGLE scalar price ever got checked per
+    // scan, the check that finally ran hours later saw price having already
+    // reversed back down through TP2 - and reported "TP2 hit" on a trade
+    // that had genuinely been stopped out first. A scan-interval price
+    // check can only ever see where price IS right now, never the path it
+    // took to get there. This walks every completed candle since the trade
+    // qualified, in chronological order, checking each one's real traded
+    // High/Low - not just the latest candle's Close - so a stop crossed and
+    // later reversed away from is never missed. Within a single candle,
+    // section 16's own conservative rule applies: whichever extreme is
+    // worse for the position (the stop side) is assumed to have traded
+    // first.
+    internal static QualificationLogEntry ApplyCandleSequence(QualificationLogEntry entry, IReadOnlyList<Models.NormalizedCandle> candles, DateTime now)
+    {
+        var isLong = entry.Direction == "Long";
+        var relevant = candles.Where(c => c.IsComplete && c.OpenTimeUtc >= entry.QualifiedAtUtc).OrderBy(c => c.OpenTimeUtc);
+
+        foreach (var candle in relevant)
+        {
+            if (!IsOpenStatus(entry.Status)) break;
+            var (firstPrice, secondPrice) = isLong ? (candle.Low, candle.High) : (candle.High, candle.Low);
+            entry = ApplyPrice(entry, firstPrice, now);
+            if (IsOpenStatus(entry.Status)) entry = ApplyPrice(entry, secondPrice, now);
+        }
+
+        return ApplyExpiry(entry, now);
+    }
+
+    private static QualificationLogEntry ApplyPrice(QualificationLogEntry entry, decimal? livePrice, DateTime now)
     {
         if (livePrice.HasValue)
         {
@@ -311,6 +351,17 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             }
         }
 
+        return entry;
+    }
+
+    // Kept separate from ApplyPrice so ApplyCandleSequence can walk many
+    // candles' price extremes first and check expiry exactly once at the
+    // end, against the real current time - not once per candle, which
+    // would let the FIRST candle checked short-circuit the whole walk via
+    // "now is already past expiry" before later candles' actual stop/target
+    // hits ever got a chance to resolve the trade first.
+    private static QualificationLogEntry ApplyExpiry(QualificationLogEntry entry, DateTime now)
+    {
         if (IsOpenStatus(entry.Status) && now > entry.TrackingExpiryUtc)
         {
             // Whatever wasn't closed by a real target hit just times out with

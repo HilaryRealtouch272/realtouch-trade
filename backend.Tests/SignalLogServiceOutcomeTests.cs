@@ -1,3 +1,4 @@
+using RealtouchSmartTrade.Api.Models;
 using RealtouchSmartTrade.Api.Services;
 using Xunit;
 
@@ -11,6 +12,12 @@ public class SignalLogServiceOutcomeTests
         Grade: "B", Score: 76, Entry: 100m, Stop: 90m, Tp1: 110m, Tp2: 120m, Tp3: 140m, RewardToRisk: 2m,
         QualifiedAtUtc: DateTime.UtcNow.AddHours(-1), TrackingExpiryUtc: DateTime.UtcNow.AddHours(29),
         Status: status, Tp1HitAtUtc: tp1HitAtUtc, Tp2HitAtUtc: tp2HitAtUtc, ClosedAtUtc: null, RealizedR: null);
+
+    private static NormalizedCandle Candle(DateTime openTimeUtc, decimal open, decimal high, decimal low, decimal close) => new(
+        CanonicalSymbol: "TEST/USD", ProviderSymbol: "TEST/USD", Provider: "Test", Timeframe.H1,
+        OpenTimeUtc: openTimeUtc, CloseTimeUtc: openTimeUtc.AddHours(1),
+        Open: open, High: high, Low: low, Close: close, Volume: null, IsComplete: true,
+        ReceivedAtUtc: openTimeUtc.AddHours(1), Quality: DataQuality.Ok);
 
     [Fact]
     public void JumpingStraightPastTp1ToTp2BackfillsTp1HitAtUtcToo()
@@ -141,6 +148,42 @@ public class SignalLogServiceOutcomeTests
         Assert.Equal("pips", result.MovementUnitLabel);
         Assert.NotNull(result.ClosureReason);
         Assert.NotNull(result.HoldingDurationHours);
+    }
+
+    [Fact]
+    public void ACandleThatTouchesStopThenReversesPastAtargetIsStillHonestlyAStopOut()
+    {
+        // Regression: a real production trade (XAU/USD 1H, short) genuinely
+        // hit its stop, but because the old scalar check only ever compared
+        // against the LATEST price, a check that ran after price had
+        // already reversed back past a target reported the target hit and
+        // never saw the stop. Here: one candle whose Low(=85) crosses the
+        // stop(90) and whose High(=125) also crosses TP2(120) - the real
+        // stop touch must win, per section 16's conservative same-candle
+        // rule (worst extreme for the position resolves first).
+        var entry = NewEntry("Open");
+        var candles = new[] { Candle(entry.QualifiedAtUtc.AddMinutes(5), open: 100m, high: 125m, low: 85m, close: 122m) };
+
+        var result = SignalLogService.ApplyCandleSequence(entry, candles, DateTime.UtcNow);
+
+        Assert.Equal("StoppedOut", result.Status);
+        Assert.Equal(-1m, result.RealizedR);
+    }
+
+    [Fact]
+    public void ACandleSequenceFindsARealTp3TouchEvenThoughTheCandleClosedWellBelowIt()
+    {
+        // TP3 (140) is genuinely touched intra-candle (High=141) even though
+        // that same candle closes back down at 122 - a close-only check
+        // would have missed the touch entirely and likely reported nothing,
+        // or a lesser target, hit that scan. Walking High/Low finds it.
+        var entry = NewEntry("Open");
+        var candles = new[] { Candle(entry.QualifiedAtUtc.AddMinutes(5), open: 100m, high: 141m, low: 99m, close: 122m) };
+
+        var result = SignalLogService.ApplyCandleSequence(entry, candles, DateTime.UtcNow);
+
+        Assert.Equal("Tp3Hit", result.Status);
+        Assert.Equal(2.25m, result.RealizedR);
     }
 
     [Fact]
