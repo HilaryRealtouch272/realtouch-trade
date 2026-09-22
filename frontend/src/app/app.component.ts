@@ -58,7 +58,11 @@ const setups = instruments.flatMap(inst => timeframes.map(tf => ({
   live: false, liveSource: null, liveError: null,
   direction: "Neutral", condition: inst.comingSoon ? "Coming soon" : "Not yet scanned",
   conditionFamily: "Unscanned", grade: null,
-  score: 0, rr: 0, price: 0,
+  score: 0, scoreThreshold: 100, rr: 0, price: 0,
+  // Every model's own live score this scan, not just whichever one (if
+  // any) actually qualified - section 9's diagnostics, surfaced in real
+  // time rather than only ever visible after a full qualification.
+  modelScores: [],
   entry: 0, stop: 0, target: 0, tp1: 0, tp3: 0, updated: 0,
   levels: [["—", "—", "Awaiting live data"]],
   confluences: [],
@@ -287,6 +291,19 @@ function isGenuineNoSetupReason(reason) {
   return typeof reason === "string" && GENUINE_NO_SETUP_PREFIXES.some(p => reason.includes(p));
 }
 
+// AllEvaluations carries every one of the 4 setup models' own independent
+// score this scan (section 4.7-4.8: qualified AND rejected candidates are
+// both recorded) - present whenever the engine actually ran the model
+// loop, regardless of whether any of them qualified. Surfacing all four,
+// not just whichever one happened to qualify (or the single closest one),
+// is what makes "how close" real-time rather than only visible after a
+// full qualification.
+function normalizeModelScores(allEvaluations) {
+  return (allEvaluations || [])
+    .map(e => ({ model: e.strategyId, score: e.score, threshold: e.threshold, grade: e.grade, detected: e.detected }))
+    .sort((a, b) => b.score - a.score);
+}
+
 // One entry in the /api/signals/* response array: { success, signal, reason,
 // instrumentSymbol, timeframe }. Matched back onto the local setups array by
 // symbol + timeframe label (both catalogs are built from the same source of
@@ -323,6 +340,8 @@ function applySignalResult(result) {
     setup.levels = buildLevelRows(setup, signal);
     setup.newsState = signal.newsState;
     setup.economicCalendarState = signal.economicCalendarState;
+    setup.scoreThreshold = 100;
+    setup.modelScores = normalizeModelScores(result.allEvaluations);
   } else if (setup.hydrated && !isGenuineNoSetupReason(result.reason)) {
     // A real fetch/compute failure (bad data, an exception) on a setup that
     // previously had a genuine result - keep the last-known values rather
@@ -345,8 +364,18 @@ function applySignalResult(result) {
     setup.direction = "Neutral";
     setup.condition = "No qualifying setup";
     setup.conditionFamily = "Neutral";
-    setup.grade = "No setup";
-    setup.score = 0;
+    setup.modelScores = normalizeModelScores(result.allEvaluations);
+    // Show the real closest model's live score/grade instead of flatlining
+    // to 0/No setup every time - "Tracking" (and lower A/B bands that
+    // still fall short of THIS model's own threshold) are genuine,
+    // backend-computed grade bands, not a qualifying trade. Still not a
+    // live position - condition/direction/entry above stay Neutral/0,
+    // and the qualifying-grade check elsewhere (isLetterGrade) keeps the
+    // Pending/Triggered tag from showing for a mere near-miss score.
+    const closest = setup.modelScores[0];
+    setup.grade = closest ? closest.grade : "No setup";
+    setup.score = closest ? closest.score : 0;
+    setup.scoreThreshold = closest ? closest.threshold : 100;
     setup.rr = 0;
     setup.triggered = false;
     // Entry/stop/targets must be zeroed too, not just rr - otherwise the
@@ -374,7 +403,7 @@ function applySignalResult(result) {
 const SETUP_CACHE_KEY = "rst_setup_cache";
 const CACHED_FIELDS = [
   "hydrated", "live", "liveSource", "liveError", "direction", "condition", "conditionFamily",
-  "grade", "score", "rr", "price", "entry", "stop", "tp1", "target", "tp3",
+  "grade", "score", "scoreThreshold", "modelScores", "rr", "price", "entry", "stop", "tp1", "target", "tp3",
   "confluences", "reasoning", "levels", "newsState", "economicCalendarState", "cachedAtMs"
 ];
 
@@ -1130,7 +1159,7 @@ function renderSetupList() {
         <div class="asset-symbol"><span class="asset-icon" style="--group-color:${groupMeta[s.group].color}">${s.icon}</span><span><strong>${s.symbol}</strong><small title="${s.liveError || ""}" ${s.comingSoon || s.stale ? 'class="coming-soon-text"' : ""}>${sourceLabel(s)}</small></span></div>
         <span class="score-ring" style="--score:${s.score};--score-color:${scoreColor(s.score)}"><b>${s.comingSoon ? "—" : s.score}</b></span>
       </div>
-      <div class="setup-card-middle"><span class="direction ${directionClass(s.direction)}">${s.comingSoon ? "NOT LIVE" : s.direction.toUpperCase()}</span><span class="condition">${s.condition}${s.grade ? ` · ${s.grade}` : ""}</span>${!s.comingSoon && s.grade && s.grade !== "No setup" ? `<span class="entry-status-tag ${s.triggered ? "triggered" : "pending"}">${s.triggered ? "Triggered" : "Pending"}</span>` : ""}<span class="timeframe">${s.timeframe}</span></div>
+      <div class="setup-card-middle"><span class="direction ${directionClass(s.direction)}">${s.comingSoon ? "NOT LIVE" : s.direction.toUpperCase()}</span><span class="condition">${s.condition}${s.grade ? ` · ${s.grade}` : ""}</span>${!s.comingSoon && isLetterGrade(s.grade) ? `<span class="entry-status-tag ${s.triggered ? "triggered" : "pending"}">${s.triggered ? "Triggered" : "Pending"}</span>` : ""}<span class="timeframe">${s.timeframe}</span></div>
       <div class="setup-card-bottom">
         <span class="mini-stat"><span>Entry</span><strong>${s.comingSoon ? "—" : formatPrice(s.entry, s.decimals)}</strong></span>
         <span class="mini-stat"><span>R:R</span><strong>${s.comingSoon ? "—" : `${s.rr.toFixed(1)}R`}</strong></span>
@@ -1342,12 +1371,12 @@ function renderInspection() {
         <div class="signal-stat"><span>Timeframe</span><strong>${setup.timeframe}</strong></div>
         <div class="signal-stat"><span>Market Condition</span><strong>${setup.condition}</strong></div>
         <div class="signal-stat"><span>${isLetterGrade(setup.grade) ? "Grade" : "Status"}</span><strong>${setup.grade || "—"}</strong></div>
-        <div class="signal-stat"><span>Confidence</span><strong>${setup.comingSoon ? "—" : `${setup.score}/100`}</strong></div>
+        <div class="signal-stat"><span>Confidence</span><strong>${setup.comingSoon ? "—" : `${setup.score}/${setup.scoreThreshold}`}</strong></div>
         <div class="signal-stat"><span>Projected R:R</span><strong>${setup.comingSoon ? "—" : `${setup.rr.toFixed(1)}R`}</strong></div>
-        ${!setup.comingSoon && setup.grade && setup.grade !== "No setup" ? `
+        ${!setup.comingSoon && isLetterGrade(setup.grade) ? `
         <div class="signal-stat"><span>Entry Status</span><strong class="${setup.triggered ? "positive" : "pending"}">${setup.triggered ? "Triggered" : "Pending"}</strong></div>` : ""}
       </div>
-      ${!setup.comingSoon && setup.grade && setup.grade !== "No setup" && !setup.triggered ? `<div class="demo-tag pending-tag" style="margin:12px 0 0">PENDING. Price has not traded into the entry zone yet. This is not a live position. Do not treat it as an active trade.</div>` : ""}
+      ${!setup.comingSoon && isLetterGrade(setup.grade) && !setup.triggered ? `<div class="demo-tag pending-tag" style="margin:12px 0 0">PENDING. Price has not traded into the entry zone yet. This is not a live position. Do not treat it as an active trade.</div>` : ""}
     </header>
     <div class="inspection-body">
       <section>
@@ -1389,6 +1418,15 @@ function renderInspection() {
         <section class="detail-card">
           <div class="section-heading"><h3>Key levels</h3><span>${setup.levels.length} mapped</span></div>
           <div class="level-list">${setup.levels.map(l => `<div class="level-row"><span>${l[0]}</span><strong>${l[1]}</strong><small>${l[2]}</small></div>`).join("")}</div>
+        </section>
+        <section class="detail-card">
+          <div class="section-heading"><h3>Model scores</h3><span>All 4 models, this scan</span></div>
+          <div class="level-list">${setup.modelScores.length ? setup.modelScores.map(m => `
+            <div class="level-row">
+              <span>${formatEnumName(m.model)}</span>
+              <strong class="${m.score >= m.threshold ? "positive" : ""}">${m.score}/${m.threshold}</strong>
+              <small>${m.grade}${!m.detected ? " · precondition not met" : ""}</small>
+            </div>`).join("") : `<p class="markup-tip">${setup.hydrated ? "No per-model scores returned for this scan." : "Awaiting the backend's first scan."}</p>`}</div>
         </section>
         <section class="detail-card">
           <div class="section-heading"><h3>Confluence stack</h3><span>${setup.confluences.length} / 8 families scored</span></div>
