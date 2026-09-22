@@ -53,6 +53,10 @@ public static class SetupCatalog
         // relabeled clones of each other.
         new InstrumentDefinition("btc-f", "BTC/USDT", "Bitcoin Perpetual", "Crypto Futures", "₿", 0, DataSource.Coinbase, "BTC-USD", "", new[] { "USD" }),
         new InstrumentDefinition("eth-f", "ETH/USDT", "Ether Perpetual", "Crypto Futures", "Ξ", 0, DataSource.Coinbase, "ETH-USD", "", new[] { "USD" }),
+        // Confirmed live and trading-enabled on Coinbase Exchange
+        // (GET /products/CAKE-USD -> status "online") before adding -
+        // priced around $2.55 with a ~0.003 real spread at verification time.
+        new InstrumentDefinition("cake-f", "CAKE/USDT", "PancakeSwap Perpetual", "Crypto Futures", "CAKE", 3, DataSource.Coinbase, "CAKE-USD", "", new[] { "USD" }),
         new InstrumentDefinition("eurusd", "EUR/USD", "Euro / US Dollar", "FX", "€", 4, DataSource.TwelveData, "EUR/USD", "", new[] { "EUR", "USD" }),
         new InstrumentDefinition("gbpusd", "GBP/USD", "British Pound / US Dollar", "FX", "£", 4, DataSource.TwelveData, "GBP/USD", "", new[] { "GBP", "USD" }),
         new InstrumentDefinition("gbpjpy", "GBP/JPY", "British Pound / Yen", "FX", "¥", 2, DataSource.TwelveData, "GBP/JPY", "", new[] { "GBP", "JPY" }),

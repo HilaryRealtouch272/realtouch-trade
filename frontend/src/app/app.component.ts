@@ -20,6 +20,9 @@ const instruments = [
   // USDT ones: a genuine duplicate, not a second real instrument.
   { baseId: "btc-f", symbol: "BTC/USDT", name: "Bitcoin Perpetual", group: "Crypto Futures", icon: "₿", decimals: 0, tv: "BINANCE:BTCUSDT.P" },
   { baseId: "eth-f", symbol: "ETH/USDT", name: "Ether Perpetual", group: "Crypto Futures", icon: "Ξ", decimals: 0, tv: "BINANCE:ETHUSDT.P" },
+  // Confirmed live and trading-enabled on Coinbase Exchange (CAKE-USD,
+  // status "online") before adding.
+  { baseId: "cake-f", symbol: "CAKE/USDT", name: "PancakeSwap Perpetual", group: "Crypto Futures", icon: "CAKE", decimals: 3, tv: "BINANCE:CAKEUSDT.P" },
   { baseId: "eurusd", symbol: "EUR/USD", name: "Euro / US Dollar", group: "FX", icon: "€", decimals: 4, tv: "OANDA:EURUSD" },
   { baseId: "gbpusd", symbol: "GBP/USD", name: "British Pound / US Dollar", group: "FX", icon: "£", decimals: 4, tv: "OANDA:GBPUSD" },
   { baseId: "gbpjpy", symbol: "GBP/JPY", name: "British Pound / Yen", group: "FX", icon: "¥", decimals: 2, tv: "OANDA:GBPJPY" },

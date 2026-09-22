@@ -51,6 +51,10 @@ public static class InstrumentMetadataCatalog
         // Spread/slippage in real dollar terms for a major-pair perpetual.
         new InstrumentMetadata("BTC/USDT", "crypto", 0, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 5m, DefaultSlippageUnits: 3m),
         new InstrumentMetadata("ETH/USDT", "crypto", 0, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.5m, DefaultSlippageUnits: 0.3m),
+        // Priced around $2.55 at verification time (much lower price and
+        // liquidity than BTC/ETH) - smaller quote-currency spread/slippage
+        // to match, sized off Coinbase's real ~0.003 bid/ask at the time.
+        new InstrumentMetadata("CAKE/USDT", "crypto", 3, 0.001m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.01m, DefaultSlippageUnits: 0.01m),
     };
 
     public static InstrumentMetadata For(string symbol) =>
