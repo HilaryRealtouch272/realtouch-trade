@@ -386,34 +386,59 @@ result. **The 7-trade baseline in the brief does not exist in the current,
 corrected ledger.** Section 12's own instruction - do not optimise around a
 small, unverified sample - applies doubly here.
 
-**Not done in this pass** (explicit, not silently skipped):
+**Completed in the follow-up pass (same day)**, closing out everything
+listed as "Not done" above at the time:
 
-- **Per-trade record (section 17)**: `QualificationLogEntry` does not yet
-  carry every field section 17 lists (position size, spread/slippage,
-  MFE/MAE, asset class, holding duration as a stored field). The R-multiple
-  and partial-exit weighting it already computes (`SignalLogService.cs`'s
-  `BlendedRealizedR`, from an earlier session) work correctly and now have
-  a pip/point calculator to sit alongside them, but the two aren't wired
-  together yet - a resolved trade's ledger row does not yet show pips
-  alongside its R-multiple.
-- **Fill integrity / same-candle sequencing (section 16)**: the live engine
+- **Per-trade record (section 17)**: `QualificationLogEntry` now carries
+  the full field set - `StrategyVersion`, `AssetClass`, `MarketCondition`,
+  `RiskPercent`/`RiskAmount`/`PositionSize`, `EntrySpreadUnits`/
+  `SlippageUnits` (seeded automatically from `InstrumentMetadataCatalog` at
+  creation, closing the "instrument-specific spread/slippage defaults" gap
+  too), running `MaxFavorableExcursionR`/`MaxAdverseExcursionR` updated on
+  every live price check (not just at closure), and a full closure-time
+  set - `Tp3HitAtUtc`/`StopHitAtUtc`, gross/cost/net movement in the
+  instrument's own pip/point unit (via `PipCalculator`, reusing the
+  already-correct blended `RealizedR` rather than re-deriving a second pip
+  calculation), `MonetaryPnL`, `PercentageReturn`, a `FinalOutcome`
+  category (TP3 Win / TP2 or TP1 Partial Win / Stopped Out / Expired Flat /
+  Breakeven), `ClosureReason`, and `HoldingDurationHours`. All new fields
+  are appended with defaults - no existing call site or persisted row
+  breaks. The frontend ledger now shows net pips/points alongside the
+  R-multiple on every resolved row. This also means spread/slippage cost
+  is now genuinely subtracted from a trade's net movement at closure,
+  partially addressing section 16's fill-integrity intent (see the
+  remaining gap below).
+- **Dedicated diagnostics UI**: a third "Diagnostics" tab on the Signal
+  Tracker now renders `/api/strategy-diagnostics` - per-model scan/
+  detected/qualified/rejected counts, average score, near-miss count, and
+  top rejection reasons. Verified against a live local backend before
+  committing (curled the endpoint and cross-checked the response shape
+  against the render code). Local-backend only, like the endpoint itself;
+  the static deployment shows an honest "not available" message rather
+  than pretending to have data it doesn't.
+- **Walk-forward / period reporting (section 12)**: the tracker's
+  Performance tab now includes a chronological (not count-sorted) breakdown
+  by ISO calendar week, computed from real accumulated paper-trading
+  results. Explicitly labeled in the UI as **not** a historical bar-replay
+  backtest - no historical OHLC ingestion pipeline exists to run one
+  against, so nothing is simulated against past candles; every row already
+  happened as a real live paper trade when it was logged. True
+  out-of-sample backtesting (section 28) remains unbuilt - see below.
+
+**Still not done** (explicit, not silently skipped):
+
+- **Same-candle target/stop sequencing (section 16)**: the live engine
   checks price once per scan against real current price, not once per
   candle against an OHLC bar's internal path - there is no "target and stop
   both inside the same candle" ambiguity to resolve in this architecture
   the way a bar-by-bar backtest would have it, since it isn't replaying
-  historical bars. Spread/slippage/commission are modeled in
-  `PipCalculator` but not yet threaded through the live scan into an actual
-  paper fill.
-- **Historical backtesting / walk-forward / out-of-sample testing (section
-  12)**: no historical OHLC ingestion or backtest runner exists. This is a
-  separate subsystem, not a threshold change, and building it wasn't
-  attempted here - flagged rather than faked.
-- **Dedicated diagnostics UI**: the data exists and is queryable
-  (`/api/strategy-diagnostics`); a dashboard view presenting it (mirroring
-  the Signal Tracker's own Performance tab) wasn't built in this pass.
-- **Instrument-specific spread/slippage defaults**: `PipCalculator` accepts
-  them as parameters; nothing yet supplies real per-instrument default
-  values to it automatically.
+  historical bars. Spread/slippage cost is now subtracted at closure (see
+  above), but nothing yet models an actual same-candle fill-order decision.
+- **Historical backtesting / true out-of-sample testing (sections 12, 28)**:
+  no historical OHLC ingestion or bar-replay backtest runner exists. The
+  period-by-period breakdown above is walk-forward reporting on real
+  trades, not a substitute for this - a genuinely separate subsystem that
+  wasn't attempted here, flagged rather than faked.
 
 ## Not yet implemented
 
