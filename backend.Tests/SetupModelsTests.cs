@@ -49,13 +49,22 @@ public class SetupModelsTests
     }
 
     [Fact]
-    public void BreakoutAndRetestReturnsNullWhenConditionIsNotBreakout()
+    public void BreakoutAndRetestNeverReturnsNullRegardlessOfTheCurrentConditionSnapshot()
     {
+        // Fixed real audit finding: detection previously required the
+        // CURRENT single-scan Market Condition to still equal Breakout, but
+        // that label only lasts ~3 candles after a real break - by the time
+        // a retest develops the condition has already relabeled as
+        // Trending/Ranging, and detection was silently lost. This no longer
+        // takes a condition parameter at all - it searches structure
+        // history directly and always returns a candidate (Met or NotMet),
+        // never null, matching every other model's "never silently return
+        // nothing" contract.
         var ctx = BuildUptrendContext();
 
-        var result = SetupModels.EvaluateBreakoutAndRetest(ctx.candles, Timeframe.Daily, MarketCondition.Ranging, ctx.structure, ctx.obs, ctx.fvgs);
+        var result = SetupModels.EvaluateBreakoutAndRetest(ctx.candles, Timeframe.Daily, ctx.structure, ctx.obs, ctx.fvgs);
 
-        Assert.Null(result);
+        Assert.NotNull(result);
     }
 
     [Fact]
@@ -269,5 +278,56 @@ public class SetupModelsTests
 
         Assert.NotNull(result);
         Assert.Contains(result!.Requirements, r => r.Description == "Logical target at equilibrium or opposite boundary" && r.Status == RequirementStatus.NotEvaluated);
+    }
+
+    [Fact]
+    public void LiquiditySweepReversalStillDetectsTheChochAfterLaterUnrelatedEvents()
+    {
+        // The actual audit-root-cause bug: detection previously required the
+        // CHoCH to be the literal LAST structure event overall - a real,
+        // still-tradeable reversal lost the gate the moment ANY later event
+        // (even a boring continuation BOS) occurred after it. This is why
+        // only Trend Continuation was ever qualifying: Reversal's own
+        // detection window was effectively one event wide. Extending the
+        // reversal leg here so a real BOS forms AFTER the CHoCH reproduces
+        // exactly that failure mode - the fix must still detect it.
+        var down = CandleFixtures.DowntrendBars(40, start: 200m);
+        var up = CandleFixtures.UptrendBars(30, start: down[^1].close, step: 2.5m);
+        var candles = CandleFixtures.FromOhlc(down.Concat(up), Timeframe.Daily);
+        var structure = StructureAnalyzer.Analyze(candles, Timeframe.Daily);
+        var sweeps = LiquiditySweepDetector.Detect(candles, Timeframe.Daily, structure);
+
+        var chochIndex = structure.Events.ToList().FindIndex(e => e.Type is StructureEventType.BullishChoch or StructureEventType.BearishChoch);
+        Assert.True(chochIndex >= 0, "fixture sanity: a CHoCH must exist");
+        Assert.NotEqual(chochIndex, structure.Events.Count - 1); // sanity: the CHoCH is genuinely NOT the last event anymore
+
+        var result = SetupModels.EvaluateLiquiditySweepReversal(
+            candles, Timeframe.Daily, MarketCondition.NeutralOrTransition, structure, Array.Empty<OrderBlock>(), Array.Empty<FairValueGap>(), sweeps);
+
+        Assert.NotNull(result);
+        Assert.Contains(result!.Requirements, r => r.Description == "CHoCH confirmed in the new direction" && r.Status == RequirementStatus.Met);
+    }
+
+    [Fact]
+    public void BreakoutAndRetestStillDetectsTheBreakAfterManyLaterCandles()
+    {
+        // Same class of fix as the reversal test above: EvaluateBreakoutAndRetest
+        // no longer requires the current single-scan Market Condition to
+        // still equal Breakout (that label only lasts ~3 candles after the
+        // real break), so a retest that genuinely develops much later must
+        // still be detected from structure history alone.
+        var down = CandleFixtures.DowntrendBars(40, start: 200m);
+        var up = CandleFixtures.UptrendBars(25, start: down[^1].close, step: 2.5m);
+        var candles = CandleFixtures.FromOhlc(down.Concat(up), Timeframe.Daily);
+        var structure = StructureAnalyzer.Analyze(candles, Timeframe.Daily);
+        var obs = OrderBlockDetector.Detect(candles, Timeframe.Daily, structure);
+        var fvgs = FvgDetector.Detect(candles, Timeframe.Daily);
+
+        Assert.Contains(structure.Events, e => e.Type is StructureEventType.BullishBos); // sanity: a real bullish break exists
+
+        var result = SetupModels.EvaluateBreakoutAndRetest(candles, Timeframe.Daily, structure, obs, fvgs);
+
+        Assert.NotNull(result);
+        Assert.NotEqual(RequirementStatus.NotMet, result!.Requirements[0].Status); // "confirmed breakout Market Condition" no longer fails outright
     }
 }

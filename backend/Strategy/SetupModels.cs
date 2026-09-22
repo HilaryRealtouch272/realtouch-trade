@@ -90,10 +90,15 @@ public static class SetupModels
             "Liquidity sweep or clear rejection into the zone",
             sweeps.Any(s => MatchesDirection(s.Direction, direction)) ? RequirementStatus.Met : RequirementStatus.NotMet);
 
-        var lastEvent = structure.Events.LastOrDefault();
+        // Fixed: previously required the SINGLE last structure event (of
+        // ANY direction) to match - a real, still-tradeable pullback lost
+        // this gate the moment any later opposite-direction noise event
+        // occurred after the real confirming one. Search recent events for
+        // the most recent MATCHING-direction one instead.
+        var matchingEvent = structure.Events.LastOrDefault(e => MatchesEventDirection(e.Type, direction));
         var structureReq = new RequirementCheck(
             "Lower-timeframe CHoCH/BOS confirming the pullback direction",
-            lastEvent is not null && MatchesEventDirection(lastEvent.Type, direction) ? RequirementStatus.Met : RequirementStatus.NotMet);
+            matchingEvent is not null ? RequirementStatus.Met : RequirementStatus.NotMet);
 
         var requirements = new List<RequirementCheck>
         {
@@ -110,35 +115,56 @@ public static class SetupModels
         return new SetupCandidate(SetupModelType.TrendContinuationPullback, direction, timeframe, requirements);
     }
 
+    // Fixed real audit finding: previously required the CURRENT single-scan
+    // Market Condition to still equal BreakoutBullish/Bearish - but the
+    // classifier only reports Breakout for the ~3 candles immediately after
+    // the break, and a real retest usually develops well after that window
+    // closes, by which point the condition has already relabeled as
+    // Trending/Ranging. Detection now searches recent structure history
+    // directly (via ModelEvidenceBuilder) instead of depending on the
+    // classifier's current-instant label - condition is still used for
+    // ROUTING (which models to try first) at the orchestrator level, not as
+    // a hard gate here.
     public static SetupCandidate? EvaluateBreakoutAndRetest(
-        IReadOnlyList<NormalizedCandle> candles, Timeframe timeframe, MarketCondition condition, StructureResult structure,
+        IReadOnlyList<NormalizedCandle> candles, Timeframe timeframe, StructureResult structure,
         IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<FairValueGap> fvgs, decimal? rewardToRisk = null,
-        CalendarVetoState? calendarVeto = null)
+        CalendarVetoState? calendarVeto = null, SetupDirection? preferredDirection = null)
     {
-        if (condition != MarketCondition.BreakoutBullish && condition != MarketCondition.BreakoutBearish) return null;
-        var direction = condition == MarketCondition.BreakoutBullish ? SetupDirection.Long : SetupDirection.Short;
-        var completed = CompletedOnly(candles);
-        var lastClose = completed[^1].Close;
-        var atr = Indicators.Atr(completed, 14)[^1];
+        // Try the preferred direction first (from the current condition, when
+        // it still says Breakout), else whichever direction has the more
+        // recent confirmed break.
+        var candidateDirections = preferredDirection is not null
+            ? new[] { preferredDirection.Value }
+            : new[] { SetupDirection.Long, SetupDirection.Short };
 
-        var breakEvent = structure.Events.LastOrDefault(e => MatchesEventDirection(e.Type, direction));
-        if (breakEvent is null)
+        BreakoutEvidence? bestEvidence = null;
+        SetupDirection bestDirection = SetupDirection.Long;
+        foreach (var dir in candidateDirections)
         {
-            return new SetupCandidate(SetupModelType.BreakoutAndRetest, direction, timeframe, new[]
+            var evidence = ModelEvidenceBuilder.BuildBreakout(candles, timeframe, structure, orderBlocks, fvgs, dir);
+            if (!evidence.BreakoutEventFound) continue;
+            if (bestEvidence is null || evidence.BreakoutCandleTimeUtc > bestEvidence.BreakoutCandleTimeUtc)
+            {
+                bestEvidence = evidence;
+                bestDirection = dir;
+            }
+        }
+
+        if (bestEvidence is null)
+        {
+            return new SetupCandidate(SetupModelType.BreakoutAndRetest, SetupDirection.Long, timeframe, new[]
             {
                 new RequirementCheck("A confirmed breakout BOS exists on this timeframe", RequirementStatus.NotMet)
             });
         }
 
-        var brokenLevel = breakEvent.BrokenPivot.Price;
-        var retestTolerance = atr is null ? decimal.MaxValue : atr.Value * 0.5m;
-        var nearRetest = Math.Abs(lastClose - brokenLevel) <= retestTolerance;
+        var direction = bestDirection;
+        var e = bestEvidence;
 
         var retestZoneReq = new RequirementCheck(
-            "Retest of the broken level, FVG, or breakout order block",
-            nearRetest || NearAnyZone(lastClose, orderBlocks, fvgs, direction, retestTolerance) ? RequirementStatus.Met : RequirementStatus.NotMet);
+            "Retest of the broken level, FVG, or breakout order block", e.RetestReached ? RequirementStatus.Met : RequirementStatus.NotMet);
 
-        var notChasing = atr is not null && Math.Abs(lastClose - brokenLevel) <= atr.Value * 3m;
+        var notChasing = e.BreakoutAtrMultiple <= 3m;
         var chaseReq = new RequirementCheck(
             "Entry does not chase an already-extended breakout (within 3x ATR of the break level)",
             notChasing ? RequirementStatus.Met : RequirementStatus.NotMet);
@@ -155,41 +181,43 @@ public static class SetupModels
         return new SetupCandidate(SetupModelType.BreakoutAndRetest, direction, timeframe, requirements);
     }
 
+    // Fixed real audit finding: previously required the CHoCH to be the
+    // literal LAST structure event overall - a real, still-tradeable
+    // reversal lost this gate the moment any later event (even a boring
+    // continuation BOS) occurred after it. Detection now searches recent
+    // history (via ModelEvidenceBuilder) for the most recent matching CHoCH,
+    // independent of what happened afterward, same fix as Breakout above.
     public static SetupCandidate? EvaluateLiquiditySweepReversal(
         IReadOnlyList<NormalizedCandle> candles, Timeframe timeframe, MarketCondition condition, StructureResult structure,
         IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<FairValueGap> fvgs, IReadOnlyList<LiquiditySweep> sweeps,
-        HtfAlignment? htfAlignment = null, CalendarVetoState? calendarVeto = null)
+        HtfAlignment? htfAlignment = null, CalendarVetoState? calendarVeto = null, IReadOnlyList<KeyLevel>? keyLevels = null)
     {
-        var lastEvent = structure.Events.LastOrDefault();
-        var isChoch = lastEvent is not null && lastEvent.Type is StructureEventType.BullishChoch or StructureEventType.BearishChoch;
-        if (!isChoch) return null;
+        ReversalEvidence? bestEvidence = null;
+        SetupDirection bestDirection = SetupDirection.Long;
+        foreach (var dir in new[] { SetupDirection.Long, SetupDirection.Short })
+        {
+            var evidence = ModelEvidenceBuilder.BuildReversal(candles, structure, sweeps, orderBlocks, fvgs, keyLevels ?? Array.Empty<KeyLevel>(), dir);
+            if (!evidence.ChochFound) continue;
+            if (bestEvidence is null || evidence.ChochCandleTimeUtc > bestEvidence.ChochCandleTimeUtc)
+            {
+                bestEvidence = evidence;
+                bestDirection = dir;
+            }
+        }
+        if (bestEvidence is null) return null;
 
-        var direction = lastEvent!.Type == StructureEventType.BullishChoch ? SetupDirection.Long : SetupDirection.Short;
+        var direction = bestDirection;
+        var e = bestEvidence;
 
-        var sweepReq = new RequirementCheck(
-            "External liquidity sweep preceding the CHoCH",
-            sweeps.Any(s => MatchesDirection(s.Direction, direction) && s.SweepCandleTimeUtc <= lastEvent.CandleTimeUtc)
-                ? RequirementStatus.Met : RequirementStatus.NotMet);
-
+        var sweepReq = new RequirementCheck("External liquidity sweep preceding the CHoCH", e.SweepConfirmed ? RequirementStatus.Met : RequirementStatus.NotMet);
         var chochReq = new RequirementCheck("CHoCH confirmed in the new direction", RequirementStatus.Met);
-
-        var completed = CompletedOnly(candles);
-        var lastClose = completed[^1].Close;
         var evidenceReq = new RequirementCheck(
             "Displacement created a valid FVG or order block in the new direction",
             fvgs.Any(f => MatchesFvgDirection(f.Direction, direction) && f.Status != MitigationStatus.Invalidated) ||
             orderBlocks.Any(o => MatchesOrderBlockDirection(o.Direction, direction) && OrderBlockDetector.IsValid(o))
                 ? RequirementStatus.Met : RequirementStatus.NotMet);
-
-        // Entry should wait for price to actually come back to the zone the
-        // reversal displacement left behind, not chase the CHoCH candle
-        // itself - same "near the evidence zone" reasoning BreakoutAndRetest
-        // uses for its own retest check, reusing the same ATR-scaled tolerance.
-        var atr = Indicators.Atr(completed, 14)[^1];
-        var retestTolerance = atr is null ? decimal.MaxValue : atr.Value * 0.5m;
         var controlledRetestReq = new RequirementCheck(
-            "Entry on the controlled retest",
-            NearAnyZone(lastClose, orderBlocks, fvgs, direction, retestTolerance) ? RequirementStatus.Met : RequirementStatus.NotMet);
+            "Entry on the controlled retest", e.ControlledRetestReached ? RequirementStatus.Met : RequirementStatus.NotMet);
 
         // A reversal AGAINST the broader Weekly trend is real, elevated risk -
         // this only reports whether that's been accounted for (real risk

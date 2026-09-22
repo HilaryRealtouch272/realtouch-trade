@@ -5,7 +5,10 @@ using RealtouchSmartTrade.Api.Strategy;
 
 namespace RealtouchSmartTrade.Api.Services;
 
-public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe);
+// AllEvaluations: every model's independent StrategyEvaluation for this scan
+// (section 4.7-4.8: qualified AND rejected candidates are both stored) -
+// optional/last so existing positional and named call sites are unaffected.
+public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe, IReadOnlyList<StrategyEvaluation>? AllEvaluations = null);
 
 // Wires the entire Strategy/ engine together into one real, live evaluation:
 // fetch candles -> structure/condition -> zones/sweeps/key levels -> HTF
@@ -19,6 +22,7 @@ public class SignalOrchestrator(
     IEnumerable<IMarketDataProvider> providers,
     IEconomicCalendarProvider calendarProvider,
     INewsProvider newsProvider,
+    StrategyDiagnosticsStore diagnosticsStore,
     IHostEnvironment env,
     ILogger<SignalOrchestrator> logger)
 {
@@ -94,6 +98,21 @@ public class SignalOrchestrator(
         _ => throw new ArgumentOutOfRangeException(nameof(source))
     };
 
+    private static readonly SetupModelType[] AllModels =
+    {
+        SetupModelType.TrendContinuationPullback, SetupModelType.BreakoutAndRetest,
+        SetupModelType.LiquiditySweepReversal, SetupModelType.RangeBoundaryRejection
+    };
+
+    // Section 4: every model runs independently on every scan - no
+    // first-match short-circuit. The old code was `Trend ?? Breakout ??
+    // Reversal ?? Range`, so ANY qualifying Trend candidate silently
+    // prevented the other three from ever being tried, and a rejected
+    // candidate left no record at all. Now all four always run, all four
+    // are recorded (qualified or not - see diagnosticsStore.Record below),
+    // and the highest-scoring QUALIFIED one becomes the tracked trade; the
+    // others are secondary classifications only (section 4.9/4.10 - one
+    // tracked position per symbol+timeframe, never a duplicate).
     public async Task<OrchestratorResult> Evaluate(InstrumentDefinition instrument, Timeframe displayTimeframe)
     {
         var timeframeLabel = TimeframeIntervals.Label(displayTimeframe);
@@ -113,88 +132,217 @@ public class SignalOrchestrator(
             var sweeps = LiquiditySweepDetector.Detect(mainCandles, displayTimeframe, structure);
             var keyLevels = KeyLevelCatalog.Build(mainCandles, displayTimeframe);
 
-            // Pass 1: find which model applies at all, without HTF/R:R (direction isn't known yet).
-            var candidate = TryModels(mainCandles, displayTimeframe, condition, structure, obs, fvgs, willis, sweeps, null, null);
-            if (candidate is null)
-                return new OrchestratorResult(false, null, $"No setup model's precondition is met (Market Condition: {condition})", instrument.Symbol, timeframeLabel);
-
-            // Section 7: fetch real context timeframes now that we know the direction to check alignment against.
-            var contextConditions = await BuildContextConditions(provider, instrument, providerSymbol, displayTimeframe, condition);
-            var htfAlignment = TimeframeHierarchy.Evaluate(candidate.Direction, contextConditions);
-
-            var tradePlan = EntryStopTargetCalculator.Compute(mainCandles, displayTimeframe, candidate.Direction, structure, obs, fvgs, willis, sweeps, keyLevels);
-
-            // Sections 21-22: real calendar veto + news catalyst, cached (see
-            // field comments above) to protect Alpha Vantage's tiny daily quota.
+            // Common gate (section 5): fetched once, symbol-wide - not model
+            // specific, and never included in any model's own weight table.
             var calendarVeto = await GetCalendarVeto(instrument.AffectedCurrencies);
-            var newsCatalyst = await GetNewsCatalyst(instrument.Symbol, candidate.Direction);
 
-            // Pass 2: re-evaluate with real HTF alignment, R:R, news veto and
-            // the real computed target (for RangeBoundaryRejection's "logical
-            // target" check) now available.
-            candidate = TryModels(mainCandles, displayTimeframe, condition, structure, obs, fvgs, willis, sweeps, htfAlignment, tradePlan?.RewardToRisk, calendarVeto.State, tradePlan?.Targets.Tp2);
-            if (candidate is null)
-                return new OrchestratorResult(false, null, "Setup model no longer applies on re-evaluation", instrument.Symbol, timeframeLabel);
-
-            if (calendarVeto.State == CalendarVetoState.HardVeto)
+            var evaluations = new List<StrategyEvaluation>();
+            var contextCache = new Dictionary<SetupDirection, HtfAlignment>();
+            foreach (var model in AllModels)
             {
-                return new OrchestratorResult(false, null,
-                    $"Hard economic-calendar veto active: {calendarVeto.Reason}", instrument.Symbol, timeframeLabel);
+                var evaluation = await EvaluateOneModel(
+                    model, instrument, provider, providerSymbol, displayTimeframe, mainCandles,
+                    structure, condition, obs, fvgs, willis, sweeps, keyLevels, calendarVeto, contextCache);
+                evaluations.Add(evaluation);
             }
 
-            var scoringInput = new ScoringInput(
-                condition, candidate.Direction,
-                LocationQualified: candidate.Requirements.Any(r => r.Description.Contains("discount") && r.Status == RequirementStatus.Met),
-                LiquidityEventPresent: sweeps.Any(s => (s.Direction == SweepDirection.Bullish) == (candidate.Direction == SetupDirection.Long)),
-                EntryStructureEvent: structure.Events.LastOrDefault()?.Type,
-                ZoneSource: tradePlan?.Entry.ZoneSource,
-                DisplacementAtEntry: tradePlan is not null && Displacement.IsDisplacementCandle(
-                    mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList(),
-                    mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList().Count - 1),
-                RewardToRisk: tradePlan?.RewardToRisk,
-                HtfAlignment: htfAlignment,
-                CalendarVeto: calendarVeto.State,
-                NewsCatalyst: newsCatalyst.State
-            );
-            var score = ConfluenceScorer.Score(scoringInput);
+            diagnosticsStore.Record(instrument.Symbol, timeframeLabel, DateTime.UtcNow, condition, evaluations);
+
+            var qualified = evaluations.Where(e => e.Qualified).OrderByDescending(e => e.Score).ToList();
+            if (qualified.Count == 0)
+            {
+                var best = evaluations.OrderByDescending(e => e.Score).FirstOrDefault();
+                var reason = best is null
+                    ? $"No setup model's precondition is met (Market Condition: {condition})"
+                    : $"No model qualified this scan - closest was {best.StrategyId} at {best.Score}/{best.Threshold} (Market Condition: {condition})";
+                return new OrchestratorResult(false, null, reason, instrument.Symbol, timeframeLabel, evaluations);
+            }
+
+            var primary = qualified[0];
+            var candidate = primary.Candidate!;
+            var htfAlignment = contextCache.TryGetValue(candidate.Direction, out var htf) ? htf : (HtfAlignment?)null;
+            var tradePlan = await BuildTradePlan(model: primary.StrategyId, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, candidate.Direction);
 
             if (tradePlan is null)
             {
                 return new OrchestratorResult(false, null,
-                    $"No valid entry/stop/target could be computed (score would be {score.TotalScore}/{score.Grade}) - no qualifying zone or an irrational stop distance",
-                    instrument.Symbol, timeframeLabel);
+                    $"{primary.StrategyId}: No valid entry/stop/target could be computed (score {primary.Score}/{primary.Threshold}) - no qualifying zone or an irrational stop distance",
+                    instrument.Symbol, timeframeLabel, evaluations);
             }
+
+            if (calendarVeto.State == CalendarVetoState.HardVeto)
+            {
+                return new OrchestratorResult(false, null,
+                    $"Hard economic-calendar veto active: {calendarVeto.Reason}", instrument.Symbol, timeframeLabel, evaluations);
+            }
+
+            var newsCatalyst = await GetNewsCatalyst(instrument.Symbol, candidate.Direction);
 
             // LiquiditySweepReversal is a counter-trend reversal call by nature -
             // real, elevated risk when it also runs against the broader Weekly
-            // trend (see SetupModels.cs's "reduced risk when against the
-            // broader Weekly trend" requirement, which reports whether this
-            // reduction has actually been applied). Halving the default risk
-            // rather than skipping the trade: the setup can still be genuinely
-            // valid HTF-conflicting or not, just sized for the added risk.
-            var effectiveGrade = score.Grade == "No setup" || score.Grade == "Tracking" ? "B" : score.Grade;
-            var requestedRiskPercent = candidate.Model == SetupModelType.LiquiditySweepReversal && htfAlignment == HtfAlignment.Conflicting
+            // trend. Halving the default risk rather than skipping the trade:
+            // the setup can still be genuinely valid HTF-conflicting or not,
+            // just sized for the added risk.
+            var effectiveGrade = primary.Grade == "No setup" || primary.Grade == "Tracking" ? "B" : primary.Grade;
+            var requestedRiskPercent = primary.StrategyId == SetupModelType.LiquiditySweepReversal && htfAlignment == HtfAlignment.Conflicting
                 ? RiskSizing.DefaultRiskPercent(effectiveGrade) / 2
                 : 0m;
             var positionSize = RiskSizing.Compute(PlaceholderAccountBalance, requestedRiskPercent, effectiveGrade,
                 tradePlan.Entry.PreferredEntry, tradePlan.Stop.Price, isFx: instrument.Source == DataSource.TwelveData);
 
             var lastPrice = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).Last().Close;
-            var lifecycleState = SignalLifecycle.InitialState(score.TotalScore);
+            var scoreResult = new ConfluenceScoreResult(primary.Score, primary.Grade, primary.ConfluenceFamilies);
+            var lifecycleState = SignalLifecycle.InitialState(primary.Score);
 
             var signal = SignalResultBuilder.Build(
                 StrategyVersion, instrument.Symbol, instrument.Group, provider.Name,
-                displayTimeframe, candidate, condition, tradePlan, score, positionSize,
+                displayTimeframe, candidate, condition, tradePlan, scoreResult, positionSize,
                 lifecycleState, keyLevels, lastPrice, DateTime.UtcNow,
                 calendarVeto, newsCatalyst);
 
-            return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel);
+            return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations);
         }
         catch (Exception ex)
         {
             logger.LogError(ex, "Signal orchestration failed for {Symbol} {Timeframe}", instrument.Symbol, timeframeLabel);
             return new OrchestratorResult(false, null, ex.Message, instrument.Symbol, timeframeLabel);
         }
+    }
+
+    private async Task<TradePlan?> BuildTradePlan(
+        SetupModelType model, IReadOnlyList<NormalizedCandle> mainCandles, Timeframe displayTimeframe, StructureResult structure,
+        IReadOnlyList<OrderBlock> obs, IReadOnlyList<FairValueGap> fvgs, IReadOnlyList<RealtouchWillisZone> willis,
+        IReadOnlyList<LiquiditySweep> sweeps, IReadOnlyList<KeyLevel> keyLevels, SetupDirection direction)
+    {
+        await Task.CompletedTask;
+        // Range Boundary Rejection needs its own plan (target = equilibrium
+        // or opposite boundary, section 6.4) - the pullback planner only
+        // knows how to plan off an order block/FVG/Willis Zone, which a bare
+        // range boundary often doesn't have sitting on it.
+        if (model == SetupModelType.RangeBoundaryRejection)
+        {
+            var lastCloseTime = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).Last().CloseTimeUtc;
+            return RangeTradePlan.Build(mainCandles, displayTimeframe, direction, lastCloseTime);
+        }
+        return EntryStopTargetCalculator.Compute(mainCandles, displayTimeframe, direction, structure, obs, fvgs, willis, sweeps, keyLevels);
+    }
+
+    // One model's full, independent evaluation: detect -> HTF (if a
+    // candidate was found) -> plan -> score against THAT model's own
+    // weight table and threshold. Always returns a StrategyEvaluation -
+    // never null, never skipped, per section 4's "each evaluator must
+    // return a result" rule.
+    private async Task<StrategyEvaluation> EvaluateOneModel(
+        SetupModelType model, InstrumentDefinition instrument, IMarketDataProvider provider, string providerSymbol, Timeframe displayTimeframe,
+        IReadOnlyList<NormalizedCandle> mainCandles, StructureResult structure, MarketCondition condition,
+        IReadOnlyList<OrderBlock> obs, IReadOnlyList<FairValueGap> fvgs, IReadOnlyList<RealtouchWillisZone> willis,
+        IReadOnlyList<LiquiditySweep> sweeps, IReadOnlyList<KeyLevel> keyLevels, CalendarVetoResult calendarVeto,
+        Dictionary<SetupDirection, HtfAlignment> htfCache)
+    {
+        SetupCandidate? DetectPass1() => model switch
+        {
+            SetupModelType.TrendContinuationPullback => SetupModels.EvaluateTrendContinuationPullback(mainCandles, displayTimeframe, condition, structure, obs, fvgs, willis, sweeps),
+            SetupModelType.BreakoutAndRetest => SetupModels.EvaluateBreakoutAndRetest(mainCandles, displayTimeframe, structure, obs, fvgs),
+            SetupModelType.LiquiditySweepReversal => SetupModels.EvaluateLiquiditySweepReversal(mainCandles, displayTimeframe, condition, structure, obs, fvgs, sweeps, keyLevels: keyLevels),
+            SetupModelType.RangeBoundaryRejection => SetupModels.EvaluateRangeBoundaryRejection(mainCandles, displayTimeframe, condition, structure, sweeps),
+            _ => throw new ArgumentOutOfRangeException(nameof(model))
+        };
+
+        var pass1 = DetectPass1();
+        if (pass1 is null)
+            return new StrategyEvaluation(model, StrategyVersion, false, false, 0, "No setup", ThresholdFor(model),
+                Array.Empty<ConfluenceFamilyScore>(), new[] { ReasonCode.TREND_CONDITION_NOT_CONFIRMED }, Array.Empty<ReasonCode>(), null);
+
+        var direction = pass1.Direction;
+        if (!htfCache.TryGetValue(direction, out var htfAlignment))
+        {
+            var contextConditions = await BuildContextConditions(provider, instrument, providerSymbol, displayTimeframe, condition);
+            htfAlignment = TimeframeHierarchy.Evaluate(direction, contextConditions);
+            htfCache[direction] = htfAlignment;
+        }
+
+        var tradePlan = await BuildTradePlan(model, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, direction);
+
+        SetupCandidate? pass2 = model switch
+        {
+            SetupModelType.TrendContinuationPullback => SetupModels.EvaluateTrendContinuationPullback(mainCandles, displayTimeframe, condition, structure, obs, fvgs, willis, sweeps, htfAlignment, tradePlan?.RewardToRisk, calendarVeto.State),
+            SetupModelType.BreakoutAndRetest => SetupModels.EvaluateBreakoutAndRetest(mainCandles, displayTimeframe, structure, obs, fvgs, tradePlan?.RewardToRisk, calendarVeto.State, direction),
+            SetupModelType.LiquiditySweepReversal => SetupModels.EvaluateLiquiditySweepReversal(mainCandles, displayTimeframe, condition, structure, obs, fvgs, sweeps, htfAlignment, calendarVeto.State, keyLevels),
+            SetupModelType.RangeBoundaryRejection => SetupModels.EvaluateRangeBoundaryRejection(mainCandles, displayTimeframe, condition, structure, sweeps, tradePlan?.RewardToRisk, calendarVeto.State, tradePlan?.Targets.Tp2),
+            _ => throw new ArgumentOutOfRangeException(nameof(model))
+        };
+
+        var candidate = pass2 ?? pass1;
+        var gatesPassed = candidate.Qualified && tradePlan is not null;
+        var failedGates = candidate.Requirements.Where(r => r.Status == RequirementStatus.NotMet).Select(r => MapReasonCode(r.Description)).ToList();
+        if (tradePlan is null) failedGates.Add(ReasonCode.ZONE_NOT_FOUND);
+        var warnings = candidate.Requirements.Where(r => r.Status == RequirementStatus.NotEvaluated).Select(r => MapReasonCode(r.Description)).ToList();
+
+        var completedForDisplacement = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList();
+        var displacementAtEntry = tradePlan is not null && completedForDisplacement.Count > 0 &&
+            Displacement.IsDisplacementCandle(completedForDisplacement, completedForDisplacement.Count - 1);
+        var liquidityEventPresent = sweeps.Any(s => (s.Direction == SweepDirection.Bullish) == (direction == SetupDirection.Long));
+        var entryStructureEvent = structure.Events.LastOrDefault(e =>
+            direction == SetupDirection.Long ? e.Type is StructureEventType.BullishBos or StructureEventType.BullishChoch
+                                              : e.Type is StructureEventType.BearishBos or StructureEventType.BearishChoch)?.Type;
+
+        ConfluenceScoreResult score = model switch
+        {
+            SetupModelType.TrendContinuationPullback => ModelScoring.ScoreTrendContinuation(
+                htfAlignment, candidate.Requirements.Any(r => r.Description.Contains("discount") && r.Status == RequirementStatus.Met),
+                tradePlan?.Entry.ZoneSource, liquidityEventPresent, entryStructureEvent, displacementAtEntry,
+                tradePlan?.RewardToRisk, calendarVeto.State, null),
+            SetupModelType.BreakoutAndRetest => ModelScoring.ScoreBreakoutAndRetest(
+                ModelEvidenceBuilder.BuildBreakout(mainCandles, displayTimeframe, structure, obs, fvgs, direction),
+                displacementAtEntry, tradePlan?.RewardToRisk, calendarVeto.State, null),
+            SetupModelType.LiquiditySweepReversal => ModelScoring.ScoreLiquiditySweepReversal(
+                ModelEvidenceBuilder.BuildReversal(mainCandles, structure, sweeps, obs, fvgs, keyLevels, direction),
+                fvgs.Any(f => (f.Direction == FvgDirection.Bullish) == (direction == SetupDirection.Long) && f.Status != MitigationStatus.Invalidated) ||
+                obs.Any(o => (o.Direction == OrderBlockDirection.Bullish) == (direction == SetupDirection.Long) && OrderBlockDetector.IsValid(o)),
+                tradePlan?.RewardToRisk, calendarVeto.State, null),
+            SetupModelType.RangeBoundaryRejection => ModelScoring.ScoreRangeBoundaryRejection(
+                ModelEvidenceBuilder.BuildRange(mainCandles, sweeps, structure, direction),
+                tradePlan?.RewardToRisk, calendarVeto.State, null),
+            _ => throw new ArgumentOutOfRangeException(nameof(model))
+        };
+
+        return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, score.Grade, ThresholdFor(model),
+            score.Families, failedGates, warnings, gatesPassed ? candidate : null);
+    }
+
+    private static int ThresholdFor(SetupModelType model) => model switch
+    {
+        SetupModelType.TrendContinuationPullback => 75,
+        SetupModelType.BreakoutAndRetest => 75,
+        SetupModelType.LiquiditySweepReversal => 78,
+        SetupModelType.RangeBoundaryRejection => 78,
+        _ => 75
+    };
+
+    // Free-text requirement descriptions -> structured reason codes (section
+    // 9). An honest best-effort keyword mapping, not a perfect taxonomy -
+    // the description string itself is always still available in the raw
+    // diagnostics record for anyone who needs the exact wording.
+    private static ReasonCode MapReasonCode(string description)
+    {
+        var d = description.ToLowerInvariant();
+        if (d.Contains("htf") || d.Contains("higher-timeframe") || d.Contains("weekly") || d.Contains("directional alignment")) return ReasonCode.TREND_ALIGNMENT_MISSING;
+        if (d.Contains("trending market condition")) return ReasonCode.TREND_CONDITION_NOT_CONFIRMED;
+        if (d.Contains("discount") || d.Contains("premium")) return ReasonCode.LOCATION_NOT_QUALIFIED;
+        if (d.Contains("order block") || d.Contains("fvg") || d.Contains("willis") || d.Contains("zone")) return ReasonCode.ZONE_NOT_FOUND;
+        if (d.Contains("sweep") && d.Contains("choch")) return ReasonCode.SWEEP_CLOSE_NOT_CONFIRMED;
+        if (d.Contains("sweep")) return ReasonCode.SWEEP_NOT_CONFIRMED;
+        if (d.Contains("choch")) return ReasonCode.CHOCH_MISSING;
+        if (d.Contains("range") && d.Contains("boundary")) return ReasonCode.RANGE_BOUNDARY_NOT_REACHED;
+        if (d.Contains("range")) return ReasonCode.RANGE_NOT_ESTABLISHED;
+        if (d.Contains("equilibrium")) return ReasonCode.ENTRY_TOO_CLOSE_TO_EQUILIBRIUM;
+        if (d.Contains("breakout")) return ReasonCode.BREAKOUT_NOT_CONFIRMED;
+        if (d.Contains("retest") && d.Contains("controlled")) return ReasonCode.CONTROLLED_RETEST_MISSING;
+        if (d.Contains("retest")) return ReasonCode.RETEST_NOT_REACHED;
+        if (d.Contains("reward-to-risk") || d.Contains("r:r")) return ReasonCode.REWARD_RISK_TOO_LOW;
+        if (d.Contains("news") || d.Contains("veto")) return ReasonCode.NEWS_VETO_ACTIVE;
+        if (d.Contains("structure") || d.Contains("bos")) return ReasonCode.STRUCTURE_CONFIRMATION_MISSING;
+        return ReasonCode.STRUCTURE_CONFIRMATION_MISSING;
     }
 
     private async Task<IReadOnlyDictionary<Timeframe, MarketCondition>> BuildContextConditions(
@@ -234,18 +382,6 @@ public class SignalOrchestrator(
             }
         }
         return result;
-    }
-
-    private static SetupCandidate? TryModels(
-        IReadOnlyList<NormalizedCandle> candles, Timeframe timeframe, MarketCondition condition, StructureResult structure,
-        IReadOnlyList<OrderBlock> obs, IReadOnlyList<FairValueGap> fvgs, IReadOnlyList<RealtouchWillisZone> willis,
-        IReadOnlyList<LiquiditySweep> sweeps, HtfAlignment? htf, decimal? rr, CalendarVetoState? calendarVeto = null,
-        decimal? targetPrice = null)
-    {
-        return SetupModels.EvaluateTrendContinuationPullback(candles, timeframe, condition, structure, obs, fvgs, willis, sweeps, htf, rr, calendarVeto)
-            ?? SetupModels.EvaluateBreakoutAndRetest(candles, timeframe, condition, structure, obs, fvgs, rr, calendarVeto)
-            ?? SetupModels.EvaluateLiquiditySweepReversal(candles, timeframe, condition, structure, obs, fvgs, sweeps, htf, calendarVeto)
-            ?? SetupModels.EvaluateRangeBoundaryRejection(candles, timeframe, condition, structure, sweeps, rr, calendarVeto, targetPrice);
     }
 
     private void PersistContextCache() =>

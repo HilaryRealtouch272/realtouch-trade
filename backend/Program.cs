@@ -26,6 +26,7 @@ builder.Services.AddSingleton<IMarketDataProvider, CoinbaseMarketDataProvider>()
 builder.Services.AddSingleton<IEconomicCalendarProvider, FinnhubEconomicCalendarProvider>();
 builder.Services.AddSingleton<INewsProvider, AlphaVantageNewsProvider>();
 builder.Services.AddSingleton<TelegramNotifier>();
+builder.Services.AddSingleton<StrategyDiagnosticsStore>();
 builder.Services.AddSingleton<SignalOrchestrator>();
 builder.Services.AddSingleton<SignalAlertService>();
 builder.Services.AddSingleton<SignalLogService>();
