@@ -303,12 +303,15 @@ function normalizeModelScores(allEvaluations) {
     .map(e => ({
       model: e.strategyId, score: e.score, threshold: e.threshold, grade: e.grade,
       detected: e.detected, mandatoryGatesPassed: e.mandatoryGatesPassed,
-      // Candidate is only present when Detected is true (a real structural
-      // pattern was found at a specific location) - its Direction is the
-      // actual bias this score was computed against, even when the
-      // candidate went on to fail a mandatory gate. Never invent a
-      // direction for a model that detected nothing at all.
-      direction: e.candidate ? e.candidate.direction : null,
+      // e.candidate itself is withheld (null) by the backend whenever
+      // mandatory gates failed - its entry/stop/target plan is never real
+      // in that case. But e.direction is populated independently, the
+      // moment a model detects anything at all, regardless of whether
+      // gates or score later fail - the actual bias this score was
+      // computed against. Reading from e.candidate.direction here used to
+      // silently come back null for almost every near-miss, since gates
+      // fail far more often than they pass.
+      direction: e.direction || null,
       // The backend's own Grade is computed from points ALONE (GradeFor),
       // independent of MandatoryGatesPassed - a model can score 85 points
       // (a genuine "A" by the formula) while a real structural precondition

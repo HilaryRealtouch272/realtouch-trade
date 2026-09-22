@@ -335,7 +335,7 @@ public class SignalOrchestrator(
         };
 
         return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, score.Grade, ThresholdFor(model),
-            score.Families, failedGates, warnings, gatesPassed ? candidate : null);
+            score.Families, failedGates, warnings, gatesPassed ? candidate : null, direction);
     }
 
     private static int ThresholdFor(SetupModelType model) => model switch

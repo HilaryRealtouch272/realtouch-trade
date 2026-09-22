@@ -15,7 +15,16 @@ public record StrategyEvaluation(
     IReadOnlyList<ConfluenceFamilyScore> ConfluenceFamilies,
     IReadOnlyList<ReasonCode> FailedGates,
     IReadOnlyList<ReasonCode> Warnings,
-    SetupCandidate? Candidate
+    SetupCandidate? Candidate,
+    // Candidate itself is deliberately withheld (null) whenever mandatory
+    // gates fail, since its entry/stop/target plan is not something that
+    // should ever be treated as real. But the DIRECTION a model evaluated
+    // is known the moment a candidate is merely detected - long before
+    // gates or score are decided - and is real, useful information on its
+    // own (a diagnostics view showing "this model scored 78" is misleading
+    // without saying which way it was even looking). Populated whenever
+    // Detected is true, independent of MandatoryGatesPassed/Candidate.
+    SetupDirection? Direction = null
 )
 {
     // Qualified = detected, every mandatory gate passed, AND the score
