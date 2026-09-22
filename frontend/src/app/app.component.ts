@@ -729,7 +729,7 @@ function renderTrackerRows() {
         <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
         <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
         <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
-        <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R`}</td>
+        <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R${e.netMovementUnits == null ? "" : `<small style="display:block;font-size:8px;color:var(--muted-2)">${e.netMovementUnits > 0 ? "+" : ""}${e.netMovementUnits.toFixed(1)} ${e.movementUnitLabel || "units"}</small>`}`}</td>
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
       </tr>`).join("");
   }
