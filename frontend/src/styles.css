@@ -80,11 +80,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .positive { color: var(--green); }
 .negative { color: var(--red); }
 .pending { color: var(--amber); }
-/* A score/points total for a setup that did NOT actually qualify (a
-   mandatory gate failed, or it fell short of threshold) - muted on
-   purpose so it never reads with the same visual weight as a real,
-   tradeable Confidence figure. */
-.not-tradeable-score { color: var(--muted-2); }
 .entry-status-tag { padding: 2px 6px; border-radius: 4px; font: 600 7px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .08em; }
 .entry-status-tag.triggered { background: rgba(82,212,156,.12); color: var(--green); }
 .entry-status-tag.pending { background: var(--amber-soft); color: var(--amber); }
