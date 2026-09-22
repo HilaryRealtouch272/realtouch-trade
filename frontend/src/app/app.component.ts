@@ -1185,7 +1185,7 @@ function renderSetupList() {
     <button class="setup-card ${state.selected === s.id ? "active" : ""} ${s.comingSoon ? "coming-soon" : ""} ${s.stale ? "stale-data" : ""}" data-setup="${s.id}" type="button">
       <div class="setup-card-top">
         <div class="asset-symbol"><span class="asset-icon" style="--group-color:${groupMeta[s.group].color}">${s.icon}</span><span><strong>${s.symbol}</strong><small title="${s.liveError || ""}" ${s.comingSoon || s.stale ? 'class="coming-soon-text"' : ""}>${sourceLabel(s)}</small></span></div>
-        <span class="score-ring" style="--score:${s.score};--score-color:${scoreColor(s.score)}"><b>${s.comingSoon || !isLetterGrade(s.grade) ? "—" : s.score}</b></span>
+        <span class="score-ring" style="--score:${s.score};--score-color:${!s.comingSoon && isLetterGrade(s.grade) ? scoreColor(s.score) : "var(--muted-2)"}"><b>${s.comingSoon ? "—" : s.score}</b></span>
       </div>
       <div class="setup-card-middle"><span class="direction ${directionClass(s.direction)}">${s.comingSoon ? "NOT LIVE" : s.direction.toUpperCase()}</span><span class="condition">${s.condition}${s.grade ? ` · ${s.grade}` : ""}</span>${!s.comingSoon && isLetterGrade(s.grade) ? `<span class="entry-status-tag ${s.triggered ? "triggered" : "pending"}">${s.triggered ? "Triggered" : "Pending"}</span>` : ""}<span class="timeframe">${s.timeframe}</span></div>
       <div class="setup-card-bottom">
@@ -1399,7 +1399,7 @@ function renderInspection() {
         <div class="signal-stat"><span>Timeframe</span><strong>${setup.timeframe}</strong></div>
         <div class="signal-stat"><span>Market Condition</span><strong>${setup.condition}</strong></div>
         <div class="signal-stat"><span>${isLetterGrade(setup.grade) ? "Grade" : "Status"}</span><strong>${setup.grade || "—"}</strong></div>
-        <div class="signal-stat"><span>Confidence</span><strong>${setup.comingSoon || !isLetterGrade(setup.grade) ? "—" : `${setup.score}/${setup.scoreThreshold}`}</strong></div>
+        <div class="signal-stat"><span>${isLetterGrade(setup.grade) ? "Confidence" : "Score (Not Tradeable)"}</span><strong class="${isLetterGrade(setup.grade) ? "" : "not-tradeable-score"}">${setup.comingSoon ? "—" : `${setup.score}/${setup.scoreThreshold}`}</strong></div>
         <div class="signal-stat"><span>Projected R:R</span><strong>${setup.comingSoon ? "—" : `${setup.rr.toFixed(1)}R`}</strong></div>
         ${!setup.comingSoon && isLetterGrade(setup.grade) ? `
         <div class="signal-stat"><span>Entry Status</span><strong class="${setup.triggered ? "positive" : "pending"}">${setup.triggered ? "Triggered" : "Pending"}</strong></div>` : ""}
