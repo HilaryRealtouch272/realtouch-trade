@@ -266,14 +266,25 @@ function buildLevelRows(setup, signal) {
 // caught-exception message - means the scan itself didn't really happen,
 // so THAT is what should keep showing last-known data as stale, not an
 // ordinary "no setup this time" outcome.
+//
+// Regression: the independent per-model evaluation rewrite's actual "no
+// setup" reasons are "No model qualified this scan - closest was..." and
+// "<StrategyId>: No valid entry/stop/target could be computed..." (the
+// model name is PREPENDED) - neither is a prefix match against the plain
+// "No valid entry/stop/target could be computed" string this list used to
+// carry, and "No model qualified this scan" wasn't listed at all. Both
+// silently fell into the "real fetch failure" branch instead, which kept
+// showing a real STOPPED-OUT trade's entry/stop/grade as if it were still
+// a live, pending setup - checked with `includes`, not `startsWith`, so
+// the model-name prefix on the second string doesn't break the match.
 const GENUINE_NO_SETUP_PREFIXES = [
   "No setup model's precondition is met",
-  "Setup model no longer applies on re-evaluation",
+  "No model qualified this scan",
   "Hard economic-calendar veto active",
   "No valid entry/stop/target could be computed"
 ];
 function isGenuineNoSetupReason(reason) {
-  return typeof reason === "string" && GENUINE_NO_SETUP_PREFIXES.some(p => reason.startsWith(p));
+  return typeof reason === "string" && GENUINE_NO_SETUP_PREFIXES.some(p => reason.includes(p));
 }
 
 // One entry in the /api/signals/* response array: { success, signal, reason,
