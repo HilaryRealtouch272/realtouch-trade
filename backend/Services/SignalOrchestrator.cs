@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json.Serialization;
 using RealtouchSmartTrade.Api.Models;
 using RealtouchSmartTrade.Api.Providers;
 using RealtouchSmartTrade.Api.Strategy;
@@ -22,8 +23,14 @@ namespace RealtouchSmartTrade.Api.Services;
 // than only ever comparing against the latest Close - a scan-interval
 // price check that only looks at "where is price right now" can miss a
 // stop that was crossed and later reversed away from within the same gap
-// between checks. Same null-only-on-no-data rule as LivePrice.
-public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe, IReadOnlyList<StrategyEvaluation>? AllEvaluations = null, decimal? LivePrice = null, IReadOnlyList<Models.NormalizedCandle>? Candles = null);
+// between checks. Same null-only-on-no-data rule as LivePrice. JsonIgnore:
+// this is consumed entirely in-process (SignalLogService, same scan) and
+// must never reach signals.json - that file is both the public GitHub
+// Pages payload the frontend fetches AND what --scan-once reads back as
+// "prior results" for gated timeframes, and dozens of full OHLC candles
+// per instrument/timeframe on every ~15-minute run would bloat both for
+// no benefit; nothing downstream of that file ever needs raw candles.
+public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe, IReadOnlyList<StrategyEvaluation>? AllEvaluations = null, decimal? LivePrice = null, [property: JsonIgnore] IReadOnlyList<Models.NormalizedCandle>? Candles = null);
 
 // Wires the entire Strategy/ engine together into one real, live evaluation:
 // fetch candles -> structure/condition -> zones/sweeps/key levels -> HTF
