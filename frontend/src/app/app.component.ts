@@ -300,7 +300,18 @@ function isGenuineNoSetupReason(reason) {
 // full qualification.
 function normalizeModelScores(allEvaluations) {
   return (allEvaluations || [])
-    .map(e => ({ model: e.strategyId, score: e.score, threshold: e.threshold, grade: e.grade, detected: e.detected }))
+    .map(e => ({
+      model: e.strategyId, score: e.score, threshold: e.threshold, grade: e.grade,
+      detected: e.detected, mandatoryGatesPassed: e.mandatoryGatesPassed,
+      // The backend's own Grade is computed from points ALONE (GradeFor),
+      // independent of MandatoryGatesPassed - a model can score 85 points
+      // (a genuine "A" by the formula) while a real structural precondition
+      // still fails, meaning it never actually qualified. Qualified mirrors
+      // StrategyEvaluation.Qualified exactly: Detected && MandatoryGatesPassed
+      // && Score >= Threshold - the only thing safe to treat as "this could
+      // have been a live trade."
+      qualified: e.detected && e.mandatoryGatesPassed && e.score >= e.threshold
+    }))
     .sort((a, b) => b.score - a.score);
 }
 
@@ -365,15 +376,21 @@ function applySignalResult(result) {
     setup.condition = "No qualifying setup";
     setup.conditionFamily = "Neutral";
     setup.modelScores = normalizeModelScores(result.allEvaluations);
-    // Show the real closest model's live score/grade instead of flatlining
-    // to 0/No setup every time - "Tracking" (and lower A/B bands that
-    // still fall short of THIS model's own threshold) are genuine,
-    // backend-computed grade bands, not a qualifying trade. Still not a
-    // live position - condition/direction/entry above stay Neutral/0,
-    // and the qualifying-grade check elsewhere (isLetterGrade) keeps the
-    // Pending/Triggered tag from showing for a mere near-miss score.
+    // Show the real closest model's live score instead of flatlining to
+    // 0/No setup every time. But NEVER surface its raw point-based Grade
+    // here: GradeFor computes a letter grade (A+/A/B) from score alone,
+    // completely independent of MandatoryGatesPassed - a model can score
+    // 85 points (a genuine "A" by the formula) while a real structural
+    // gate still fails, meaning StrategyEvaluation.Qualified is false and
+    // this branch (nothing qualified this scan) is exactly why we're here.
+    // Showing that raw "A" as setup.grade would flip isLetterGrade(grade)
+    // true and wrongly show the Pending/Triggered tag and "not a live
+    // position" banner for a setup that was never actually a live
+    // candidate - only ever label this "Tracking", regardless of how high
+    // the raw score climbs, since qualified is what "Tracking" or "No
+    // setup" actually needs to mean here, not the point total alone.
     const closest = setup.modelScores[0];
-    setup.grade = closest ? closest.grade : "No setup";
+    setup.grade = closest && closest.score > 0 ? "Tracking" : "No setup";
     setup.score = closest ? closest.score : 0;
     setup.scoreThreshold = closest ? closest.threshold : 100;
     setup.rr = 0;
@@ -1424,8 +1441,8 @@ function renderInspection() {
           <div class="level-list">${setup.modelScores.length ? setup.modelScores.map(m => `
             <div class="level-row">
               <span>${formatEnumName(m.model)}</span>
-              <strong class="${m.score >= m.threshold ? "positive" : ""}">${m.score}/${m.threshold}</strong>
-              <small>${m.grade}${!m.detected ? " · precondition not met" : ""}</small>
+              <strong class="${m.qualified ? "positive" : ""}">${m.score}/${m.threshold}</strong>
+              <small>${m.qualified ? "Qualified" : !m.detected ? "Precondition not met" : !m.mandatoryGatesPassed ? `${m.grade} by points - mandatory gate not met` : m.grade}</small>
             </div>`).join("") : `<p class="markup-tip">${setup.hydrated ? "No per-model scores returned for this scan." : "Awaiting the backend's first scan."}</p>`}</div>
         </section>
         <section class="detail-card">
