@@ -674,6 +674,40 @@ function computeTrackerBreakdown(entries, keyFn) {
     .sort((a, b) => b.resolved - a.resolved);
 }
 
+// ISO 8601 week (Monday-start, week containing that year's first Thursday).
+// Used to bucket resolved trades chronologically for the period breakdown
+// below - real accumulated paper-trading results split into successive
+// time windows, which is what "walk-forward" honestly means here. This is
+// NOT a historical bar-replay backtest: there is no historical OHLC
+// ingestion pipeline, so nothing is simulated against past candles - every
+// row already happened as a real live paper trade when it was logged.
+function isoWeekKey(dateStr) {
+  const d = new Date(dateStr);
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
+  const weekNum = 1 + Math.round(((date - firstThursday) / 86400000 - 3 + ((firstThursday.getUTCDay() + 6) % 7)) / 7);
+  return `${date.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+}
+
+function computeTrackerBreakdownByPeriod(entries) {
+  const groups = new Map();
+  for (const e of entries) {
+    const key = isoWeekKey(e.closedAtUtc || e.qualifiedAtUtc);
+    if (!groups.has(key)) groups.set(key, { key, resolved: 0, wins: 0, losses: 0, flat: 0, sumR: 0 });
+    const g = groups.get(key);
+    g.resolved++;
+    if (e.status === "Tp3Hit") g.wins++;
+    else if (e.status === "StoppedOut") g.losses++;
+    else g.flat++;
+    g.sumR += e.realizedR || 0;
+  }
+  return [...groups.values()]
+    .map(g => ({ ...g, winRate: g.resolved ? (g.wins / g.resolved) * 100 : 0, avgR: g.resolved ? g.sumR / g.resolved : 0 }))
+    .sort((a, b) => a.key.localeCompare(b.key));
+}
+
 function renderStatsTable(title, rows) {
   if (!rows.length) return "";
   return `
@@ -751,7 +785,9 @@ function renderTrackerStats() {
     ${renderStatsTable("Setup model", computeTrackerBreakdown(resolved, e => e.setupModel))}
     ${renderStatsTable("Grade", computeTrackerBreakdown(resolved, e => e.grade))}
     ${renderStatsTable("Timeframe", computeTrackerBreakdown(resolved, e => e.timeframe))}
-    ${renderStatsTable("Symbol", computeTrackerBreakdown(resolved, e => e.symbol))}`;
+    ${renderStatsTable("Symbol", computeTrackerBreakdown(resolved, e => e.symbol))}
+    <p class="tracker-disclaimer" style="margin-top:14px">Performance by period, in chronological order - real accumulated paper-trading results split into successive calendar weeks. This is walk-forward reporting on trades that actually happened live, not a simulated backtest against historical candles (no historical OHLC ingestion pipeline exists to run one). Each week is its own small sample; a stronger or weaker week on its own proves little.</p>
+    ${renderStatsTable("Week (UTC)", computeTrackerBreakdownByPeriod(resolved))}`;
 }
 
 function renderTrackerRows() {
