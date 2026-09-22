@@ -649,6 +649,32 @@ function renderStatsTable(title, rows) {
     </div>`;
 }
 
+// Section 12: a raw win rate from a handful of trades isn't a reliable
+// estimate. Mirrors the backend's WilsonIntervalCalculator (Strategy/WilsonInterval.cs)
+// exactly - same 95% Wilson score interval formula - so the number shown
+// here always matches what the backend would report for the same data.
+function wilsonInterval(wins, total) {
+  if (total <= 0) return { point: 0, lower: 0, upper: 0 };
+  const z = 1.96;
+  const p = wins / total;
+  const z2 = z * z;
+  const denominator = 1 + z2 / total;
+  const center = p + z2 / (2 * total);
+  const margin = z * Math.sqrt((p * (1 - p)) / total + z2 / (4 * total * total));
+  return {
+    point: p,
+    lower: Math.max(0, (center - margin) / denominator),
+    upper: Math.min(1, (center + margin) / denominator)
+  };
+}
+
+function sampleSizeWarning(total) {
+  if (total < 30) return `Provisional - only ${total} resolved trade${total === 1 ? "" : "s"}. Section 12 requires at least 30 before an initial strategy assessment, and 50-100 before changing core thresholds.`;
+  if (total < 50) return `Early sample - ${total} resolved trades. Preferably 50-100 before treating this as reliable enough to change core thresholds.`;
+  if (total < 100) return `Growing sample - ${total} resolved trades. Approaching the 50-100 range recommended before adjusting core thresholds.`;
+  return `${total} resolved trades - a reasonable sample size per section 12.`;
+}
+
 function renderTrackerStats() {
   const container = $("#trackerStatsBody");
   if (!container) return;
@@ -665,11 +691,14 @@ function renderTrackerStats() {
   const flat = resolved.filter(e => e.status === "Expired").length;
   const winRate = (wins / resolved.length) * 100;
   const avgR = resolved.reduce((sum, e) => sum + (e.realizedR || 0), 0) / resolved.length;
+  const wilson = wilsonInterval(wins, resolved.length);
+  const provisional = resolved.length < 30;
 
   container.innerHTML = `
+    <div class="tracker-provisional-banner ${provisional ? "warning" : ""}">${provisional ? "⚠ " : ""}${sampleSizeWarning(resolved.length)}</div>
     <div class="tracker-stats-grid">
       <div class="tracker-stat-tile"><span>Resolved trades</span><strong>${resolved.length}${openCount ? ` <small style="font-size:9px;color:var(--muted-2)">(+${openCount} open)</small>` : ""}</strong></div>
-      <div class="tracker-stat-tile"><span>Win rate</span><strong>${winRate.toFixed(0)}%</strong></div>
+      <div class="tracker-stat-tile"><span>Win rate${provisional ? " (Provisional)" : ""}</span><strong>${winRate.toFixed(0)}%</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">95% CI: ${(wilson.lower * 100).toFixed(0)}%-${(wilson.upper * 100).toFixed(0)}%</small></div>
       <div class="tracker-stat-tile"><span>Avg realized R</span><strong class="${avgR > 0 ? "positive" : avgR < 0 ? "negative" : ""}">${avgR.toFixed(2)}R</strong></div>
       <div class="tracker-stat-tile"><span>W / L / Flat</span><strong>${wins} / ${losses} / ${flat}</strong></div>
     </div>

@@ -69,7 +69,7 @@ public static class ModelScoring
                 Strategy.HtfAlignment.Conflicting => Family("Higher-timeframe directional alignment", 0, 15, "Real multi-timeframe context CONFLICTS with this direction"),
                 Strategy.HtfAlignment.Aligned => Family("Higher-timeframe directional alignment", 15, 15, "Real multi-timeframe context is Aligned"),
                 Strategy.HtfAlignment.Neutral => Family("Higher-timeframe directional alignment", 12, 15, "HTF context is Neutral (no opinion either way)"),
-                null => Family("Higher-timeframe directional alignment", 10, 15, "Single-timeframe proxy only - true HTF alignment not supplied")
+                _ => Family("Higher-timeframe directional alignment", 10, 15, "Single-timeframe proxy only - true HTF alignment not supplied")
             },
             Family("Trending Market Condition quality", 10, 10, "Confirmed trending Market Condition (mandatory gate for this model)"),
             locationQualified

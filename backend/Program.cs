@@ -214,6 +214,17 @@ app.MapGet("/api/signals/fx", (LatestSignalsStore store, string? timeframe) =>
 app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalLog.GetAll()))
 .WithName("GetSignalLog");
 
+// Section 9: per-model diagnostics - every evaluated candidate this scan
+// (qualified AND rejected), so it's possible to tell "genuinely no
+// opportunity" apart from "an implementation fault", instead of only ever
+// seeing the trades that made it all the way to the ledger. Local dev only,
+// same reasoning as /api/signal-log above.
+app.MapGet("/api/strategy-diagnostics", (StrategyDiagnosticsStore diagnosticsStore) => Results.Ok(diagnosticsStore.Summarize()))
+.WithName("GetStrategyDiagnosticsSummary");
+
+app.MapGet("/api/strategy-diagnostics/raw", (StrategyDiagnosticsStore diagnosticsStore) => Results.Ok(diagnosticsStore.GetAll()))
+.WithName("GetStrategyDiagnosticsRaw");
+
 // Permanent, deliberate actions on the ledger - local dev only, same as the
 // read above. The frontend gates both behind its own confirmation dialog
 // before ever calling these; there is no undo once a row (or everything) is

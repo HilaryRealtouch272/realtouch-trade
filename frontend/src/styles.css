@@ -292,6 +292,8 @@ body.chart-expanded-open { overflow: hidden; }
 .tracker-tabs { display: flex; gap: 4px; padding: 0 18px 12px; border-bottom: 1px solid var(--line-soft); }
 .tracker-tab { padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: 600 9px "DM Mono", monospace; text-transform: uppercase; letter-spacing: .05em; }
 .tracker-tab.active { color: var(--green); border-bottom-color: var(--green); }
+.tracker-provisional-banner { margin: 12px 18px 0; padding: 8px 10px; border-radius: 6px; font: 500 9px "DM Mono", monospace; color: var(--muted-2); background: rgba(255,255,255,.03); border: 1px solid var(--line-soft); }
+.tracker-provisional-banner.warning { color: var(--amber); background: var(--amber-soft); border-color: rgba(239,185,93,.3); }
 .tracker-stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 16px 18px; }
 .tracker-stat-tile { padding: 12px; border: 1px solid var(--line-soft); border-radius: 8px; background: rgba(255,255,255,.012); }
 .tracker-stat-tile span { display: block; color: var(--muted-2); font-size: 7px; text-transform: uppercase; letter-spacing: .06em; }
