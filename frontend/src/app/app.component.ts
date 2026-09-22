@@ -303,6 +303,12 @@ function normalizeModelScores(allEvaluations) {
     .map(e => ({
       model: e.strategyId, score: e.score, threshold: e.threshold, grade: e.grade,
       detected: e.detected, mandatoryGatesPassed: e.mandatoryGatesPassed,
+      // Candidate is only present when Detected is true (a real structural
+      // pattern was found at a specific location) - its Direction is the
+      // actual bias this score was computed against, even when the
+      // candidate went on to fail a mandatory gate. Never invent a
+      // direction for a model that detected nothing at all.
+      direction: e.candidate ? e.candidate.direction : null,
       // The backend's own Grade is computed from points ALONE (GradeFor),
       // independent of MandatoryGatesPassed - a model can score 85 points
       // (a genuine "A" by the formula) while a real structural precondition
@@ -372,7 +378,6 @@ function applySignalResult(result) {
     setup.live = true;
     setup.liveSource = null;
     setup.liveError = null;
-    setup.direction = "Neutral";
     setup.condition = "No qualifying setup";
     setup.conditionFamily = "Neutral";
     setup.modelScores = normalizeModelScores(result.allEvaluations);
@@ -393,6 +398,12 @@ function applySignalResult(result) {
     setup.grade = closest && closest.score > 0 ? "Tracking" : "No setup";
     setup.score = closest ? closest.score : 0;
     setup.scoreThreshold = closest ? closest.threshold : 100;
+    // The score above came from evaluating one specific direction - showing
+    // "Neutral" bias next to a real, nonzero score contradicted itself (a
+    // score with no directional lean behind it makes no sense). Use the
+    // closest candidate's own real direction when one was actually
+    // detected; only fall back to Neutral when nothing was detected at all.
+    setup.direction = closest && closest.direction ? closest.direction : "Neutral";
     setup.rr = 0;
     setup.triggered = false;
     // Entry/stop/targets must be zeroed too, not just rr - otherwise the
@@ -1174,7 +1185,7 @@ function renderSetupList() {
     <button class="setup-card ${state.selected === s.id ? "active" : ""} ${s.comingSoon ? "coming-soon" : ""} ${s.stale ? "stale-data" : ""}" data-setup="${s.id}" type="button">
       <div class="setup-card-top">
         <div class="asset-symbol"><span class="asset-icon" style="--group-color:${groupMeta[s.group].color}">${s.icon}</span><span><strong>${s.symbol}</strong><small title="${s.liveError || ""}" ${s.comingSoon || s.stale ? 'class="coming-soon-text"' : ""}>${sourceLabel(s)}</small></span></div>
-        <span class="score-ring" style="--score:${s.score};--score-color:${scoreColor(s.score)}"><b>${s.comingSoon || !isLetterGrade(s.grade) ? "—" : s.score}</b></span>
+        <span class="score-ring" style="--score:${s.score};--score-color:${!s.comingSoon && isLetterGrade(s.grade) ? scoreColor(s.score) : "var(--muted-2)"}"><b>${s.comingSoon ? "—" : s.score}</b></span>
       </div>
       <div class="setup-card-middle"><span class="direction ${directionClass(s.direction)}">${s.comingSoon ? "NOT LIVE" : s.direction.toUpperCase()}</span><span class="condition">${s.condition}${s.grade ? ` · ${s.grade}` : ""}</span>${!s.comingSoon && isLetterGrade(s.grade) ? `<span class="entry-status-tag ${s.triggered ? "triggered" : "pending"}">${s.triggered ? "Triggered" : "Pending"}</span>` : ""}<span class="timeframe">${s.timeframe}</span></div>
       <div class="setup-card-bottom">
@@ -1388,7 +1399,7 @@ function renderInspection() {
         <div class="signal-stat"><span>Timeframe</span><strong>${setup.timeframe}</strong></div>
         <div class="signal-stat"><span>Market Condition</span><strong>${setup.condition}</strong></div>
         <div class="signal-stat"><span>${isLetterGrade(setup.grade) ? "Grade" : "Status"}</span><strong>${setup.grade || "—"}</strong></div>
-        <div class="signal-stat"><span>Confidence</span><strong>${setup.comingSoon || !isLetterGrade(setup.grade) ? "—" : `${setup.score}/${setup.scoreThreshold}`}</strong></div>
+        <div class="signal-stat"><span>${isLetterGrade(setup.grade) ? "Confidence" : "Score (Not Tradeable)"}</span><strong class="${isLetterGrade(setup.grade) ? "" : "not-tradeable-score"}">${setup.comingSoon ? "—" : `${setup.score}/${setup.scoreThreshold}`}</strong></div>
         <div class="signal-stat"><span>Projected R:R</span><strong>${setup.comingSoon ? "—" : `${setup.rr.toFixed(1)}R`}</strong></div>
         ${!setup.comingSoon && isLetterGrade(setup.grade) ? `
         <div class="signal-stat"><span>Entry Status</span><strong class="${setup.triggered ? "positive" : "pending"}">${setup.triggered ? "Triggered" : "Pending"}</strong></div>` : ""}
@@ -1440,7 +1451,7 @@ function renderInspection() {
           <div class="section-heading"><h3>Model scores</h3><span>All 4 models, this scan</span></div>
           <div class="level-list">${setup.modelScores.length ? setup.modelScores.map(m => `
             <div class="level-row">
-              <span>${formatEnumName(m.model)}</span>
+              <span>${formatEnumName(m.model)}${m.direction ? ` (${m.direction})` : ""}</span>
               <strong class="${m.qualified ? "positive" : ""}">${m.score}/${m.threshold}</strong>
               <small>${m.qualified ? `Qualified - ${m.grade}` : !m.detected ? "Precondition not met" : !m.mandatoryGatesPassed ? "Mandatory gate not met" : "Below threshold"}</small>
             </div>`).join("") : `<p class="markup-tip">${setup.hydrated ? "No per-model scores returned for this scan." : "Awaiting the backend's first scan."}</p>`}</div>
