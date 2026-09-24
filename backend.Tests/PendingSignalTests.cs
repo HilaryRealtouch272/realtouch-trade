@@ -240,6 +240,127 @@ public class PendingSignalTests : IDisposable
         Assert.Null(service.GetOpenDirection("TEST/USD", "1H")); // no longer active
     }
 
+    // ---- withdrawal: the setup stops qualifying before price reaches the entry ----
+
+    private async Task<SignalLogService> ServiceWithAPendingLong()
+    {
+        var service = NewService();
+        await service.RecordAndTrackAsync(new[] { new OrchestratorResult(true, Sig("Long", 105m, triggered: false), null, "TEST/USD", "1H") });
+        Assert.Equal("Pending", Assert.Single(service.GetAll()).Status);
+        return service;
+    }
+
+    [Fact]
+    public async Task APendingSignalIsWithdrawnWhenTheEngineRerunsOnGoodDataAndTheSetupNoLongerQualifies()
+    {
+        var service = await ServiceWithAPendingLong();
+
+        // The engine ran (a live price came back) but nothing qualifies any more.
+        await service.RecordAndTrackAsync(new[]
+        {
+            new OrchestratorResult(false, null, "No model qualified this scan - closest was RangeBoundaryRejection at 70/78", "TEST/USD", "1H", LivePrice: 104m)
+        });
+
+        var entry = Assert.Single(service.GetAll());
+        Assert.Equal("Withdrawn", entry.Status);
+        Assert.Null(entry.RealizedR);
+        Assert.Contains("No longer qualifies", entry.ClosureReason);
+        Assert.Null(service.GetOpenDirection("TEST/USD", "1H")); // released: no longer blocks or tracks
+    }
+
+    [Fact]
+    public async Task ADataFailureNeverWithdrawsAPendingSignal()
+    {
+        var service = await ServiceWithAPendingLong();
+
+        // Stale data / an exception carries no live price: nothing can be judged.
+        await service.RecordAndTrackAsync(new[]
+        {
+            new OrchestratorResult(false, null, "Data unavailable or stale - refusing to generate a signal on incomplete data", "TEST/USD", "1H")
+        });
+
+        Assert.Equal("Pending", Assert.Single(service.GetAll()).Status);
+    }
+
+    [Fact]
+    public async Task APendingSignalStaysWhileTheSameDirectionStillQualifies()
+    {
+        var service = await ServiceWithAPendingLong();
+
+        await service.RecordAndTrackAsync(new[]
+        {
+            new OrchestratorResult(true, Sig("Long", 104m, triggered: false), null, "TEST/USD", "1H", LivePrice: 104m)
+        });
+
+        Assert.Equal("Pending", Assert.Single(service.GetAll()).Status);
+    }
+
+    [Fact]
+    public async Task APendingSignalIsWithdrawnWhenTheSetupFlipsToTheOppositeDirection()
+    {
+        var service = await ServiceWithAPendingLong();
+
+        await service.RecordAndTrackAsync(new[]
+        {
+            // Price is still ABOVE the Long's entry (so it has not filled); the
+            // engine now sees a Short instead.
+            new OrchestratorResult(true, Sig("Short", 104m, triggered: false), null, "TEST/USD", "1H", LivePrice: 104m)
+        });
+
+        var entry = Assert.Single(service.GetAll());
+        Assert.Equal("Withdrawn", entry.Status);
+        Assert.Contains("flipped to Short", entry.ClosureReason);
+    }
+
+    [Fact]
+    public async Task IfPriceAlreadyFilledTheEntryTheFillStandsEvenThoughTheSetupWasWithdrawnInTheSameScan()
+    {
+        var service = await ServiceWithAPendingLong();
+
+        // Candles show the entry was traded through, AND the setup no longer
+        // qualifies. A limit order may well have filled before the scan could
+        // know - so it is a position, not a withdrawal.
+        var fill = Candle(DateTime.UtcNow.AddMinutes(5), high: 103m, low: 99m);
+        await service.RecordAndTrackAsync(new[]
+        {
+            new OrchestratorResult(false, null, "No model qualified this scan", "TEST/USD", "1H", LivePrice: 101m, Candles: new[] { fill })
+        });
+
+        Assert.Equal("Open", Assert.Single(service.GetAll()).Status);
+    }
+
+    [Fact]
+    public async Task AnOpenTradeIsNeverWithdrawnByASetupThatStopsQualifying()
+    {
+        var service = NewService();
+        await service.RecordAndTrackAsync(new[] { new OrchestratorResult(true, Sig("Long", 100m, triggered: true), null, "TEST/USD", "1H") });
+
+        await service.RecordAndTrackAsync(new[]
+        {
+            new OrchestratorResult(false, null, "No model qualified this scan", "TEST/USD", "1H", LivePrice: 101m)
+        });
+
+        Assert.Equal("Open", Assert.Single(service.GetAll()).Status);
+    }
+
+    [Fact]
+    public void TheWithdrawalMessageTellsTheTraderToStandAsideAndIsSafeForMarkdown()
+    {
+        var entry = Pending() with
+        {
+            Status = "Withdrawn",
+            ClosureReason = "No longer qualifies before the entry was reached: closest was RANGE_BOUNDARY at *70*/78"
+        };
+
+        var message = SignalLogService.FormatOutcomeMessage(entry);
+
+        Assert.Contains("SETUP WITHDRAWN", message);
+        Assert.Contains("Do not enter", message);
+        Assert.Contains("No longer qualifies", message);
+        Assert.DoesNotContain("_", message);
+        Assert.DoesNotContain("*70*", message);
+    }
+
     [Fact]
     public async Task ASignalWhosePriceHasAlreadyGoneThroughItsEntryIsNotLoggedAtAll()
     {

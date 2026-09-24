@@ -608,6 +608,7 @@ function trackerStatusLabel(status) {
   switch (status) {
     case "Pending": return "Pending (waiting for entry)";
     case "Unfilled": return "Unfilled (never entered)";
+    case "Withdrawn": return "Withdrawn (setup no longer qualified)";
     case "Open": return "Open";
     case "Tp1Hit": return "TP1 hit";
     case "Tp2Hit": return "TP2 hit";
@@ -895,7 +896,7 @@ function renderTrackerRows() {
         <td>${formatPrice(e.stop, 5)}</td>
         <td>${e.rewardToRisk.toFixed(1)}R</td>
         <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
-        <td>${(RESOLVED_STATUSES.includes(e.status) || e.status === "Unfilled") && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
+        <td>${(RESOLVED_STATUSES.includes(e.status) || e.status === "Unfilled" || e.status === "Withdrawn") && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
         <td class="${trackerStatusClass(e.status)}" title="${e.closureReason || ""}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
         <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R${e.netMovementUnits == null ? "" : `<small style="display:block;font-size:8px;color:var(--muted-2)">${e.netMovementUnits > 0 ? "+" : ""}${e.netMovementUnits.toFixed(1)} ${e.movementUnitLabel || "units"}</small>`}`}</td>
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
