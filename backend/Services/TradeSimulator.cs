@@ -65,6 +65,18 @@ public static class TradeSimulator
         return ApplyExpiry(entry, now, mark);
     }
 
+    // A copy of the trade as it was at entry - nothing yet filled, no result - so it
+    // can be replayed from the market data alone.
+    internal static QualificationLogEntry ResetForReplay(QualificationLogEntry e) => e with
+    {
+        Status = "Open", Tp1HitAtUtc = null, Tp2HitAtUtc = null, Tp3HitAtUtc = null, StopHitAtUtc = null,
+        ClosedAtUtc = null, RealizedR = null, NetRealizedR = null, Exits = Array.Empty<ExitFill>(),
+        IntrabarSequenceUncertain = false, MaxFavorableExcursionR = null, MaxAdverseExcursionR = null,
+        GrossMovementUnits = null, CostMovementUnits = null, NetMovementUnits = null, MonetaryPnL = null,
+        PercentageReturn = null, FinalOutcome = null, ClosureReason = null, HoldingDurationHours = null,
+        LastProcessedUtc = null
+    };
+
     // Settles an open trade from ONE-MINUTE candles: it starts at the trade's
     // watermark (or its qualification time), so the candle the trade was entered
     // in is covered from the moment of entry, and every minute is applied once.

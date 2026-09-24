@@ -24,6 +24,7 @@ builder.Services.AddSingleton<IMarketDataProvider>(sp => sp.GetRequiredService<B
 builder.Services.AddSingleton<IMarketDataProvider, TwelveDataMarketDataProvider>();
 builder.Services.AddSingleton<IMarketDataProvider, CoinbaseMarketDataProvider>();
 builder.Services.AddSingleton<IFineCandleSource, FineCandleSource>();
+builder.Services.AddSingleton<TradeReconciler>();
 builder.Services.AddSingleton<IEconomicCalendarProvider, FinnhubEconomicCalendarProvider>();
 builder.Services.AddSingleton<MarketauxNewsProvider>();
 builder.Services.AddSingleton<AlphaVantageNewsProvider>();
@@ -321,6 +322,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var alerts = services.GetRequiredService<SignalAlertService>();
     var signalLog = services.GetRequiredService<SignalLogService>();
     var diagnosticsStore = services.GetRequiredService<StrategyDiagnosticsStore>();
+    var reconciler = services.GetRequiredService<TradeReconciler>();
     var env = services.GetRequiredService<IHostEnvironment>();
     var scanLogger = services.GetRequiredService<ILogger<Program>>();
 
@@ -448,6 +450,23 @@ async Task RunScanOnceAsync(IServiceProvider services)
     Directory.CreateDirectory(Path.GetDirectoryName(diagnosticsOutputPath) is { Length: > 0 } diagDir ? diagDir : ".");
     await File.WriteAllTextAsync(diagnosticsOutputPath,
         System.Text.Json.JsonSerializer.Serialize(diagnosticsStore.BuildSnapshot(), jsonOptions));
+
+    // Replay open and recently closed crypto trades against one-minute candles and
+    // report any difference from what the tracker recorded. Never fatal.
+    try
+    {
+        var report = await reconciler.ReconcileAsync(signalLog.GetAll(), DateTime.UtcNow, TimeSpan.FromHours(24));
+        var reconPath = Environment.GetEnvironmentVariable("RECONCILIATION_OUTPUT_PATH")
+            ?? Path.Combine(env.ContentRootPath, "reconciliation.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(reconPath) is { Length: > 0 } reconDir ? reconDir : ".");
+        await File.WriteAllTextAsync(reconPath, System.Text.Json.JsonSerializer.Serialize(report, jsonOptions));
+        if (report.Findings.Count > 0)
+            scanLogger.LogWarning("Reconciliation: {Count} discrepancy(ies) across {Checked} trade(s) checked", report.Findings.Count, report.Checked);
+    }
+    catch (Exception ex)
+    {
+        scanLogger.LogWarning(ex, "Reconciliation failed");
+    }
 
     scanLogger.LogInformation("Scan complete: {Count} results written to {Path}", allResults.Count, outputPath);
 }

@@ -78,7 +78,12 @@ public record QualificationLogEntry(
     // The close time of the last market candle already applied to this trade.
     // Outcome processing resumes from here after a restart or a missed scan, so
     // no interval is skipped and none is applied twice.
-    DateTime? LastProcessedUtc = null
+    DateTime? LastProcessedUtc = null,
+    // Context at the moment the trade qualified (report: persist session, news risk
+    // and calendar state on every candidate and resolved trade).
+    string? Session = null,
+    string? CalendarState = null,
+    string? NewsState = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -207,6 +212,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         return map;
     }
 
+    private static string? FirstWord(string? state) => string.IsNullOrWhiteSpace(state) ? null : state.Split(new[] { ':', ' ' }, 2)[0];
+
     private void RecordIfNewLocked(OrchestratorResult result)
     {
         if (!result.Success || result.Signal is null) return;
@@ -249,7 +256,9 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             ScoreFloorNote: signal.ScoreFloorNote,
             Exits: Array.Empty<ExitFill>(), CommissionUnits: meta?.CommissionUnits ?? 0m,
             EntryFillPrice: signal.PreferredEntry, EntryType: TradeSimulator.EntryTypeDescription, EntryTimeUtc: qualifiedAt,
-            ScoringProfileId: signal.ScoringProfileId);
+            ScoringProfileId: signal.ScoringProfileId,
+            Session: TradingSessions.Describe(qualifiedAt),
+            CalendarState: FirstWord(signal.EconomicCalendarState), NewsState: FirstWord(signal.NewsState));
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;
@@ -376,6 +385,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     private static TimeSpan HoldingWindow(string timeframeLabel) =>
         TimeframeConfig.Duration(TimeframeIntervals.ParseLabel(timeframeLabel) ?? Timeframe.H1) * 30;
 
+    // A copy of the ledger for read-only analysis (reconciliation).
     public IReadOnlyList<QualificationLogEntry> GetAll()
     {
         lock (_lock) return _entries.OrderByDescending(e => e.QualifiedAtUtc).ToList();

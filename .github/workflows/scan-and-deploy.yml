@@ -94,6 +94,7 @@ jobs:
           SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
           SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
           DIAGNOSTICS_OUTPUT_PATH: ${{ github.workspace }}/diagnostics.json
+          RECONCILIATION_OUTPUT_PATH: ${{ github.workspace }}/reconciliation.json
         run: dotnet backend-build/RealtouchSmartTrade.Api.dll --scan-once
 
       - name: Persist updated cache state to bot-state branch
@@ -154,6 +155,7 @@ jobs:
           cp signals.json frontend/dist/frontend/browser/signals.json
           cp signal-log.json frontend/dist/frontend/browser/signal-log.json
           cp diagnostics.json frontend/dist/frontend/browser/diagnostics.json
+          cp reconciliation.json frontend/dist/frontend/browser/reconciliation.json || echo "no reconciliation report this run"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
