@@ -49,14 +49,28 @@ public class SignalOrchestrator(
     ILogger<SignalOrchestrator> logger,
     // The clock the engine reads. Live use leaves it null (real UTC); a backtest supplies
     // the replay's current time so caches, expiry and freshness behave as they did then.
-    Func<DateTime>? clock = null)
+    Func<DateTime>? clock = null,
+    // When true (the default) the trade plan's targets also see the higher-timeframe key
+    // levels, so a nearby Daily/4H barrier caps TP2 and, through the R:R gate, rejects a
+    // setup whose path is blocked. Off only to compare against the old behaviour.
+    bool useHigherTimeframeLevels = true)
 {
     private DateTime Now() => clock?.Invoke() ?? DateTime.UtcNow;
 
-    private record CachedCondition(MarketCondition Condition, DateTime FetchedAtUtc);
+    private record CachedCondition(MarketCondition Condition, DateTime FetchedAtUtc, IReadOnlyList<KeyLevel>? Levels = null);
     private record CalendarCacheEntry(CalendarResult Result, DateTime FetchedAtUtc);
     private record NewsCacheEntry(NewsResult Result, DateTime FetchedAtUtc);
-    private record ContextCacheEntry(string Provider, string Symbol, Timeframe Tf, MarketCondition Condition, DateTime FetchedAtUtc);
+    private record ContextCacheEntry(string Provider, string Symbol, Timeframe Tf, MarketCondition Condition, DateTime FetchedAtUtc, IReadOnlyList<KeyLevel>? Levels = null);
+
+    // What one scan learns about the higher timeframes, shared by every model it evaluates.
+    private class ScanContext
+    {
+        public Dictionary<SetupDirection, HtfAlignment> Htf { get; } = new();
+        public List<KeyLevel> Levels { get; } = new();
+        public List<Timeframe> Missing { get; } = new();
+    }
+
+    private record ContextEvidence(IReadOnlyDictionary<Timeframe, MarketCondition> Conditions, IReadOnlyList<KeyLevel> Levels, IReadOnlyList<Timeframe> Missing);
 
     private const string StrategyVersion = "v1-strategy-engine";
     private const decimal PlaceholderAccountBalance = 10000m; // no real account/user data source exists yet
@@ -103,7 +117,7 @@ public class SignalOrchestrator(
     private readonly string _contextCachePath = Path.Combine(env.ContentRootPath, ".cache", "context-cache.json");
     private readonly ConcurrentDictionary<(string Provider, string Symbol, Timeframe Tf), CachedCondition> _contextCache =
         new((DiskCache.Load<List<ContextCacheEntry>>(Path.Combine(env.ContentRootPath, ".cache", "context-cache.json")) ?? new())
-            .ToDictionary(e => (e.Provider, e.Symbol, e.Tf), e => new CachedCondition(e.Condition, e.FetchedAtUtc)));
+            .ToDictionary(e => (e.Provider, e.Symbol, e.Tf), e => new CachedCondition(e.Condition, e.FetchedAtUtc, e.Levels)));
 
     private static TimeSpan ContextCacheTtl(Timeframe tf) =>
         TimeSpanMax(TimeframeConfig.Duration(tf) / 2, TimeSpan.FromMinutes(10));
@@ -171,12 +185,12 @@ public class SignalOrchestrator(
             var calendarVeto = await GetCalendarVeto(instrument.AffectedCurrencies);
 
             var evaluations = new List<StrategyEvaluation>();
-            var contextCache = new Dictionary<SetupDirection, HtfAlignment>();
+            var scanContext = new ScanContext();
             foreach (var model in AllModels)
             {
                 var evaluation = await EvaluateOneModel(
                     model, instrument, provider, providerSymbol, displayTimeframe, mainCandles,
-                    structure, condition, obs, fvgs, willis, sweeps, keyLevels, calendarVeto, contextCache);
+                    structure, condition, obs, fvgs, willis, sweeps, keyLevels, calendarVeto, scanContext);
                 evaluations.Add(evaluation);
             }
 
@@ -199,8 +213,9 @@ public class SignalOrchestrator(
             }
 
             var candidate = primary.Candidate!;
-            var htfAlignment = contextCache.TryGetValue(candidate.Direction, out var htf) ? htf : (HtfAlignment?)null;
-            var tradePlan = await BuildTradePlan(model: primary.StrategyId, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, candidate.Direction, MinStopCostFloor(instrument.Symbol));
+            var htfAlignment = scanContext.Htf.TryGetValue(candidate.Direction, out var htf) ? htf : (HtfAlignment?)null;
+            var tradePlan = await BuildTradePlan(model: primary.StrategyId, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps,
+                PlanLevels(keyLevels, scanContext), candidate.Direction, MinStopCostFloor(instrument.Symbol));
 
             if (tradePlan is null)
             {
@@ -315,7 +330,7 @@ public class SignalOrchestrator(
         IReadOnlyList<NormalizedCandle> mainCandles, StructureResult structure, MarketCondition condition,
         IReadOnlyList<OrderBlock> obs, IReadOnlyList<FairValueGap> fvgs, IReadOnlyList<RealtouchWillisZone> willis,
         IReadOnlyList<LiquiditySweep> sweeps, IReadOnlyList<KeyLevel> keyLevels, CalendarVetoResult calendarVeto,
-        Dictionary<SetupDirection, HtfAlignment> htfCache)
+        ScanContext scan)
     {
         SetupCandidate? DetectPass1() => model switch
         {
@@ -332,14 +347,16 @@ public class SignalOrchestrator(
                 Array.Empty<ConfluenceFamilyScore>(), new[] { ReasonCode.TREND_CONDITION_NOT_CONFIRMED }, Array.Empty<ReasonCode>(), null);
 
         var direction = pass1.Direction;
-        if (!htfCache.TryGetValue(direction, out var htfAlignment))
+        if (!scan.Htf.TryGetValue(direction, out var htfAlignment))
         {
-            var contextConditions = await BuildContextConditions(provider, instrument, providerSymbol, displayTimeframe, condition);
-            htfAlignment = TimeframeHierarchy.Evaluate(direction, contextConditions);
-            htfCache[direction] = htfAlignment;
+            var evidence = await BuildContextConditions(provider, instrument, providerSymbol, displayTimeframe, condition);
+            htfAlignment = TimeframeHierarchy.Evaluate(direction, evidence.Conditions);
+            scan.Htf[direction] = htfAlignment;
+            if (scan.Levels.Count == 0) scan.Levels.AddRange(evidence.Levels);
+            if (scan.Missing.Count == 0) scan.Missing.AddRange(evidence.Missing);
         }
 
-        var tradePlan = await BuildTradePlan(model, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, direction, MinStopCostFloor(instrument.Symbol));
+        var tradePlan = await BuildTradePlan(model, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, PlanLevels(keyLevels, scan), direction, MinStopCostFloor(instrument.Symbol));
 
         SetupCandidate? pass2 = model switch
         {
@@ -398,6 +415,9 @@ public class SignalOrchestrator(
         // range trades, the higher-timeframe conflict gate: buying the floor of a
         // range while the higher timeframes trend down is buying into the trend.
         var routingFailures = EvaluateRoutingGates(model, condition, htfAlignment);
+        // Stale or missing data on a required higher timeframe blocks the signal: a
+        // decision made with part of the picture missing is not confirmed.
+        if (scan.Missing.Count > 0) routingFailures.Add(ReasonCode.DATA_STALE);
         failedGates.AddRange(routingFailures);
         var commonGatesPassed = commonFailures.Count == 0 && routingFailures.Count == 0;
         var gatesPassed = candidate.Qualified && tradePlan is not null && commonGatesPassed;
@@ -449,11 +469,16 @@ public class SignalOrchestrator(
         return ReasonCode.STRUCTURE_CONFIRMATION_MISSING;
     }
 
-    private async Task<IReadOnlyDictionary<Timeframe, MarketCondition>> BuildContextConditions(
+    private IReadOnlyList<KeyLevel> PlanLevels(IReadOnlyList<KeyLevel> mainLevels, ScanContext scan) =>
+        useHigherTimeframeLevels && scan.Levels.Count > 0 ? mainLevels.Concat(scan.Levels).ToList() : mainLevels;
+
+    private async Task<ContextEvidence> BuildContextConditions(
         IMarketDataProvider provider, InstrumentDefinition instrument, string providerSymbol, Timeframe displayTimeframe, MarketCondition mainCondition)
     {
         var contextTfs = TimeframeHierarchy.ContextTimeframes(displayTimeframe).Distinct().ToList();
         var result = new Dictionary<Timeframe, MarketCondition>();
+        var levels = new List<KeyLevel>();
+        var missing = new List<Timeframe>();
         var now = Now();
 
         foreach (var tf in contextTfs)
@@ -461,20 +486,24 @@ public class SignalOrchestrator(
             if (tf == displayTimeframe) { result[tf] = mainCondition; continue; }
 
             var cacheKey = (provider.Name, instrument.Symbol, tf);
-            if (_contextCache.TryGetValue(cacheKey, out var cached) && now - cached.FetchedAtUtc < ContextCacheTtl(tf))
+            // A cached entry saved before levels were stored has none: refetch once.
+            if (_contextCache.TryGetValue(cacheKey, out var cached) && cached.Levels is not null && now - cached.FetchedAtUtc < ContextCacheTtl(tf))
             {
                 result[tf] = cached.Condition;
+                levels.AddRange(cached.Levels);
                 continue;
             }
 
             try
             {
                 var candles = await provider.GetCandlesAsync(instrument.Symbol, providerSymbol, tf);
-                if (!CandleQualityChecker.HasUsableData(candles, 60)) continue; // skip, don't fabricate a condition for stale context data
+                if (!CandleQualityChecker.HasUsableData(candles, 60)) { missing.Add(tf); continue; } // don't fabricate a condition for stale context data
                 var structure = StructureAnalyzer.Analyze(candles, tf);
                 var condition = MarketConditionClassifier.Classify(candles, tf, structure);
+                var tfLevels = KeyLevelCatalog.Build(candles, tf);
                 result[tf] = condition;
-                _contextCache[cacheKey] = new CachedCondition(condition, now);
+                levels.AddRange(tfLevels);
+                _contextCache[cacheKey] = new CachedCondition(condition, now, tfLevels);
                 PersistContextCache();
             }
             catch (Exception ex)
@@ -482,15 +511,16 @@ public class SignalOrchestrator(
                 logger.LogWarning(ex, "Could not fetch context timeframe {Tf} for {Symbol}", tf, instrument.Symbol);
                 // Fall back to a still-cached (even if expired) value rather than
                 // dropping the context entirely on a transient fetch failure.
-                if (cached is not null) result[tf] = cached.Condition;
+                if (cached is not null) { result[tf] = cached.Condition; if (cached.Levels is not null) levels.AddRange(cached.Levels); }
+                else missing.Add(tf);
             }
         }
-        return result;
+        return new ContextEvidence(result, levels, missing);
     }
 
     private void PersistContextCache() =>
         DiskCache.Save(_contextCachePath, _contextCache.Select(kv =>
-            new ContextCacheEntry(kv.Key.Provider, kv.Key.Symbol, kv.Key.Tf, kv.Value.Condition, kv.Value.FetchedAtUtc)).ToList());
+            new ContextCacheEntry(kv.Key.Provider, kv.Key.Symbol, kv.Key.Tf, kv.Value.Condition, kv.Value.FetchedAtUtc, kv.Value.Levels)).ToList());
 
     private async Task<CalendarVetoResult> GetCalendarVeto(IReadOnlyCollection<string> affectedCurrencies)
     {

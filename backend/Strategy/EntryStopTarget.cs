@@ -108,8 +108,11 @@ public static class EntryStopTargetCalculator
         if (!stop.IsRational) return null;
         stop = EnforceMinimumStop(stop, entry.PreferredEntry, isLong, atr.Value, minStopCostFloor);
         if (!stop.IsRational) return null;
+        stop = stop with { Reason = $"{TimeframeIntervals.Label(timeframe)} {stop.Reason}" };
 
         var targets = BuildTargetPlan(entry.PreferredEntry, stop.Price, isLong, keyLevels, atr.Value);
+        // keyLevels may already include higher-timeframe levels (the caller merges them);
+        // each target's basis names the timeframe and level type that justified it.
         var risk = Math.Abs(entry.PreferredEntry - stop.Price);
         var reward = Math.Abs(targets.Tp2 - entry.PreferredEntry); // R:R quoted against TP2, the "logical" objective
         var rr = risk == 0 ? 0 : reward / risk;
@@ -234,32 +237,38 @@ public static class EntryStopTargetCalculator
         var riskDistance = Math.Abs(entry - stop);
         var tp1 = isLong ? entry + riskDistance : entry - riskDistance; // ~1R, section 18 default
 
-        // TP2: nearest opposing key level beyond 1R, else a flat 2R.
+        static string Describe(KeyLevel l) => $"{TimeframeIntervals.Label(l.Timeframe)} {l.Type}";
+
+        // TP2: nearest opposing key level beyond 1R (any timeframe), else a flat 2R.
         var opposingLevels = keyLevels
             .Where(l => !l.Invalidated)
-            .Select(l => isLong ? l.Upper : l.Lower)
-            .Where(p => isLong ? p > tp1 : p < tp1)
+            .Select(l => (Price: isLong ? l.Upper : l.Lower, Level: l))
+            .Where(x => isLong ? x.Price > tp1 : x.Price < tp1)
             .ToList();
-        var tp2 = opposingLevels.Count > 0
-            ? (isLong ? opposingLevels.Min() : opposingLevels.Max())
-            : (isLong ? entry + riskDistance * 2 : entry - riskDistance * 2);
-        var tp2Basis = opposingLevels.Count > 0 ? "nearest opposing key level" : "2R projection (no further key level found)";
+        var nearest = opposingLevels.Count > 0
+            ? (isLong ? opposingLevels.OrderBy(x => x.Price).First() : opposingLevels.OrderByDescending(x => x.Price).First())
+            : ((decimal, KeyLevel)?)null;
+        var tp2 = nearest is { } n2 ? n2.Item1 : (isLong ? entry + riskDistance * 2 : entry - riskDistance * 2);
+        var tp2Basis = nearest is { } n2b ? $"nearest opposing key level ({Describe(n2b.Item2)})" : "2R projection (no further key level found)";
 
         // TP3: the furthest opposing key level beyond TP2 ("external liquidity"), else 3R.
         var externalLevels = keyLevels
             .Where(l => !l.Invalidated)
-            .Select(l => isLong ? l.Upper : l.Lower)
-            .Where(p => isLong ? p > tp2 : p < tp2)
+            .Select(l => (Price: isLong ? l.Upper : l.Lower, Level: l))
+            .Where(x => isLong ? x.Price > tp2 : x.Price < tp2)
             .ToList();
+        var furthest = externalLevels.Count > 0
+            ? (isLong ? externalLevels.OrderByDescending(x => x.Price).First() : externalLevels.OrderBy(x => x.Price).First())
+            : ((decimal, KeyLevel)?)null;
         // The 3R fallback must still land BEYOND TP2: TP2 can come from a far
         // key level (well past 3R), and a flat 3R would then put TP3 on the
         // wrong side of it (a Long with TP3 below TP2) - a target order that
         // cannot happen, which would also make the ledger credit TP3 before
         // TP2. At least 1R past TP2 in that case.
-        var tp3 = externalLevels.Count > 0
-            ? (isLong ? externalLevels.Max() : externalLevels.Min())
+        var tp3 = furthest is { } f3
+            ? f3.Item1
             : (isLong ? Math.Max(entry + riskDistance * 3, tp2 + riskDistance) : Math.Min(entry - riskDistance * 3, tp2 - riskDistance));
-        var tp3Basis = externalLevels.Count > 0 ? "external/higher-timeframe liquidity level" : "3R measured-move projection, at least 1R beyond TP2 (no further key level found)";
+        var tp3Basis = furthest is { } f3b ? $"external liquidity level ({Describe(f3b.Item2)})" : "3R measured-move projection, at least 1R beyond TP2 (no further key level found)";
 
         return new TargetPlan(tp1, "~1R (nearest opposing internal liquidity)", tp2, tp2Basis, tp3, tp3Basis, Tp1Weight, Tp2Weight, Tp3Weight);
     }

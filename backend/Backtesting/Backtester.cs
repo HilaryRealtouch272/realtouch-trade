@@ -71,7 +71,8 @@ public class Backtester
         {
             var env = new TempEnv(root);
             var orchestrator = new SignalOrchestrator(new IMarketDataProvider[] { replay }, new NoCalendar(), new NoNews(),
-                new StrategyDiagnosticsStore(env), env, NullLogger<SignalOrchestrator>.Instance, () => now);
+                new StrategyDiagnosticsStore(env), env, NullLogger<SignalOrchestrator>.Instance, () => now,
+                useHigherTimeframeLevels: Environment.GetEnvironmentVariable("BACKTEST_HTF") != "0");
 
             return await ReplayAsync(orchestrator, replay, instrument, timeframe, mainSpan, start, end, m15, h1, v => now = v, progress, ct);
         }
