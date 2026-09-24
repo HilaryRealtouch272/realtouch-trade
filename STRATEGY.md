@@ -477,3 +477,24 @@ threshold (75/75/78/78), as the brief specifies.
 - Persistence for signal lifecycle state, key-level catalogs, and portfolio
   safeguard state (all currently pure/stateless functions - see
   `ARCHITECTURE.md`).
+
+## Market Condition routing and the range higher-timeframe gate (2026-09-24)
+
+Every signal needs a resolved Market Condition. `ModelRouting` lists the
+conditions each model may trade in; `NeutralOrTransition` supports none and is a
+non-trade (reason code `MARKET_CONDITION_NOT_SUPPORTED`):
+
+| Model | Supported conditions |
+|---|---|
+| Trend Continuation Pullback | TrendingBullish, TrendingBearish |
+| Breakout and Retest | BreakoutBullish, BreakoutBearish, TrendingBullish, TrendingBearish |
+| Liquidity Sweep Reversal | ReversalDeveloping, Ranging, TrendingBullish, TrendingBearish |
+| Range Boundary Rejection | Ranging |
+
+A range trade is also blocked (`HTF_CONFLICT`) when the higher timeframes
+conflict with its direction - a long at a range floor while they trend down.
+Equal scores prefer the model native to the current condition (tiebreak only; it
+never lets an unsupported model qualify). The per-model count of
+`MARKET_CONDITION_NOT_SUPPORTED` in diagnostics shows whether a row is too strict.
+Older ledger rows saved before Market Condition was recorded show as "Unknown";
+new rows always carry it.

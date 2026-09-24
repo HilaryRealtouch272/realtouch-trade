@@ -36,5 +36,7 @@ public enum ReasonCode
     // Common gates (section 5). Appended, never inserted: diagnostics persist
     // reason codes as integers.
     INSUFFICIENT_CONFLUENCE,
-    COST_TOO_HIGH
+    COST_TOO_HIGH,
+    // Market Condition routing: the current condition is not one this model may trade in.
+    MARKET_CONDITION_NOT_SUPPORTED
 }

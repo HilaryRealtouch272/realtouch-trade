@@ -177,7 +177,7 @@ public class SignalOrchestrator(
 
             diagnosticsStore.Record(instrument.Symbol, timeframeLabel, DateTime.UtcNow, condition, evaluations);
 
-            var primary = SelectPrimary(evaluations);
+            var primary = SelectPrimary(evaluations, condition);
             if (primary is null)
             {
                 var best = evaluations.OrderByDescending(e => e.Score).FirstOrDefault();
@@ -258,6 +258,14 @@ public class SignalOrchestrator(
     // Round-trip costs may not exceed a quarter of the risk: with the 4x minimum
     // stop above this can only fail when a stop could not be widened.
     internal const decimal MaxCostFractionOfRisk = 0.25m;
+
+    internal static List<ReasonCode> EvaluateRoutingGates(SetupModelType model, MarketCondition condition, HtfAlignment? htfAlignment)
+    {
+        var failed = new List<ReasonCode>();
+        if (!ModelRouting.Supports(model, condition)) failed.Add(ReasonCode.MARKET_CONDITION_NOT_SUPPORTED);
+        if (model == SetupModelType.RangeBoundaryRejection && htfAlignment == HtfAlignment.Conflicting) failed.Add(ReasonCode.HTF_CONFLICT);
+        return failed;
+    }
 
     internal static List<ReasonCode> EvaluateCommonGates(int independentFamilies, decimal riskDistance, decimal roundTripCostPrice)
     {
@@ -374,7 +382,13 @@ public class SignalOrchestrator(
         var riskDistance = tradePlan is null ? 0m : Math.Abs(tradePlan.Entry.PreferredEntry - tradePlan.Stop.Price);
         var commonFailures = EvaluateCommonGates(score.Families.Count(f => f.Points > 0), riskDistance, RoundTripCostPrice(instrument.Symbol));
         failedGates.AddRange(commonFailures);
-        var commonGatesPassed = commonFailures.Count == 0;
+
+        // Market Condition routing (an unresolved condition trades nothing) and, for
+        // range trades, the higher-timeframe conflict gate: buying the floor of a
+        // range while the higher timeframes trend down is buying into the trend.
+        var routingFailures = EvaluateRoutingGates(model, condition, htfAlignment);
+        failedGates.AddRange(routingFailures);
+        var commonGatesPassed = commonFailures.Count == 0 && routingFailures.Count == 0;
         var gatesPassed = candidate.Qualified && tradePlan is not null && commonGatesPassed;
 
         return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, score.Grade, ThresholdFor(model),
@@ -383,8 +397,11 @@ public class SignalOrchestrator(
 
     // Only fully confirmed setups qualify (per-model gates and threshold); the
     // higher score wins.
-    internal static StrategyEvaluation? SelectPrimary(IEnumerable<StrategyEvaluation> evaluations) =>
-        evaluations.Where(e => e.Qualified).OrderByDescending(e => e.Score).FirstOrDefault();
+    internal static StrategyEvaluation? SelectPrimary(IEnumerable<StrategyEvaluation> evaluations, MarketCondition? condition = null) =>
+        evaluations.Where(e => e.Qualified)
+            .OrderByDescending(e => e.Score)
+            .ThenByDescending(e => condition.HasValue && ModelRouting.IsNative(e.StrategyId, condition.Value))
+            .FirstOrDefault();
 
     private static int ThresholdFor(SetupModelType model) => model switch
     {
