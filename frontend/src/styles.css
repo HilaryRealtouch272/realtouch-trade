@@ -485,3 +485,14 @@ body.chart-expanded-open { overflow: hidden; }
   .heat-cell { height: 30px; }
   .heatmap-axis { font-size: 5px; }
 }
+
+/* Expandable per-trade record in the signal tracker ledger. */
+.tracker-expand { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 0 4px 0 0; font: inherit; }
+.tracker-expand:hover { color: var(--green); }
+.tracker-detail-row td { background: rgba(255,255,255,.012); white-space: normal; padding: 0; }
+.tracker-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px 18px; padding: 14px 16px; }
+.tracker-detail-grid span { display: block; color: var(--muted-2); font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
+.tracker-detail-grid strong { display: block; margin-top: 2px; font-weight: 500; font-size: 10px; overflow-wrap: anywhere; }
+.tracker-exits { width: calc(100% - 32px); margin: 0 16px 14px; border-collapse: collapse; font: 9px "DM Mono", monospace; }
+.tracker-exits th, .tracker-exits td { padding: 6px 10px; border-bottom: 1px solid var(--line-soft); text-align: left; }
+.tracker-exits th { color: var(--muted-2); font-size: 8px; text-transform: uppercase; }

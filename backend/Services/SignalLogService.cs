@@ -58,7 +58,21 @@ public record QualificationLogEntry(
     // (unconfirmed gates and/or under its model's own threshold). Kept on
     // the row so those trades can be measured separately from fully
     // confirmed ones - mixing the two would blur what each is worth.
-    string? ScoreFloorNote = null
+    string? ScoreFloorNote = null,
+    // --- Fill integrity (sections 14 to 17). NetRealizedR is RealizedR minus the
+    // round-trip costs expressed in R; monetary P&L and return use NET R.
+    decimal? NetRealizedR = null,
+    // Every executed slice of the position, with its simulated fill and costs.
+    // Null only on rows persisted before exits were recorded.
+    IReadOnlyList<ExitFill>? Exits = null,
+    // True when a stop and a target both sat inside one candle and the order
+    // could not be resolved from finer candles: the conservative (stop-first)
+    // outcome stands and is labelled uncertain, never favourable.
+    bool IntrabarSequenceUncertain = false,
+    decimal CommissionUnits = 0m,
+    decimal? EntryFillPrice = null,
+    string? EntryType = null,
+    DateTime? EntryTimeUtc = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -119,11 +133,18 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     {
         var resultList = results.ToList();
         var changed = new List<QualificationLogEntry>();
+        // The 15m candles fetched this scan are the finest available: they let a
+        // coarser trade settle which of a stop and a target came first inside
+        // one candle, instead of falling back to the conservative guess.
+        var fineBySymbol = resultList
+            .Where(r => r.Timeframe == "15m" && r.Candles is { Count: > 0 })
+            .GroupBy(r => r.InstrumentSymbol)
+            .ToDictionary(g => g.Key, g => g.First().Candles!);
         lock (_lock)
         {
             foreach (var result in resultList)
             {
-                var updated = UpdatePerformanceLocked(result);
+                var updated = UpdatePerformanceLocked(result, fineBySymbol.GetValueOrDefault(result.InstrumentSymbol));
                 if (updated is not null) changed.Add(updated);
             }
 
@@ -191,7 +212,9 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             StrategyVersion: signal.StrategyVersion, AssetClass: meta?.AssetClass ?? "", MarketCondition: signal.Condition.ToString(),
             FinalStop: signal.Stop, RiskPercent: signal.RiskPercent, RiskAmount: signal.RiskAmount, PositionSize: signal.PositionSize,
             EntrySpreadUnits: meta?.DefaultSpreadUnits ?? 0m, SlippageUnits: meta?.DefaultSlippageUnits ?? 0m,
-            ScoreFloorNote: signal.ScoreFloorNote);
+            ScoreFloorNote: signal.ScoreFloorNote,
+            Exits: Array.Empty<ExitFill>(), CommissionUnits: meta?.CommissionUnits ?? 0m,
+            EntryFillPrice: signal.PreferredEntry, EntryType: TradeSimulator.EntryTypeDescription, EntryTimeUtc: qualifiedAt);
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;
@@ -199,7 +222,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
     // Returns the updated entry only when its Status actually changed this
     // call (a real, notification-worthy event), null otherwise.
-    private QualificationLogEntry? UpdatePerformanceLocked(OrchestratorResult result)
+    private QualificationLogEntry? UpdatePerformanceLocked(OrchestratorResult result, IReadOnlyList<Models.NormalizedCandle>? fineCandles = null)
     {
         var key = Key(result.InstrumentSymbol, result.Timeframe);
         if (!_openKeyToEntryId.TryGetValue(key, out var entryId)) return null;
@@ -217,7 +240,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         // and later reversal within the same scan gap); fall back to the
         // single scalar price when no candle list was supplied.
         entry = result.Candles is { Count: > 0 }
-            ? ApplyCandleSequence(entry, result.Candles, DateTime.UtcNow)
+            ? ApplyCandleSequence(entry, result.Candles, DateTime.UtcNow, result.Timeframe == "15m" ? null : fineCandles)
             : ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
 
         _entries[index] = entry;
@@ -252,202 +275,15 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         return changed;
     }
 
-    // Shared by both the exact-timeframe update and the fast-price
-    // propagation above: applies a live price (when one is available) then
-    // the time-based expiry check, honestly - never invents a status change
-    // without either real price movement or real elapsed time behind it.
-    internal static QualificationLogEntry ApplyPriceAndExpiry(QualificationLogEntry entry, decimal? livePrice, DateTime now)
-    {
-        entry = ApplyPrice(entry, livePrice, now);
-        return ApplyExpiry(entry, now);
-    }
+    // The simulation itself (fills, costs, partial exits, gaps, same-candle
+    // sequencing) lives in TradeSimulator so the backtester runs the SAME
+    // logic as the live ledger. These forwarders keep existing callers stable.
+    internal static QualificationLogEntry ApplyPriceAndExpiry(QualificationLogEntry entry, decimal? livePrice, DateTime now) =>
+        TradeSimulator.ApplyPriceAndExpiry(entry, livePrice, now);
 
-    // Regression: a real production trade (XAU/USD 1H, short) hit its real
-    // stop, but because only a SINGLE scalar price ever got checked per
-    // scan, the check that finally ran hours later saw price having already
-    // reversed back down through TP2 - and reported "TP2 hit" on a trade
-    // that had genuinely been stopped out first. A scan-interval price
-    // check can only ever see where price IS right now, never the path it
-    // took to get there. This walks every completed candle since the trade
-    // qualified, in chronological order, checking each one's real traded
-    // High/Low - not just the latest candle's Close - so a stop crossed and
-    // later reversed away from is never missed. Within a single candle,
-    // section 16's own conservative rule applies: whichever extreme is
-    // worse for the position (the stop side) is assumed to have traded
-    // first.
-    internal static QualificationLogEntry ApplyCandleSequence(QualificationLogEntry entry, IReadOnlyList<Models.NormalizedCandle> candles, DateTime now)
-    {
-        var isLong = entry.Direction == "Long";
-        var relevant = candles.Where(c => c.IsComplete && c.OpenTimeUtc >= entry.QualifiedAtUtc).OrderBy(c => c.OpenTimeUtc);
-
-        foreach (var candle in relevant)
-        {
-            if (!IsOpenStatus(entry.Status)) break;
-            var (firstPrice, secondPrice) = isLong ? (candle.Low, candle.High) : (candle.High, candle.Low);
-            entry = ApplyPrice(entry, firstPrice, now);
-            if (IsOpenStatus(entry.Status)) entry = ApplyPrice(entry, secondPrice, now);
-        }
-
-        return ApplyExpiry(entry, now);
-    }
-
-    private static QualificationLogEntry ApplyPrice(QualificationLogEntry entry, decimal? livePrice, DateTime now)
-    {
-        if (livePrice.HasValue)
-        {
-            var price = livePrice.Value;
-            var isLong = entry.Direction == "Long";
-            var riskDistance = Math.Abs(entry.Entry - entry.Stop);
-
-            // Section 17's MFE/MAE: the running best/worst excursion in
-            // R-multiples, updated on EVERY live price check regardless of
-            // whether the trade closes this call - a trade that ran to +3R
-            // before eventually stopping out at -1R looks identical to one
-            // that never moved, if only the final R is ever stored.
-            if (riskDistance > 0)
-            {
-                var currentR = isLong ? (price - entry.Entry) / riskDistance : (entry.Entry - price) / riskDistance;
-                entry = entry with
-                {
-                    MaxFavorableExcursionR = Math.Max(entry.MaxFavorableExcursionR ?? currentR, currentR),
-                    MaxAdverseExcursionR = Math.Min(entry.MaxAdverseExcursionR ?? currentR, currentR)
-                };
-            }
-
-            bool Reached(decimal level) => isLong ? price >= level : price <= level;
-            bool StoppedOut() => isLong ? price <= entry.Stop : price >= entry.Stop;
-
-            if (StoppedOut())
-            {
-                // The strategy's own target plan scales out 25%/50%/25% of the
-                // position at TP1/TP2/TP3 (EntryStopTargetCalculator's fixed
-                // weights) - a trade that already banked TP1 and/or TP2 before
-                // the REMAINING runner hit the original stop is a net win or a
-                // smaller loss, not the flat -1R a full-position stop implies.
-                // This model has no breakeven-stop adjustment, so the unclosed
-                // remainder is honestly assumed to take the full stop loss.
-                var r = BlendedRealizedR(entry, riskDistance, remainingOutcomeR: -1m);
-                entry = Finalize(entry with { Status = "StoppedOut", StopHitAtUtc = now, ClosedAtUtc = now, RealizedR = r }, now,
-                    "Original stop hit" + (entry.Tp2HitAtUtc is not null ? " after TP1+TP2 already banked" : entry.Tp1HitAtUtc is not null ? " after TP1 already banked" : ""));
-            }
-            else if (Reached(entry.Tp3))
-            {
-                // Price physically traversed TP1 and TP2 to reach TP3 even if a
-                // scan gap meant they were never separately recorded - the full
-                // three-way blend is the honest outcome here, not just the R at TP3.
-                var r1 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp1 - entry.Entry) / riskDistance;
-                var r2 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp2 - entry.Entry) / riskDistance;
-                var r3 = riskDistance == 0 ? 0 : Math.Abs(entry.Tp3 - entry.Entry) / riskDistance;
-                var r = EntryStopTargetCalculator.Tp1Weight * r1 + EntryStopTargetCalculator.Tp2Weight * r2 + EntryStopTargetCalculator.Tp3Weight * r3;
-                entry = Finalize(entry with { Status = "Tp3Hit", Tp3HitAtUtc = now, ClosedAtUtc = now, RealizedR = r }, now, "Full target (TP3) reached");
-            }
-            else if (Reached(entry.Tp2) && entry.Status != "Tp2Hit")
-            {
-                // Price can jump straight past TP1 to TP2 between two scans
-                // without a separate scan ever catching it exactly at TP1 -
-                // it still genuinely traversed that level (TP1 sits closer to
-                // entry than TP2), so backfill Tp1HitAtUtc here too. Otherwise
-                // BlendedRealizedR would wrongly deny the 25% TP1 leg credit
-                // for a trade that plainly did reach it.
-                entry = entry with { Status = "Tp2Hit", Tp1HitAtUtc = entry.Tp1HitAtUtc ?? now, Tp2HitAtUtc = entry.Tp2HitAtUtc ?? now };
-            }
-            else if (Reached(entry.Tp1) && entry.Status == "Open")
-            {
-                entry = entry with { Status = "Tp1Hit", Tp1HitAtUtc = entry.Tp1HitAtUtc ?? now };
-            }
-        }
-
-        return entry;
-    }
-
-    // Kept separate from ApplyPrice so ApplyCandleSequence can walk many
-    // candles' price extremes first and check expiry exactly once at the
-    // end, against the real current time - not once per candle, which
-    // would let the FIRST candle checked short-circuit the whole walk via
-    // "now is already past expiry" before later candles' actual stop/target
-    // hits ever got a chance to resolve the trade first.
-    private static QualificationLogEntry ApplyExpiry(QualificationLogEntry entry, DateTime now)
-    {
-        if (IsOpenStatus(entry.Status) && now > entry.TrackingExpiryUtc)
-        {
-            // Whatever wasn't closed by a real target hit just times out with
-            // no further information - honestly treated as flat (0R) on that
-            // remaining slice, not assumed to have kept moving favorably.
-            var riskDistance = Math.Abs(entry.Entry - entry.Stop);
-            var r = BlendedRealizedR(entry, riskDistance, remainingOutcomeR: 0m);
-            entry = Finalize(entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = r }, now,
-                $"Tracking window expired ({(now - entry.QualifiedAtUtc).TotalHours:0.#}h) with no further target reached");
-        }
-
-        return entry;
-    }
-
-    // Section 17's closure-time fields, computed once and stored stable -
-    // gross/net movement (derived from the SAME blended RealizedR the trade
-    // already settled on, scaled into the instrument's own pip/point unit
-    // rather than re-deriving a separate blended-pip calculation), monetary
-    // P&L and % return (both exact multiples of RiskAmount/RiskPercent,
-    // since RealizedR is itself defined in units of "the risk that was
-    // taken"), the section-17 outcome category, and holding duration.
-    private static QualificationLogEntry Finalize(QualificationLogEntry entry, DateTime closedAtUtc, string closureReason)
-    {
-        var riskDistance = Math.Abs(entry.Entry - entry.Stop);
-        var realizedR = entry.RealizedR ?? 0m;
-
-        decimal? gross = null, cost = null, net = null;
-        string? unitLabel = null;
-        if (Models.InstrumentMetadataCatalog.TryGet(entry.Symbol, out var meta) && meta is not null)
-        {
-            gross = realizedR * (riskDistance / meta.MovementUnitSize);
-            cost = entry.EntrySpreadUnits + entry.SlippageUnits;
-            net = gross - cost;
-            unitLabel = Strategy.PipCalculator.UnitLabel(meta.MovementUnitName);
-        }
-
-        var monetaryPnl = entry.RiskAmount * realizedR;
-        var percentageReturn = entry.RiskPercent * realizedR;
-
-        // Breakeven check first (a partial win that nets to ~flat), then the
-        // reachable section-17 categories in order of how far the trade got.
-        var outcome = Math.Abs(realizedR) <= 0.05m ? "Breakeven"
-            : entry.Status == "Tp3Hit" ? "TP3 Win"
-            : entry.Tp2HitAtUtc is not null ? "TP2 Partial Win"
-            : entry.Tp1HitAtUtc is not null ? "TP1 Partial Win"
-            : entry.Status == "StoppedOut" ? "Stopped Out"
-            : "Expired Flat";
-
-        return entry with
-        {
-            GrossMovementUnits = gross, CostMovementUnits = cost, NetMovementUnits = net, MovementUnitLabel = unitLabel,
-            MonetaryPnL = monetaryPnl, PercentageReturn = percentageReturn,
-            FinalOutcome = outcome, ClosureReason = closureReason,
-            HoldingDurationHours = (closedAtUtc - entry.QualifiedAtUtc).TotalHours
-        };
-    }
-
-    // Blends whatever TP1/TP2 profit has already been banked (per the
-    // position's own real Tp1HitAtUtc/Tp2HitAtUtc record, not just its
-    // current Status) with the outcome applied to whatever weight remains
-    // unclosed - the same weights EntryStopTargetCalculator actually plans
-    // the position around, not an assumption that only the final event matters.
-    internal static decimal BlendedRealizedR(QualificationLogEntry entry, decimal riskDistance, decimal remainingOutcomeR)
-    {
-        decimal Multiple(decimal level) => riskDistance == 0 ? 0 : Math.Abs(level - entry.Entry) / riskDistance;
-
-        var banked = 0m;
-        var remainingWeight = 1m;
-        if (entry.Tp1HitAtUtc is not null)
-        {
-            banked += EntryStopTargetCalculator.Tp1Weight * Multiple(entry.Tp1);
-            remainingWeight -= EntryStopTargetCalculator.Tp1Weight;
-        }
-        if (entry.Tp2HitAtUtc is not null)
-        {
-            banked += EntryStopTargetCalculator.Tp2Weight * Multiple(entry.Tp2);
-            remainingWeight -= EntryStopTargetCalculator.Tp2Weight;
-        }
-        return banked + remainingWeight * remainingOutcomeR;
-    }
+    internal static QualificationLogEntry ApplyCandleSequence(QualificationLogEntry entry, IReadOnlyList<Models.NormalizedCandle> candles, DateTime now,
+        IReadOnlyList<Models.NormalizedCandle>? fineCandles = null) =>
+        TradeSimulator.ApplyCandleSequence(entry, candles, now, fineCandles);
 
     private static string FormatOutcomeMessage(QualificationLogEntry entry)
     {
@@ -461,7 +297,10 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             _ => ("ℹ️", entry.Status)
         };
         var directionIcon = entry.Direction == "Long" ? "🟢" : "🔴";
-        var realized = entry.RealizedR.HasValue ? $"\n⚖️ Realized: {entry.RealizedR.Value:0.00}R" : "";
+        var realizedR = entry.NetRealizedR ?? entry.RealizedR;
+        var realized = realizedR.HasValue
+            ? $"\n⚖️ Realized: {realizedR.Value:0.00}R" + (entry.NetRealizedR.HasValue ? " net of costs" : "") + (entry.IntrabarSequenceUncertain ? " (intrabar sequence uncertain)" : "")
+            : "";
 
         // Show whichever level actually drove this outcome - the stop only
         // for a real stop-out, the specific TP that was hit for a TP event.

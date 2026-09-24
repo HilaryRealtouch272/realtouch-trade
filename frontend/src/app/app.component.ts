@@ -694,6 +694,9 @@ async function renderDiagnostics() {
 // which row ids are checked for a bulk delete.
 let trackerEntries = [];
 let trackerSelectedIds = new Set();
+let trackerExpandedIds = new Set();
+// Net of costs where recorded; older rows only have gross.
+const tradeR = e => (e.netRealizedR ?? e.realizedR) || 0;
 
 function filteredTrackerEntries() {
   const status = $("#trackerStatusFilter")?.value || "all";
@@ -746,7 +749,7 @@ function computeTrackerBreakdown(entries, keyFn) {
     if (e.status === "Tp3Hit") g.wins++;
     else if (e.status === "StoppedOut") g.losses++;
     else g.flat++;
-    g.sumR += e.realizedR || 0;
+    g.sumR += tradeR(e);
   }
   return [...groups.values()]
     .map(g => ({ ...g, winRate: g.resolved ? (g.wins / g.resolved) * 100 : 0, avgR: g.resolved ? g.sumR / g.resolved : 0 }))
@@ -780,7 +783,7 @@ function computeTrackerBreakdownByPeriod(entries) {
     if (e.status === "Tp3Hit") g.wins++;
     else if (e.status === "StoppedOut") g.losses++;
     else g.flat++;
-    g.sumR += e.realizedR || 0;
+    g.sumR += tradeR(e);
   }
   return [...groups.values()]
     .map(g => ({ ...g, winRate: g.resolved ? (g.wins / g.resolved) * 100 : 0, avgR: g.resolved ? g.sumR / g.resolved : 0 }))
@@ -849,7 +852,7 @@ function renderTrackerStats() {
   const losses = resolved.filter(e => e.status === "StoppedOut").length;
   const flat = resolved.filter(e => e.status === "Expired").length;
   const winRate = (wins / resolved.length) * 100;
-  const avgR = resolved.reduce((sum, e) => sum + (e.realizedR || 0), 0) / resolved.length;
+  const avgR = resolved.reduce((sum, e) => sum + tradeR(e), 0) / resolved.length;
   const wilson = wilsonInterval(wins, resolved.length);
   const provisional = resolved.length < 30;
 
@@ -858,16 +861,105 @@ function renderTrackerStats() {
     <div class="tracker-stats-grid">
       <div class="tracker-stat-tile"><span>Resolved trades</span><strong>${resolved.length}${openCount ? ` <small style="font-size:9px;color:var(--muted-2)">(+${openCount} open)</small>` : ""}</strong></div>
       <div class="tracker-stat-tile"><span>Win rate${provisional ? " (Provisional)" : ""}</span><strong>${winRate.toFixed(0)}%</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">95% CI: ${(wilson.lower * 100).toFixed(0)}%-${(wilson.upper * 100).toFixed(0)}%</small></div>
-      <div class="tracker-stat-tile"><span>Avg realized R</span><strong class="${avgR > 0 ? "positive" : avgR < 0 ? "negative" : ""}">${avgR.toFixed(2)}R</strong></div>
+      <div class="tracker-stat-tile"><span>Avg net R</span><strong class="${avgR > 0 ? "positive" : avgR < 0 ? "negative" : ""}">${avgR.toFixed(2)}R</strong></div>
       <div class="tracker-stat-tile"><span>W / L / Flat</span><strong>${wins} / ${losses} / ${flat}</strong></div>
     </div>
     ${renderStatsTable("Setup model", computeTrackerBreakdown(resolved, e => e.setupModel))}
     ${renderStatsTable("Grade", computeTrackerBreakdown(resolved, e => e.grade))}
+    ${renderStatsTable("Market condition", computeTrackerBreakdown(resolved, e => e.marketCondition ? formatEnumName(e.marketCondition) : "Unknown"))}
     ${renderStatsTable("Confirmation", computeTrackerBreakdown(resolved, e => e.scoreFloorNote ? "Score-floor (unconfirmed)" : "Fully confirmed"))}
     ${renderStatsTable("Timeframe", computeTrackerBreakdown(resolved, e => e.timeframe))}
     ${renderStatsTable("Symbol", computeTrackerBreakdown(resolved, e => e.symbol))}
+    ${renderMovementTable(resolved)}
     <p class="tracker-disclaimer" style="margin-top:14px">Performance by period, in chronological order - real accumulated paper-trading results split into successive calendar weeks. This is walk-forward reporting on trades that actually happened live, not a simulated backtest against historical candles (no historical OHLC ingestion pipeline exists to run one). Each week is its own small sample; a stronger or weaker week on its own proves little.</p>
     ${renderStatsTable("Week (UTC)", computeTrackerBreakdownByPeriod(resolved))}`;
+}
+
+// Realized result cell: NET of costs where recorded (older rows only have gross),
+// with gross / cost / net movement on hover and the unit each result is in.
+function renderRealizedCell(e) {
+  const r = e.netRealizedR ?? e.realizedR;
+  if (r == null) return `<td>—</td>`;
+  const unit = e.movementUnitLabel || "units";
+  const tip = e.netRealizedR == null
+    ? "Gross R (recorded before costs were tracked)"
+    : `Gross ${e.realizedR.toFixed(2)}R, net ${e.netRealizedR.toFixed(2)}R after costs` +
+      (e.grossMovementUnits == null ? "" : ` | gross ${fmtUnits(e.grossMovementUnits, unit)}, costs ${Number(e.costMovementUnits).toFixed(1)} ${unit}, net ${fmtUnits(e.netMovementUnits, unit)}`);
+  const cls = r > 0 ? "positive" : r < 0 ? "negative" : "";
+  return `<td class="${cls}" title="${tip}">${r.toFixed(2)}R` +
+    (e.netMovementUnits == null ? "" : `<small style="display:block;font-size:8px;color:var(--muted-2)">${fmtUnits(e.netMovementUnits, unit)} net</small>`) +
+    (e.intrabarSequenceUncertain ? `<small class="pending" style="display:block;font-size:8px" title="A stop and a target sat inside one candle and finer data could not settle the order; the conservative (stop-first) outcome was used.">sequence uncertain</small>` : "") +
+    `</td>`;
+}
+
+function fmtUnits(value, unit) {
+  return value == null ? "—" : `${value > 0 ? "+" : ""}${Number(value).toFixed(1)} ${unit || "units"}`;
+}
+
+// The full per-trade record (section 17): every stored field, including each
+// exit fill with its own gross / cost / net movement.
+function renderTrackerDetail(e) {
+  const unit = e.movementUnitLabel || "units";
+  const t = v => v ? formatInUserTimezone(v) : "—";
+  const p = v => v == null ? "—" : formatPrice(v, 5);
+  const kv = (label, value) => `<div><span>${label}</span><strong>${value ?? "—"}</strong></div>`;
+  const exits = (e.exits || []).map(x => `
+      <tr><td>${x.reason}</td><td>${p(x.levelPrice)}</td><td>${p(x.fillPrice)}</td><td>${t(x.timeUtc)}</td>
+      <td>${(x.fraction * 100).toFixed(0)}%</td><td>${fmtUnits(x.grossUnits, unit)}</td><td>${x.costUnits == null ? "—" : Number(x.costUnits).toFixed(1)}</td>
+      <td>${fmtUnits(x.netUnits, unit)}</td><td>${Number(x.r).toFixed(2)}R</td></tr>`).join("");
+  const held = e.holdingDurationHours == null ? "—" : `${Number(e.holdingDurationHours).toFixed(1)} h`;
+  return `
+    <tr class="tracker-detail-row"><td colspan="12">
+      <div class="tracker-detail-grid">
+        ${kv("Trade ID", e.id)}${kv("Strategy version", e.strategyVersion)}${kv("Strategy model", formatEnumName(e.setupModel))}
+        ${kv("Asset class", e.assetClass)}${kv("Market condition", e.marketCondition ? formatEnumName(e.marketCondition) : "")}
+        ${kv("Score / grade", `${e.score} / ${e.grade}`)}${kv("Scoring profile", e.scoringProfileId)}
+        ${kv("Signal time", t(e.qualifiedAtUtc))}${kv("Entry time", t(e.entryTimeUtc || e.qualifiedAtUtc))}
+        ${kv("Entry price", p(e.entryFillPrice ?? e.entry))}${kv("Entry type", e.entryType)}
+        ${kv("Original stop", p(e.stop))}${kv("Final stop", p(e.finalStop || e.stop))}
+        ${kv("TP1 / TP2 / TP3", `${p(e.tp1)} / ${p(e.tp2)} / ${p(e.tp3)}`)}
+        ${kv("Position size", e.positionSize)}${kv("Risk", `${e.riskPercent}% = ${e.riskAmount}`)}
+        ${kv("Entry spread", e.entrySpreadUnits == null ? null : `${e.entrySpreadUnits} ${unit}`)}${kv("Slippage", e.slippageUnits == null ? null : `${e.slippageUnits} ${unit}`)}
+        ${kv("TP1 reached", t(e.tp1HitAtUtc))}${kv("TP2 reached", t(e.tp2HitAtUtc))}${kv("TP3 reached", t(e.tp3HitAtUtc))}${kv("Stop reached", t(e.stopHitAtUtc))}
+        ${kv("Closed", t(e.closedAtUtc))}${kv("Holding", held)}
+        ${kv("Gross movement", fmtUnits(e.grossMovementUnits, unit))}${kv("Trading costs", e.costMovementUnits == null ? null : `${Number(e.costMovementUnits).toFixed(1)} ${unit}`)}${kv("Net movement", fmtUnits(e.netMovementUnits, unit))}
+        ${kv("Monetary P&L (net)", e.monetaryPnL == null ? null : Number(e.monetaryPnL).toFixed(2))}${kv("Return (net)", e.percentageReturn == null ? null : `${Number(e.percentageReturn).toFixed(3)}%`)}
+        ${kv("Realised R (gross / net)", e.realizedR == null ? null : `${e.realizedR.toFixed(2)} / ${e.netRealizedR == null ? "—" : e.netRealizedR.toFixed(2)}`)}
+        ${kv("Max favourable / adverse", e.maxFavorableExcursionR == null ? null : `${e.maxFavorableExcursionR.toFixed(2)}R / ${e.maxAdverseExcursionR.toFixed(2)}R`)}
+        ${kv("Outcome", e.finalOutcome)}${kv("Reason for closure", e.closureReason)}
+        ${kv("Intrabar sequence", e.intrabarSequenceUncertain ? "Uncertain (conservative stop-first)" : "Resolved / not applicable")}
+        ${e.scoreFloorNote ? kv("Score-floor note", e.scoreFloorNote) : ""}
+      </div>
+      ${exits ? `<table class="tracker-exits"><thead><tr><th>Exit</th><th>Level</th><th>Fill</th><th>Time</th><th>Closed</th><th>Gross</th><th>Cost</th><th>Net</th><th>R</th></tr></thead><tbody>${exits}</tbody></table>` : `<p class="markup-tip" style="margin:8px 16px">No exit fills recorded (open trade, or recorded before exits were tracked).</p>`}
+    </td></tr>`;
+}
+
+// Movement by symbol, in each symbol's OWN unit. Pips of unrelated markets are
+// never added into one misleading total: only FX pairs share a pip scale, so
+// only they get an asset-class total; points on BTC vs CAKE are not comparable.
+function renderMovementTable(entries) {
+  const bySymbol = new Map();
+  for (const e of entries) {
+    if (e.netMovementUnits == null) continue;
+    if (!bySymbol.has(e.symbol)) bySymbol.set(e.symbol, { symbol: e.symbol, unit: e.movementUnitLabel || "units", assetClass: e.assetClass || "", gross: 0, cost: 0, net: 0, n: 0 });
+    const g = bySymbol.get(e.symbol);
+    g.gross += e.grossMovementUnits || 0; g.cost += e.costMovementUnits || 0; g.net += e.netMovementUnits || 0; g.n++;
+  }
+  if (!bySymbol.size) return "";
+  const rows = [...bySymbol.values()].sort((a, b) => b.n - a.n);
+  const fxTotal = rows.filter(r => r.assetClass === "fx").reduce((s, r) => s + r.net, 0);
+  const hasFx = rows.some(r => r.assetClass === "fx");
+  return `
+    <div class="tracker-stats-section">
+      <h3>Movement by symbol (net of costs)</h3>
+      <table class="tracker-stats-table">
+        <thead><tr><th>Symbol</th><th>Trades</th><th>Gross</th><th>Costs</th><th>Net</th></tr></thead>
+        <tbody>${rows.map(r => `
+          <tr><td>${r.symbol}</td><td>${r.n}</td><td>${fmtUnits(r.gross, r.unit)}</td><td>${r.cost.toFixed(1)} ${r.unit}</td>
+          <td class="${r.net > 0 ? "positive" : r.net < 0 ? "negative" : ""}">${fmtUnits(r.net, r.unit)}</td></tr>`).join("")}</tbody>
+      </table>
+      <p class="tracker-disclaimer" style="margin-top:8px">${hasFx ? `FX pips total (one shared pip scale): ${fmtUnits(fxTotal, "pips")}. ` : ""}Points on crypto and metals are not added across symbols - each has its own price scale - so compare markets by R and monetary P&amp;L.</p>
+    </div>`;
 }
 
 function renderTrackerRows() {
@@ -881,7 +973,7 @@ function renderTrackerRows() {
     body.innerHTML = rows.map(e => `
       <tr>
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<input type="checkbox" class="tracker-row-check" data-id="${e.id}" ${trackerSelectedIds.has(e.id) ? "checked" : ""} aria-label="Select row" />`}</td>
-        <td>${e.symbol}</td>
+        <td><button type="button" class="tracker-expand" data-expand="${e.id}" aria-label="Show the full trade record" title="Full trade record">${trackerExpandedIds.has(e.id) ? "▾" : "▸"}</button> ${e.symbol}</td>
         <td>${e.timeframe}</td>
         <td><span class="direction ${e.direction.toLowerCase()}">${e.direction.toUpperCase()}</span></td>
         <td>${e.grade} (${e.score})${e.scoreFloorNote ? ` <small class="pending" title="${e.scoreFloorNote}">floor</small>` : ""}</td>
@@ -891,9 +983,9 @@ function renderTrackerRows() {
         <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
         <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
         <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
-        <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R${e.netMovementUnits == null ? "" : `<small style="display:block;font-size:8px;color:var(--muted-2)">${e.netMovementUnits > 0 ? "+" : ""}${e.netMovementUnits.toFixed(1)} ${e.movementUnitLabel || "units"}</small>`}`}</td>
+        ${renderRealizedCell(e)}
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
-      </tr>`).join("");
+      </tr>${trackerExpandedIds.has(e.id) ? renderTrackerDetail(e) : ""}`).join("");
   }
   updateTrackerSelectionUi();
 }
@@ -1850,6 +1942,13 @@ function initApp() {
     updateTrackerSelectionUi();
   });
   $("#trackerBody").addEventListener("click", event => {
+    const expandBtn = event.target.closest("[data-expand]");
+    if (expandBtn) {
+      const id = expandBtn.dataset.expand;
+      if (trackerExpandedIds.has(id)) trackerExpandedIds.delete(id); else trackerExpandedIds.add(id);
+      renderTrackerRows();
+      return;
+    }
     const deleteBtn = event.target.closest("[data-delete-row]");
     if (deleteBtn) deleteTrackerRow(deleteBtn.dataset.deleteRow);
   });

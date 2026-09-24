@@ -469,6 +469,41 @@ How it is bounded, so it stays honest and measurable:
 `StrategyEvaluation.ScoreFloor` is the one constant to change if the floor
 is ever revisited.
 
+### Fill integrity, net results and per-exit records (2026-09-24, sections 14-17)
+
+Every paper trade is now simulated by one class, `Services/TradeSimulator.cs`,
+shared by the live ledger and the backtester so the two can never disagree.
+
+- **Exits are fills.** Each executed slice (TP1 25%, TP2 50%, TP3 25%, the
+  stop on the remainder, or a time exit) is stored with its level, simulated
+  fill, time, fraction and its own gross / cost / net movement and R.
+  Fractions always sum to 1 at closure. Rows recorded before this keep their
+  banked TP legs (rebuilt from their timestamps).
+- **Targets are limit orders** (fill at the level, even past a gap). **A stop
+  is a market order**: it fills at its level, or at the candle's open when the
+  market gapped through it - never better than the level.
+- **Costs are explicit.** Round-trip spread + slippage + commission (per
+  instrument, `InstrumentMetadataCatalog`) is charged in pips/points, weighted
+  by the fraction each exit closes, and converted to R. `RealizedR` is gross;
+  `NetRealizedR` is after costs; monetary P&L and return use NET R. A 1-pip
+  stop with a 1.3-pip cost is a net loss even when it "wins".
+- **Same-candle sequencing.** When a stop and a target both sit inside one
+  candle, the order is settled from finer candles (the 15m candles fetched in
+  the same scan) when they exactly tile it; otherwise the stop-first outcome
+  stands and the trade is flagged `IntrabarSequenceUncertain`. A favourable
+  target is never assumed first.
+- **Time exits are marked to market.** An expired trade's remainder exits at
+  the latest completed close (a rule-based exit), flat at entry only when no
+  price is known.
+- **Entry type** is recorded: a limit at the plan's preferred entry, assumed
+  filled because price was in the zone at signal time. Real broker fills will
+  differ (e.g. a real 4359.30 fill against a 4358.86 plan); the slippage cost
+  line is the paper account's estimate of that.
+- Tracker: net R with gross/cost/net pips on hover, an uncertainty tag, an
+  expandable full section-17 record per trade including each exit fill, and
+  Performance breakdowns by market condition and movement by symbol. Pips are
+  never added across unrelated markets: only FX shares a pip scale.
+
 ### An unavailable news calendar no longer blocks trading (2026-09-24)
 
 Every model includes a "no active hard news/economic-calendar veto" check.

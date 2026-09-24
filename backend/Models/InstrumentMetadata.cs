@@ -23,7 +23,10 @@ public record InstrumentMetadata(
     string QuoteCurrency,
     decimal? ContractSize = null,
     decimal DefaultSpreadUnits = 1.5m,
-    decimal DefaultSlippageUnits = 0.5m
+    decimal DefaultSlippageUnits = 0.5m,
+    // Broker commission per round trip, in the same movement units. Zero for the
+    // paper account (none is charged); configure per instrument if that changes.
+    decimal CommissionUnits = 0m
 );
 
 public static class InstrumentMetadataCatalog
