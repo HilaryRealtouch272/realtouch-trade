@@ -5,7 +5,11 @@ namespace RealtouchSmartTrade.Api.Strategy;
 public enum SetupModelType { TrendContinuationPullback, BreakoutAndRetest, LiquiditySweepReversal, RangeBoundaryRejection }
 public enum SetupDirection { Long, Short }
 
-public enum RequirementStatus { Met, NotMet, NotEvaluated }
+// Unavailable: an EXTERNAL data source (the economic calendar) was down, so the
+// check could not run. Unlike NotEvaluated (the setup itself was never
+// assessed) it does not block qualification - a dead feed must not freeze all
+// trading - but it is surfaced as a warning and on every alert.
+public enum RequirementStatus { Met, NotMet, NotEvaluated, Unavailable }
 
 // Every requirement a model checks is recorded explicitly - NotEvaluated is
 // used (never silently treated as Met) when this implementation doesn't yet
@@ -20,8 +24,9 @@ public record SetupCandidate(
     IReadOnlyList<RequirementCheck> Requirements
 )
 {
-    // Qualified only if every checked requirement is Met AND none are NotMet.
-    // A candidate with any NotEvaluated requirement is never "qualified" -
+    // Qualified only if no requirement is NotMet and none are NotEvaluated
+    // (Unavailable external data does not count against it - see
+    // RequirementStatus). A candidate with any NotEvaluated requirement is never "qualified" -
     // it is surfaced as a partial/watchlist candidate so nothing is silently
     // upgraded past unchecked criteria.
     public bool AllCheckedRequirementsMet => Requirements.All(r => r.Status != RequirementStatus.NotMet);
@@ -58,14 +63,18 @@ public static class SetupModels
         _ => new("Minimum 2:1 projected reward-to-risk", RequirementStatus.NotMet)
     };
 
-    // Section 19 requires "no active hard news veto" to qualify at all - a
-    // Conflicting HTF check dents the score but an active HardVeto blocks
-    // qualification outright. Unavailable is treated the same as not-supplied
-    // (NotEvaluated, blocking) rather than silently assumed clear - we never
-    // claim "no veto" when we couldn't actually check.
-    private static RequirementCheck EvaluateNewsVeto(CalendarVetoState? veto) => veto switch
+    // An active HardVeto blocks qualification outright. A calendar that could
+    // not be CHECKED (feed down, e.g. an invalid API key) used to be treated as
+    // NotEvaluated and blocking - which silently vetoed every setup on every
+    // model for as long as the feed stayed down (0 of 12,553 detected setups
+    // qualified over 49 hours). It is now Unavailable: never reported as "no
+    // veto", flagged as a warning and on every alert so the trader checks news
+    // themselves, but it no longer freezes all trading. Not supplied at all
+    // (null) is still NotEvaluated.
+    internal static RequirementCheck EvaluateNewsVeto(CalendarVetoState? veto) => veto switch
     {
-        null or CalendarVetoState.Unavailable => new("No active hard news/economic-calendar veto", RequirementStatus.NotEvaluated),
+        null => new("No active hard news/economic-calendar veto", RequirementStatus.NotEvaluated),
+        CalendarVetoState.Unavailable => new("No active hard news/economic-calendar veto", RequirementStatus.Unavailable),
         CalendarVetoState.HardVeto => new("No active hard news/economic-calendar veto", RequirementStatus.NotMet),
         _ => new("No active hard news/economic-calendar veto", RequirementStatus.Met)
     };

@@ -49,6 +49,11 @@ public static class TelegramSignalFormatter
             $"{(topConfluences.Count > 0 ? string.Join("\n", topConfluences) : "• No confluence scored above zero")}\n\n" +
             $"📰 News: {ShortState(s.NewsState)}   📅 Calendar: {ShortState(s.EconomicCalendarState)}\n" +
             $"🚫 {invalidationShort}" +
+            // The economic calendar feed being down no longer blocks a signal, so
+            // say plainly that no news check happened - never imply it was clear.
+            (s.EconomicCalendarState.StartsWith("Unavailable", StringComparison.OrdinalIgnoreCase)
+                ? "\n\n⚠️ Economic calendar could not be checked. Check high-impact news yourself before entering."
+                : "") +
             (s.ScoreFloorNote is null ? "" : $"\n\n⚠️ {s.ScoreFloorNote}") +
             (qualified ? "" : "\n\n⚠️ Not a trade recommendation.");
     }

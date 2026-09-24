@@ -304,7 +304,7 @@ public class SignalOrchestrator(
         var gatesPassed = candidate.Qualified && tradePlan is not null;
         var failedGates = candidate.Requirements.Where(r => r.Status == RequirementStatus.NotMet).Select(r => MapReasonCode(r.Description)).ToList();
         if (tradePlan is null) failedGates.Add(ReasonCode.ZONE_NOT_FOUND);
-        var warnings = candidate.Requirements.Where(r => r.Status == RequirementStatus.NotEvaluated).Select(r => MapReasonCode(r.Description)).ToList();
+        var warnings = candidate.Requirements.Where(r => r.Status is RequirementStatus.NotEvaluated or RequirementStatus.Unavailable).Select(r => MapReasonCode(r.Description)).ToList();
 
         var completedForDisplacement = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList();
         var displacementAtEntry = tradePlan is not null && completedForDisplacement.Count > 0 &&

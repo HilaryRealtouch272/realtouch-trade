@@ -469,6 +469,25 @@ How it is bounded, so it stays honest and measurable:
 `StrategyEvaluation.ScoreFloor` is the one constant to change if the floor
 is ever revisited.
 
+### An unavailable news calendar no longer blocks trading (2026-09-24)
+
+Every model includes a "no active hard news/economic-calendar veto" check.
+When the calendar feed was down (an invalid Finnhub API key) that check came
+back `NotEvaluated`, and `NotEvaluated` blocked qualification - so a dead
+feed silently vetoed every setup on every model. Measured from the persisted
+scan history (49 hours, 22,500 evaluations): 12,553 detections, 0 qualified;
+322 cleared their own score threshold, of which 123 had no entry zone, 103
+failed a real gate (reward-to-risk under 2: 64, structure confirmation: 33,
+location: 6) and 96 failed nothing except this one unavailable check.
+
+The check now has a separate `Unavailable` status: a real `HardVeto` still
+blocks outright, but a feed that is merely down no longer freezes all trading.
+It is never reported as "no veto": it stays in the diagnostics warnings, and
+every alert sent without a calendar check says "Economic calendar could not
+be checked. Check high-impact news yourself before entering." Not supplied at
+all (null) and setup checks that were never assessed still block. The
+Finnhub key itself still needs replacing (GitHub secret `FINNHUB__APIKEYS`).
+
 ### Reachable entries only (2026-09-24)
 
 An entry zone is eligible only if price can reach it within 3 ATR
