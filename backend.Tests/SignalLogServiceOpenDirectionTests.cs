@@ -36,7 +36,7 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
         public HttpClient CreateClient(string name) => new();
     }
 
-    private static OrchestratorResult QualifyingResult(string symbol, string timeframe, string direction, bool triggered = true)
+    private static OrchestratorResult QualifyingResult(string symbol, string timeframe, string direction, bool triggered = true, string? scoreFloorNote = null)
     {
         var isLong = direction == "Long";
         var signal = new SignalResult(
@@ -51,7 +51,7 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
             KeyLevels: Array.Empty<KeyLevel>(), ConfluenceFamilies: Array.Empty<ConfluenceFamilyScore>(),
             ReasoningSummary: "test", NewsState: "Unchecked", EconomicCalendarState: "Unavailable",
             VolatilityState: "Unavailable", SessionState: "Unavailable", DataFreshness: "test",
-            InvalidationConditions: "test");
+            InvalidationConditions: "test", ScoreFloorNote: scoreFloorNote);
         return new OrchestratorResult(Success: true, Signal: signal, Reason: null, InstrumentSymbol: symbol, Timeframe: timeframe);
     }
 
@@ -111,6 +111,31 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
         Assert.Null(service.GetOpenDirection("XAU/USD", "1H"));
         var entry = service.GetAll().Single(e => e.Symbol == "XAU/USD");
         Assert.Equal("StoppedOut", entry.Status);
+    }
+
+    [Fact]
+    public async Task AScoreFloorSignalIsLoggedAndTrackedWithItsNoteSoItCanBeMeasuredSeparately()
+    {
+        var service = NewService();
+
+        await service.RecordAndTrackAsync(new[]
+        {
+            QualifyingResult("CAKE/USDT", "1H", "Short", scoreFloorNote: "Score-floor signal (76+): gates not confirmed: range boundary not reached")
+        });
+
+        var entry = Assert.Single(service.GetAll());
+        Assert.Equal("Open", entry.Status);
+        Assert.Contains("Score-floor signal (76+)", entry.ScoreFloorNote);
+    }
+
+    [Fact]
+    public async Task AFullyConfirmedSignalIsLoggedWithNoScoreFloorNote()
+    {
+        var service = NewService();
+
+        await service.RecordAndTrackAsync(new[] { QualifyingResult("CAKE/USDT", "1H", "Short") });
+
+        Assert.Null(Assert.Single(service.GetAll()).ScoreFloorNote);
     }
 
     [Fact]

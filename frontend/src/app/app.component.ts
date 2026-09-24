@@ -66,6 +66,7 @@ const setups = instruments.flatMap(inst => timeframes.map(tf => ({
   // any) actually qualified - section 9's diagnostics, surfaced in real
   // time rather than only ever visible after a full qualification.
   modelScores: [],
+  scoreFloorNote: null,
   entry: 0, stop: 0, target: 0, tp1: 0, tp3: 0, updated: 0,
   levels: [["—", "—", "Awaiting live data"]],
   confluences: [],
@@ -365,6 +366,9 @@ function applySignalResult(result) {
     setup.economicCalendarState = signal.economicCalendarState;
     setup.scoreThreshold = 100;
     setup.modelScores = normalizeModelScores(result.allEvaluations);
+    // Set only when tradable through the 76+ score floor rather than the
+    // model's own gates and threshold - says what was unconfirmed.
+    setup.scoreFloorNote = signal.scoreFloorNote || null;
   } else if (setup.hydrated && !isGenuineNoSetupReason(result.reason)) {
     // A real fetch/compute failure (bad data, an exception) on a setup that
     // previously had a genuine result - keep the last-known values rather
@@ -387,6 +391,7 @@ function applySignalResult(result) {
     setup.condition = "No qualifying setup";
     setup.conditionFamily = "Neutral";
     setup.modelScores = normalizeModelScores(result.allEvaluations);
+    setup.scoreFloorNote = null;
     // Show the real closest model's live score instead of flatlining to
     // 0/No setup every time. But NEVER surface its raw point-based Grade
     // here: GradeFor computes a letter grade (A+/A/B) from score alone,
@@ -437,7 +442,7 @@ function applySignalResult(result) {
 const SETUP_CACHE_KEY = "rst_setup_cache";
 const CACHED_FIELDS = [
   "hydrated", "live", "liveSource", "liveError", "direction", "condition", "conditionFamily",
-  "grade", "score", "scoreThreshold", "modelScores", "rr", "price", "entry", "stop", "tp1", "target", "tp3",
+  "grade", "score", "scoreThreshold", "modelScores", "scoreFloorNote", "rr", "price", "entry", "stop", "tp1", "target", "tp3",
   "confluences", "reasoning", "levels", "newsState", "economicCalendarState", "cachedAtMs"
 ];
 
@@ -858,6 +863,7 @@ function renderTrackerStats() {
     </div>
     ${renderStatsTable("Setup model", computeTrackerBreakdown(resolved, e => e.setupModel))}
     ${renderStatsTable("Grade", computeTrackerBreakdown(resolved, e => e.grade))}
+    ${renderStatsTable("Confirmation", computeTrackerBreakdown(resolved, e => e.scoreFloorNote ? "Score-floor (unconfirmed)" : "Fully confirmed"))}
     ${renderStatsTable("Timeframe", computeTrackerBreakdown(resolved, e => e.timeframe))}
     ${renderStatsTable("Symbol", computeTrackerBreakdown(resolved, e => e.symbol))}
     <p class="tracker-disclaimer" style="margin-top:14px">Performance by period, in chronological order - real accumulated paper-trading results split into successive calendar weeks. This is walk-forward reporting on trades that actually happened live, not a simulated backtest against historical candles (no historical OHLC ingestion pipeline exists to run one). Each week is its own small sample; a stronger or weaker week on its own proves little.</p>
@@ -878,7 +884,7 @@ function renderTrackerRows() {
         <td>${e.symbol}</td>
         <td>${e.timeframe}</td>
         <td><span class="direction ${e.direction.toLowerCase()}">${e.direction.toUpperCase()}</span></td>
-        <td>${e.grade} (${e.score})</td>
+        <td>${e.grade} (${e.score})${e.scoreFloorNote ? ` <small class="pending" title="${e.scoreFloorNote}">floor</small>` : ""}</td>
         <td>${formatPrice(e.entry, 5)}</td>
         <td>${formatPrice(e.stop, 5)}</td>
         <td>${e.rewardToRisk.toFixed(1)}R</td>
@@ -1410,6 +1416,7 @@ function renderInspection() {
         ${!setup.comingSoon && isLetterGrade(setup.grade) ? `
         <div class="signal-stat"><span>Entry Status</span><strong class="${setup.triggered ? "positive" : "pending"}">${setup.triggered ? "Triggered" : "Pending"}</strong></div>` : ""}
       </div>
+      ${!setup.comingSoon && setup.scoreFloorNote ? `<div class="demo-tag pending-tag" style="margin:12px 0 0">${setup.scoreFloorNote}</div>` : ""}
       ${!setup.comingSoon && isLetterGrade(setup.grade) && !setup.triggered ? `<div class="demo-tag pending-tag" style="margin:12px 0 0">PENDING. Price has not traded into the entry zone yet. This is not a live position. Do not treat it as an active trade.</div>` : ""}
     </header>
     <div class="inspection-body">

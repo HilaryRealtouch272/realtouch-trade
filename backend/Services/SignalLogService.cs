@@ -53,7 +53,12 @@ public record QualificationLogEntry(
     decimal? PercentageReturn = null,
     string? FinalOutcome = null,
     string? ClosureReason = null,
-    double? HoldingDurationHours = null
+    double? HoldingDurationHours = null,
+    // Non-null marks a trade that entered through the universal score floor
+    // (unconfirmed gates and/or under its model's own threshold). Kept on
+    // the row so those trades can be measured separately from fully
+    // confirmed ones - mixing the two would blur what each is worth.
+    string? ScoreFloorNote = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -185,7 +190,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             Status: "Open", Tp1HitAtUtc: null, Tp2HitAtUtc: null, ClosedAtUtc: null, RealizedR: null,
             StrategyVersion: signal.StrategyVersion, AssetClass: meta?.AssetClass ?? "", MarketCondition: signal.Condition.ToString(),
             FinalStop: signal.Stop, RiskPercent: signal.RiskPercent, RiskAmount: signal.RiskAmount, PositionSize: signal.PositionSize,
-            EntrySpreadUnits: meta?.DefaultSpreadUnits ?? 0m, SlippageUnits: meta?.DefaultSlippageUnits ?? 0m);
+            EntrySpreadUnits: meta?.DefaultSpreadUnits ?? 0m, SlippageUnits: meta?.DefaultSlippageUnits ?? 0m,
+            ScoreFloorNote: signal.ScoreFloorNote);
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;

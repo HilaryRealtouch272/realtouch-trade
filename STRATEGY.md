@@ -440,6 +440,35 @@ listed as "Not done" above at the time:
   trades, not a substitute for this - a genuinely separate subsystem that
   wasn't attempted here, flagged rather than faked.
 
+## Universal score floor (2026-09-24, owner decision)
+
+Any detected setup with a real trade plan (entry, stop, targets) that scores
+**76 or higher** is now a tradable signal: alerted to Telegram, logged and
+tracked, regardless of whether a model's mandatory gates are confirmed or its
+score is under that model's own 75/78 threshold. This was requested
+explicitly and repeatedly; the tradeoff it accepts is that some alerted
+setups have a structural precondition the model itself did not confirm.
+
+How it is bounded, so it stays honest and measurable:
+
+- **Still required**: a valid trade plan (otherwise there is nothing to trade
+  or track), the hard economic-calendar veto, and price actually trading into
+  the entry zone (`Triggered`) before an alert or ledger row is created.
+- **Never claimed as confirmed**: `MandatoryGatesPassed` stays false on the
+  diagnostics record; a separate `ScoreFloorQualified` flag marks the
+  promotion. Every such alert and ledger row carries a `ScoreFloorNote`
+  naming what was unconfirmed (failed gates, unevaluated checks, or score
+  under the model's own threshold).
+- **Ranking**: a fully confirmed setup always outranks a floor one,
+  whatever the scores.
+- **Measured separately**: the tracker's Performance tab has a
+  "Confirmation" breakdown (Fully confirmed vs Score-floor), so the two
+  populations are never blended into one win rate. Sizing is unchanged from
+  an ordinary B-grade trade.
+
+`StrategyEvaluation.ScoreFloor` is the one constant to change if the floor
+is ever revisited.
+
 ## Not yet implemented
 
 - **Extending Section 7's live wiring to FX/Metals/Energy** - blocked on

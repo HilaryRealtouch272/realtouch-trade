@@ -19,7 +19,10 @@ public record DiagnosticsRecord(
     string Grade,
     int Threshold,
     IReadOnlyList<ReasonCode> FailedGates,
-    IReadOnlyList<ReasonCode> Warnings
+    IReadOnlyList<ReasonCode> Warnings,
+    // Defaulted so diagnostics already persisted before the score floor
+    // existed still deserialize.
+    bool ScoreFloorQualified = false
 );
 
 public class StrategyDiagnosticsStore(IHostEnvironment env)
@@ -37,7 +40,7 @@ public class StrategyDiagnosticsStore(IHostEnvironment env)
             foreach (var e in evaluations)
             {
                 _entries.Add(new DiagnosticsRecord(symbol, timeframe, scanTimeUtc, e.StrategyId, condition,
-                    e.Detected, e.MandatoryGatesPassed, e.Score, e.Grade, e.Threshold, e.FailedGates, e.Warnings));
+                    e.Detected, e.MandatoryGatesPassed, e.Score, e.Grade, e.Threshold, e.FailedGates, e.Warnings, e.ScoreFloorQualified));
             }
             if (_entries.Count > MaxEntries) _entries.RemoveRange(0, _entries.Count - MaxEntries);
             DiskCache.Save(_path, _entries);
@@ -60,7 +63,7 @@ public class StrategyDiagnosticsStore(IHostEnvironment env)
             var models = byModel.Select(g =>
             {
                 var detected = g.Count(e => e.Detected);
-                var qualified = g.Count(e => e.Detected && e.MandatoryGatesPassed && e.Score >= e.Threshold);
+                var qualified = g.Count(e => e.Detected && (e.ScoreFloorQualified || (e.MandatoryGatesPassed && e.Score >= e.Threshold)));
                 var rejected = detected - qualified;
                 var avgScore = g.Where(e => e.Detected).Select(e => (double)e.Score).DefaultIfEmpty(0).Average();
                 // Near-miss: the structural pattern was genuinely there

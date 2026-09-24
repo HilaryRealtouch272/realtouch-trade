@@ -49,6 +49,7 @@ public static class TelegramSignalFormatter
             $"{(topConfluences.Count > 0 ? string.Join("\n", topConfluences) : "• No confluence scored above zero")}\n\n" +
             $"📰 News: {ShortState(s.NewsState)}   📅 Calendar: {ShortState(s.EconomicCalendarState)}\n" +
             $"🚫 {invalidationShort}" +
+            (s.ScoreFloorNote is null ? "" : $"\n\n⚠️ {s.ScoreFloorNote}") +
             (qualified ? "" : "\n\n⚠️ Not a trade recommendation.");
     }
 

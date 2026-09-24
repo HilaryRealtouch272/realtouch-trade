@@ -177,8 +177,8 @@ public class SignalOrchestrator(
 
             diagnosticsStore.Record(instrument.Symbol, timeframeLabel, DateTime.UtcNow, condition, evaluations);
 
-            var qualified = evaluations.Where(e => e.Qualified).OrderByDescending(e => e.Score).ToList();
-            if (qualified.Count == 0)
+            var primary = SelectPrimary(evaluations);
+            if (primary is null)
             {
                 var best = evaluations.OrderByDescending(e => e.Score).FirstOrDefault();
                 var reason = best is null
@@ -187,7 +187,6 @@ public class SignalOrchestrator(
                 return new OrchestratorResult(false, null, reason, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
-            var primary = qualified[0];
             var candidate = primary.Candidate!;
             var htfAlignment = contextCache.TryGetValue(candidate.Direction, out var htf) ? htf : (HtfAlignment?)null;
             var tradePlan = await BuildTradePlan(model: primary.StrategyId, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, candidate.Direction);
@@ -226,7 +225,8 @@ public class SignalOrchestrator(
                 StrategyVersion, instrument.Symbol, instrument.Group, provider.Name,
                 displayTimeframe, candidate, condition, tradePlan, scoreResult, positionSize,
                 lifecycleState, keyLevels, lastPrice, DateTime.UtcNow,
-                calendarVeto, newsCatalyst);
+                calendarVeto, newsCatalyst,
+                scoreFloorNote: primary.ScoreFloorQualified ? BuildScoreFloorNote(primary) : null);
 
             return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
         }
@@ -334,8 +334,42 @@ public class SignalOrchestrator(
             _ => throw new ArgumentOutOfRangeException(nameof(model))
         };
 
-        return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, score.Grade, ThresholdFor(model),
-            score.Families, failedGates, warnings, gatesPassed ? candidate : null, direction);
+        // Universal score floor: a real trade plan plus a score at or above
+        // StrategyEvaluation.ScoreFloor is tradable even when gates are
+        // unconfirmed or the score is under this model's own threshold. The
+        // grade is re-derived against the floor so a promoted 76 reads as B
+        // (not "Tracking", which the alert/ledger rules would reject), and
+        // the candidate is kept because it is now a real signal's source.
+        var promoted = StrategyEvaluation.IsPromotedByScoreFloor(gatesPassed, score.TotalScore, ThresholdFor(model), tradePlan is not null);
+        var grade = promoted ? ModelScoring.GradeFor(score.TotalScore, StrategyEvaluation.ScoreFloor) : score.Grade;
+
+        return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, grade, ThresholdFor(model),
+            score.Families, failedGates, warnings, gatesPassed || promoted ? candidate : null, direction, promoted);
+    }
+
+    // A fully confirmed setup always outranks a score-floor one, whatever the
+    // scores; within each group the higher score wins.
+    internal static StrategyEvaluation? SelectPrimary(IEnumerable<StrategyEvaluation> evaluations) =>
+        evaluations.Where(e => e.Qualified)
+            .OrderBy(e => e.ScoreFloorQualified ? 1 : 0)
+            .ThenByDescending(e => e.Score)
+            .FirstOrDefault();
+
+    // Plain lowercase words only: the Telegram alert is sent in Markdown mode,
+    // where a stray underscore (as in RANGE_BOUNDARY_NOT_REACHED) makes the
+    // API reject the entire message.
+    internal static string BuildScoreFloorNote(StrategyEvaluation e)
+    {
+        static string Words(ReasonCode c) => c.ToString().Replace('_', ' ').ToLowerInvariant();
+        var parts = new List<string>();
+        if (e.FailedGates.Count > 0)
+            parts.Add($"gates not confirmed: {string.Join(", ", e.FailedGates.Select(Words))}");
+        else if (!e.MandatoryGatesPassed && e.Warnings.Count > 0)
+            parts.Add($"checks not evaluated: {string.Join(", ", e.Warnings.Select(Words))}");
+        if (e.Score < e.Threshold)
+            parts.Add($"score {e.Score} is under this model's own {e.Threshold} threshold");
+        return $"Score-floor signal ({StrategyEvaluation.ScoreFloor}+): " +
+               (parts.Count > 0 ? string.Join("; ", parts) : "not confirmed by this model's own rules");
     }
 
     private static int ThresholdFor(SetupModelType model) => model switch
