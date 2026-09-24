@@ -74,7 +74,11 @@ public record QualificationLogEntry(
     string? EntryType = null,
     DateTime? EntryTimeUtc = null,
     // Which scoring profile produced this signal's score (section 10).
-    string? ScoringProfileId = null
+    string? ScoringProfileId = null,
+    // The close time of the last market candle already applied to this trade.
+    // Outcome processing resumes from here after a restart or a missed scan, so
+    // no interval is skipped and none is applied twice.
+    DateTime? LastProcessedUtc = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -88,7 +92,7 @@ public record QualificationLogEntry(
 // (symbol, timeframe) still returns a successful result with a live price -
 // if it later fails to evaluate (stale data, no candidate at all), that
 // entry simply doesn't move until a future successful scan resumes it.
-public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, ILogger<SignalLogService> logger)
+public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, ILogger<SignalLogService> logger, IFineCandleSource? fineSource = null)
 {
     private const int MaxEntries = 1000;
 
@@ -138,6 +142,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         // The 15m candles fetched this scan are the finest available: they let a
         // coarser trade settle which of a stop and a target came first inside
         // one candle, instead of falling back to the conservative guess.
+        var fineByEntry = await FetchFineCandlesForOpenTradesAsync();
         var fineBySymbol = resultList
             .Where(r => r.Timeframe == "15m" && r.Candles is { Count: > 0 })
             .GroupBy(r => r.InstrumentSymbol)
@@ -146,7 +151,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         {
             foreach (var result in resultList)
             {
-                var updated = UpdatePerformanceLocked(result, fineBySymbol.GetValueOrDefault(result.InstrumentSymbol));
+                var updated = UpdatePerformanceLocked(result, fineBySymbol.GetValueOrDefault(result.InstrumentSymbol), fineByEntry);
                 if (updated is not null) changed.Add(updated);
             }
 
@@ -162,7 +167,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             // runs the other way (a stale Daily/Weekly close checking a
             // fast trade), since that price could be hours to days old.
             foreach (var result in resultList.Where(r => r.Timeframe == "15m" && (r.Candles is { Count: > 0 } || r.LivePrice.HasValue)))
-                changed.AddRange(PropagateFastPriceToOtherTimeframesLocked(result.InstrumentSymbol, result.Candles, result.LivePrice, result.Timeframe));
+                changed.AddRange(PropagateFastPriceToOtherTimeframesLocked(result.InstrumentSymbol, result.Candles, result.LivePrice, result.Timeframe, fineByEntry));
 
             foreach (var result in resultList) RecordIfNewLocked(result);
             if (_entries.Count > MaxEntries) _entries.RemoveRange(0, _entries.Count - MaxEntries);
@@ -174,6 +179,32 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             var (success, error) = await telegram.SendAsync(FormatOutcomeMessage(entry));
             if (!success) logger.LogWarning("Outcome Telegram alert failed for {Symbol} {Timeframe} ({Status}): {Error}", entry.Symbol, entry.Timeframe, entry.Status, error);
         }
+    }
+
+    // One-minute candles for every open trade whose market has a fine feed,
+    // fetched from each trade's watermark. A failed fetch just leaves that trade
+    // on the coarser candle path this scan - it is never fatal.
+    private async Task<IReadOnlyDictionary<string, IReadOnlyList<Models.NormalizedCandle>>> FetchFineCandlesForOpenTradesAsync()
+    {
+        var map = new Dictionary<string, IReadOnlyList<Models.NormalizedCandle>>();
+        if (fineSource is null) return map;
+
+        List<QualificationLogEntry> open;
+        lock (_lock) open = _entries.Where(e => IsOpenStatus(e.Status)).ToList();
+
+        foreach (var e in open)
+        {
+            try
+            {
+                var candles = await fineSource.GetOneMinuteAsync(e.Symbol, e.LastProcessedUtc ?? e.QualifiedAtUtc);
+                if (candles.Count > 0) map[e.Id] = candles;
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "One-minute candles unavailable for {Symbol}; falling back to coarser candles this scan", e.Symbol);
+            }
+        }
+        return map;
     }
 
     private void RecordIfNewLocked(OrchestratorResult result)
@@ -226,7 +257,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
     // Returns the updated entry only when its Status actually changed this
     // call (a real, notification-worthy event), null otherwise.
-    private QualificationLogEntry? UpdatePerformanceLocked(OrchestratorResult result, IReadOnlyList<Models.NormalizedCandle>? fineCandles = null)
+    private QualificationLogEntry? UpdatePerformanceLocked(OrchestratorResult result, IReadOnlyList<Models.NormalizedCandle>? fineCandles = null,
+        IReadOnlyDictionary<string, IReadOnlyList<Models.NormalizedCandle>>? fineByEntry = null)
     {
         var key = Key(result.InstrumentSymbol, result.Timeframe);
         if (!_openKeyToEntryId.TryGetValue(key, out var entryId)) return null;
@@ -243,9 +275,11 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         // and .Candles). Prefer the full candle sequence (catches a stop hit
         // and later reversal within the same scan gap); fall back to the
         // single scalar price when no candle list was supplied.
-        entry = result.Candles is { Count: > 0 }
-            ? ApplyCandleSequence(entry, result.Candles, DateTime.UtcNow, result.Timeframe == "15m" ? null : fineCandles)
-            : ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
+        entry = fineByEntry is not null && fineByEntry.TryGetValue(entry.Id, out var oneMinute)
+            ? TradeSimulator.ApplyFineSequence(entry, oneMinute, DateTime.UtcNow)
+            : result.Candles is { Count: > 0 }
+                ? ApplyCandleSequence(entry, result.Candles, DateTime.UtcNow, result.Timeframe == "15m" ? null : fineCandles)
+                : ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
 
         _entries[index] = entry;
         if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
@@ -255,7 +289,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     // Checks a fresh price against every OTHER open entry for the same
     // symbol (any timeframe but the one this price already came from -
     // that one was just handled by UpdatePerformanceLocked above).
-    private List<QualificationLogEntry> PropagateFastPriceToOtherTimeframesLocked(string symbol, IReadOnlyList<Models.NormalizedCandle>? candles, decimal? livePrice, string sourceTimeframe)
+    private List<QualificationLogEntry> PropagateFastPriceToOtherTimeframesLocked(string symbol, IReadOnlyList<Models.NormalizedCandle>? candles, decimal? livePrice, string sourceTimeframe,
+        IReadOnlyDictionary<string, IReadOnlyList<Models.NormalizedCandle>>? fineByEntry = null)
     {
         var changed = new List<QualificationLogEntry>();
         var now = DateTime.UtcNow;
@@ -270,7 +305,9 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
             var entry = _entries[index];
             var statusBefore = entry.Status;
-            entry = candles is { Count: > 0 } ? ApplyCandleSequence(entry, candles, now) : ApplyPriceAndExpiry(entry, livePrice, now);
+            entry = fineByEntry is not null && fineByEntry.TryGetValue(entry.Id, out var oneMinute)
+                ? TradeSimulator.ApplyFineSequence(entry, oneMinute, now)
+                : candles is { Count: > 0 } ? ApplyCandleSequence(entry, candles, now) : ApplyPriceAndExpiry(entry, livePrice, now);
 
             _entries[index] = entry;
             if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);

@@ -23,6 +23,7 @@ builder.Services.AddSingleton<BybitMarketDataProvider>(); // kept for the v1 /ap
 builder.Services.AddSingleton<IMarketDataProvider>(sp => sp.GetRequiredService<BybitMarketDataProvider>());
 builder.Services.AddSingleton<IMarketDataProvider, TwelveDataMarketDataProvider>();
 builder.Services.AddSingleton<IMarketDataProvider, CoinbaseMarketDataProvider>();
+builder.Services.AddSingleton<IFineCandleSource, FineCandleSource>();
 builder.Services.AddSingleton<IEconomicCalendarProvider, FinnhubEconomicCalendarProvider>();
 builder.Services.AddSingleton<INewsProvider, AlphaVantageNewsProvider>();
 builder.Services.AddSingleton<TelegramNotifier>();

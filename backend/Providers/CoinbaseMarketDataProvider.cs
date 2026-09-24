@@ -40,6 +40,21 @@ public class CoinbaseMarketDataProvider(IHttpClientFactory httpClientFactory) : 
         return CandleQualityChecker.Annotate(candles, timeframe, receivedAt);
     }
 
+    public async Task<IReadOnlyList<NormalizedCandle>> GetFineCandlesAsync(
+        string canonicalSymbol, string providerSymbol, DateTime sinceUtc, CancellationToken ct = default)
+    {
+        var minutes = (int)Math.Ceiling((DateTime.UtcNow - sinceUtc).TotalMinutes) + 2;
+        var raw = await FetchRawCandles(providerSymbol, 60, minutes, ct, maxPages: 8);
+        var receivedAt = DateTime.UtcNow;
+        var oneMinute = TimeSpan.FromMinutes(1);
+        // Timeframe is nominal here: these are 1m bars (open/close times say so).
+        return raw.Where(r => r.OpenTimeUtc >= sinceUtc.AddMinutes(-1))
+            .Select(r => new NormalizedCandle(canonicalSymbol, providerSymbol, "Coinbase", Timeframe.M15,
+                r.OpenTimeUtc, r.OpenTimeUtc + oneMinute, r.Open, r.High, r.Low, r.Close, r.Volume,
+                r.OpenTimeUtc + oneMinute <= receivedAt, receivedAt, DataQuality.Ok))
+            .ToList();
+    }
+
     private static (int GranularitySeconds, int AggregateFactor) GranularityFor(Timeframe tf) => tf switch
     {
         Timeframe.M15 => (900, 1),
@@ -56,13 +71,13 @@ public class CoinbaseMarketDataProvider(IHttpClientFactory httpClientFactory) : 
     // enough raw daily bars for 60+ aggregated weekly bars, which can exceed
     // that cap, so this walks backward in pages using start/end until enough
     // raw history is collected or MaxPages is hit.
-    private async Task<List<RawCandle>> FetchRawCandles(string productId, int granularitySeconds, int rawNeeded, CancellationToken ct)
+    private async Task<List<RawCandle>> FetchRawCandles(string productId, int granularitySeconds, int rawNeeded, CancellationToken ct, int maxPages = MaxPages)
     {
         var client = httpClientFactory.CreateClient();
         var all = new List<RawCandle>();
         var end = DateTime.UtcNow;
 
-        for (int page = 0; page < MaxPages && all.Count < rawNeeded; page++)
+        for (int page = 0; page < maxPages && all.Count < rawNeeded; page++)
         {
             var start = end - TimeSpan.FromSeconds((double)granularitySeconds * MaxCandlesPerRequest);
             var url = $"https://api.exchange.coinbase.com/products/{productId}/candles" +
@@ -97,7 +112,7 @@ public class CoinbaseMarketDataProvider(IHttpClientFactory httpClientFactory) : 
 
     private static NormalizedCandle ToNormalized(RawCandle r, string canonicalSymbol, string providerSymbol, Timeframe tf, TimeSpan duration, bool isLast, DateTime receivedAt) =>
         new(canonicalSymbol, providerSymbol, "Coinbase", tf, r.OpenTimeUtc, r.OpenTimeUtc + duration,
-            r.Open, r.High, r.Low, r.Close, r.Volume, !isLast, receivedAt, DataQuality.Ok);
+            r.Open, r.High, r.Low, r.Close, r.Volume, !isLast && r.OpenTimeUtc + duration <= receivedAt, receivedAt, DataQuality.Ok);
 
     private static List<NormalizedCandle> Aggregate(
         List<RawCandle> raw, int factor, string canonicalSymbol, string providerSymbol, Timeframe tf, TimeSpan duration, DateTime receivedAt)

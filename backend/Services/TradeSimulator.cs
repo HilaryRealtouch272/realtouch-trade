@@ -65,6 +65,29 @@ public static class TradeSimulator
         return ApplyExpiry(entry, now, mark);
     }
 
+    // Settles an open trade from ONE-MINUTE candles: it starts at the trade's
+    // watermark (or its qualification time), so the candle the trade was entered
+    // in is covered from the moment of entry, and every minute is applied once.
+    // A minute holding both a stop and a target is the one remaining ambiguity:
+    // it stays conservative (stop first) and is flagged.
+    internal static QualificationLogEntry ApplyFineSequence(
+        QualificationLogEntry entry, IReadOnlyList<NormalizedCandle> oneMinute, DateTime now)
+    {
+        var start = entry.LastProcessedUtc ?? entry.QualifiedAtUtc;
+        var relevant = oneMinute
+            .Where(c => c.IsComplete && c.OpenTimeUtc >= start && c.CloseTimeUtc <= now)
+            .OrderBy(c => c.OpenTimeUtc).ToList();
+
+        foreach (var candle in relevant)
+        {
+            if (!IsOpen(entry.Status)) break;
+            entry = ApplyCandle(entry, candle, now, null) with { LastProcessedUtc = candle.CloseTimeUtc };
+        }
+
+        decimal? mark = relevant.Count > 0 ? relevant[^1].Close : null;
+        return ApplyExpiry(entry, now, mark);
+    }
+
     private static QualificationLogEntry ApplyCandle(QualificationLogEntry entry, NormalizedCandle candle, DateTime now, IReadOnlyList<NormalizedCandle>? fine)
     {
         var isLong = entry.Direction == "Long";
