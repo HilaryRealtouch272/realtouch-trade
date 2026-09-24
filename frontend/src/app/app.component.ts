@@ -654,21 +654,56 @@ async function fetchTrackerEntries() {
   return response.json();
 }
 
-// Section 9's diagnostics view - no static-deployment fallback exists (the
-// scheduled scan workflow never writes a diagnostics snapshot file, only
-// signal-log.json), so this is genuinely unavailable outside a live backend.
+// The Daily rollup: one row per UTC day and model, accumulated across every scan,
+// so "why were there no signals this week" has a per-day answer.
+function renderDailyRollup(daily) {
+  const days = Object.keys(daily || {}).sort().reverse().slice(0, 14);
+  if (!days.length) return "";
+  const rows = days.flatMap(day => Object.entries(daily[day]).map(([model, t]) => {
+    const gates = Object.entries(t.gates || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([g, n]) => `${g} (${n})`).join(", ");
+    return `<tr><td>${day}</td><td>${model}</td><td>${t.evaluations}</td><td>${t.detected}</td>
+      <td class="${t.qualified > 0 ? "positive" : ""}">${t.qualified}</td><td>${t.nearMiss}</td>
+      <td>${t.detected ? (t.scoreSum / t.detected).toFixed(1) : "-"}</td><td>${gates || "-"}</td></tr>`;
+  }));
+  return `<h3 style="margin-top:18px">Daily rollup (UTC)</h3>
+    <table class="tracker-table"><thead><tr><th>Day</th><th>Model</th><th>Evaluations</th><th>Detected</th><th>Qualified</th><th>Near-miss</th><th>Avg score</th><th>Top blockers</th></tr></thead>
+    <tbody>${rows.join("")}</tbody></table>`;
+}
+
+// The most recent detected setups with their final disposition and what the score
+// had and lacked - the per-candidate record behind the summary.
+function renderRecentCandidates(recent) {
+  if (!recent || !recent.length) return "";
+  const rows = recent.slice(0, 40).map(r => `<tr>
+      <td>${(r.scanTimeUtc || "").slice(5, 16).replace("T", " ")}</td><td>${r.symbol} ${r.timeframe}</td><td>${r.strategyId}</td>
+      <td>${r.finalDisposition || "-"}</td><td>${r.score}/${r.threshold}</td>
+      <td>${r.rewardToRisk != null ? Number(r.rewardToRisk).toFixed(1) : "-"}</td>
+      <td>${r.session || "-"}</td>
+      <td title="${(r.missingEvidence || []).join("; ")}">${(r.failedGates || []).length ? r.failedGates.join(", ") : "-"}</td></tr>`).join("");
+  return `<h3 style="margin-top:18px">Recent candidates</h3>
+    <table class="tracker-table"><thead><tr><th>Scan (UTC)</th><th>Pair</th><th>Model</th><th>Disposition</th><th>Score</th><th>R:R</th><th>Session</th><th>Failed gates</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
 async function renderDiagnostics() {
   const body = $("#trackerDiagnosticsBody");
   if (!body) return;
-  if (IS_STATIC_DEPLOYMENT) {
-    body.innerHTML = `<p class="tracker-empty">Not available on this static deployment - diagnostics need a live backend.</p>`;
-    return;
-  }
   body.innerHTML = `<p class="tracker-empty">Loading…</p>`;
   try {
-    const response = await fetch(`${API_BASE}/api/strategy-diagnostics`);
+    // Static site: the scan workflow writes diagnostics.json beside signal-log.json.
+    const path = IS_STATIC_DEPLOYMENT ? `diagnostics.json?_=${Date.now()}` : `${API_BASE}/api/strategy-diagnostics`;
+    const response = await fetch(path, IS_STATIC_DEPLOYMENT ? { cache: "no-store" } : undefined);
     if (!response.ok) throw new Error(`Diagnostics fetch ${response.status}`);
-    const summary = await response.json();
+    const payload = await response.json();
+    const summary = IS_STATIC_DEPLOYMENT ? payload.summary : payload;
+    let extra = "";
+    if (IS_STATIC_DEPLOYMENT) extra = renderDailyRollup(payload.daily) + renderRecentCandidates(payload.recent);
+    else {
+      try {
+        const daily = await (await fetch(`${API_BASE}/api/strategy-diagnostics/daily`)).json();
+        extra = renderDailyRollup(daily);
+      } catch { /* the rollup is supplementary */ }
+    }
     if (!summary.models.length) {
       body.innerHTML = `<p class="tracker-empty">No scans recorded yet.</p>`;
       return;
@@ -693,7 +728,7 @@ async function renderDiagnostics() {
             </tr>`).join("")}
         </tbody>
       </table>
-      <p class="tracker-readonly-note">${summary.totalRecords} total per-model evaluations recorded across all scans.</p>`;
+      <p class="tracker-readonly-note">${summary.totalRecords} per-model evaluations in the recent window.</p>${extra}`;
   } catch (err) {
     console.error("Could not reach strategy diagnostics:", err);
     body.innerHTML = `<p class="tracker-empty">Could not load diagnostics.</p>`;

@@ -93,6 +93,7 @@ jobs:
           Telegram__ChatId: ${{ secrets.TELEGRAM__CHATID }}
           SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
           SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
+          DIAGNOSTICS_OUTPUT_PATH: ${{ github.workspace }}/diagnostics.json
         run: dotnet backend-build/RealtouchSmartTrade.Api.dll --scan-once
 
       - name: Persist updated cache state to bot-state branch
@@ -152,6 +153,7 @@ jobs:
         run: |
           cp signals.json frontend/dist/frontend/browser/signals.json
           cp signal-log.json frontend/dist/frontend/browser/signal-log.json
+          cp diagnostics.json frontend/dist/frontend/browser/diagnostics.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

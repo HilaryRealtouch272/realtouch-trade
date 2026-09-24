@@ -175,9 +175,15 @@ public class SignalOrchestrator(
                 evaluations.Add(evaluation);
             }
 
-            diagnosticsStore.Record(instrument.Symbol, timeframeLabel, DateTime.UtcNow, condition, evaluations);
-
             var primary = SelectPrimary(evaluations, condition);
+
+            var scanNow = DateTime.UtcNow;
+            var freshness = completedCandles.Count > 0 ? (scanNow - completedCandles[^1].CloseTimeUtc).TotalMinutes : (double?)null;
+            diagnosticsStore.Record(instrument.Symbol, timeframeLabel, scanNow, condition, evaluations,
+                new DiagnosticsContext(
+                    calendarVeto.State.ToString(), TradingSessions.Describe(scanNow),
+                    _cachedCalendar is null ? null : EconomicCalendarVeto.MinutesToNextHighImpact(_cachedCalendar, instrument.AffectedCurrencies, scanNow),
+                    freshness, primary?.StrategyId, calendarVeto.State == CalendarVetoState.HardVeto));
             if (primary is null)
             {
                 var best = evaluations.OrderByDescending(e => e.Score).FirstOrDefault();
@@ -392,7 +398,7 @@ public class SignalOrchestrator(
         var gatesPassed = candidate.Qualified && tradePlan is not null && commonGatesPassed;
 
         return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, score.Grade, ThresholdFor(model),
-            score.Families, failedGates, warnings, gatesPassed ? candidate : null, direction, false, profile.Id);
+            score.Families, failedGates, warnings, gatesPassed ? candidate : null, direction, false, profile.Id, tradePlan?.RewardToRisk);
     }
 
     // Only fully confirmed setups qualify (per-model gates and threshold); the

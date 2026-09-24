@@ -226,6 +226,7 @@ app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalL
 app.MapGet("/api/strategy-diagnostics", (StrategyDiagnosticsStore diagnosticsStore) => Results.Ok(diagnosticsStore.Summarize()))
 .WithName("GetStrategyDiagnosticsSummary");
 
+app.MapGet("/api/strategy-diagnostics/daily", (StrategyDiagnosticsStore diagnosticsStore) => Results.Ok(diagnosticsStore.GetDaily()));
 app.MapGet("/api/strategy-diagnostics/raw", (StrategyDiagnosticsStore diagnosticsStore) => Results.Ok(diagnosticsStore.GetAll()))
 .WithName("GetStrategyDiagnosticsRaw");
 
@@ -319,6 +320,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var orchestrator = services.GetRequiredService<SignalOrchestrator>();
     var alerts = services.GetRequiredService<SignalAlertService>();
     var signalLog = services.GetRequiredService<SignalLogService>();
+    var diagnosticsStore = services.GetRequiredService<StrategyDiagnosticsStore>();
     var env = services.GetRequiredService<IHostEnvironment>();
     var scanLogger = services.GetRequiredService<ILogger<Program>>();
 
@@ -438,6 +440,14 @@ async Task RunScanOnceAsync(IServiceProvider services)
     Directory.CreateDirectory(Path.GetDirectoryName(logOutputPath) is { Length: > 0 } logDir ? logDir : ".");
     await File.WriteAllTextAsync(logOutputPath,
         System.Text.Json.JsonSerializer.Serialize(signalLog.GetAll(), jsonOptions));
+
+    // Same reason as the ledger file above: the static site has no live API, so the
+    // diagnostics view reads this snapshot instead.
+    var diagnosticsOutputPath = Environment.GetEnvironmentVariable("DIAGNOSTICS_OUTPUT_PATH")
+        ?? Path.Combine(env.ContentRootPath, "diagnostics.json");
+    Directory.CreateDirectory(Path.GetDirectoryName(diagnosticsOutputPath) is { Length: > 0 } diagDir ? diagDir : ".");
+    await File.WriteAllTextAsync(diagnosticsOutputPath,
+        System.Text.Json.JsonSerializer.Serialize(diagnosticsStore.BuildSnapshot(), jsonOptions));
 
     scanLogger.LogInformation("Scan complete: {Count} results written to {Path}", allResults.Count, outputPath);
 }

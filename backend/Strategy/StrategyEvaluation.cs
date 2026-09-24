@@ -35,7 +35,9 @@ public record StrategyEvaluation(
     bool ScoreFloorQualified = false,
     // Which scoring profile produced this score (section 10): how volume was
     // treated for this asset class and data availability.
-    string? ScoringProfileId = null
+    string? ScoringProfileId = null,
+    // The plan's calculated reward-to-risk (null when no plan could be built).
+    decimal? RewardToRisk = null
 )
 {
     // Qualified = detected, every mandatory gate passed (including the common

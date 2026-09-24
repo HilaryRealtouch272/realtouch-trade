@@ -19,6 +19,19 @@ public static class EconomicCalendarVeto
         "non-farm payroll", "employment", "unemployment", "fomc", "ecb", "boe", "jobs report"
     };
 
+    // Minutes until the next high-impact event for these currencies (null when the
+    // calendar is unavailable or none is scheduled). Recorded on every candidate.
+    public static int? MinutesToNextHighImpact(CalendarResult calendar, IReadOnlyCollection<string> affectedCurrencies, DateTime nowUtc)
+    {
+        if (!calendar.Available) return null;
+        var next = calendar.Events
+            .Where(e => e.Impact.Equals("high", StringComparison.OrdinalIgnoreCase)
+                        && affectedCurrencies.Contains(e.CountryOrCurrency, StringComparer.OrdinalIgnoreCase)
+                        && e.ScheduledUtc >= nowUtc)
+            .OrderBy(e => e.ScheduledUtc).FirstOrDefault();
+        return next is null ? null : (int)Math.Round((next.ScheduledUtc - nowUtc).TotalMinutes);
+    }
+
     public static CalendarVetoResult Evaluate(CalendarResult calendar, IReadOnlyCollection<string> affectedCurrencies, DateTime nowUtc)
     {
         if (!calendar.Available)
