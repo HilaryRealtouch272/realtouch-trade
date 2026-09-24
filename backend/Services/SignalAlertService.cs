@@ -72,6 +72,8 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
                     continue;
                 }
 
+                if (signalLog.IsInCooldown(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString())) continue; // just closed: never re-announce it
+
                 var current = new AlertedState(signal.Direction.ToString(), signal.SetupModel.ToString(), signal.Grade);
 
                 bool isDuplicate;

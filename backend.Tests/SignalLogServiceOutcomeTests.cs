@@ -164,7 +164,7 @@ public class SignalLogServiceOutcomeTests
         var entry = NewEntry("Open");
         var candles = new[] { Candle(entry.QualifiedAtUtc.AddMinutes(5), open: 100m, high: 125m, low: 85m, close: 122m) };
 
-        var result = SignalLogService.ApplyCandleSequence(entry, candles, DateTime.UtcNow);
+        var result = SignalLogService.ApplyCandleSequence(entry, candles, entry.QualifiedAtUtc.AddHours(3));
 
         Assert.Equal("StoppedOut", result.Status);
         Assert.Equal(-1m, result.RealizedR);
@@ -180,10 +180,23 @@ public class SignalLogServiceOutcomeTests
         var entry = NewEntry("Open");
         var candles = new[] { Candle(entry.QualifiedAtUtc.AddMinutes(5), open: 100m, high: 141m, low: 99m, close: 122m) };
 
-        var result = SignalLogService.ApplyCandleSequence(entry, candles, DateTime.UtcNow);
+        var result = SignalLogService.ApplyCandleSequence(entry, candles, entry.QualifiedAtUtc.AddHours(3));
 
         Assert.Equal("Tp3Hit", result.Status);
         Assert.Equal(2.25m, result.RealizedR);
+    }
+
+    [Fact]
+    public void ACandleThatHasNotClosedYetIsNeverReplayedAsPostEntryPrice()
+    {
+        // A feed with a shifted clock can label an old (or still-forming) bar as
+        // opening after the entry. It only counts once it has really closed.
+        var entry = NewEntry("Open");
+        var candles = new[] { Candle(entry.QualifiedAtUtc.AddMinutes(5), open: 100m, high: 141m, low: 99m, close: 122m) };
+
+        var result = SignalLogService.ApplyCandleSequence(entry, candles, entry.QualifiedAtUtc.AddMinutes(10));
+
+        Assert.Equal("Open", result.Status);
     }
 
     [Fact]

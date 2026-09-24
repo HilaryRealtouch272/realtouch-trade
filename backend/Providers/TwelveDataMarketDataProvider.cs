@@ -120,7 +120,7 @@ public class TwelveDataMarketDataProvider(IHttpClientFactory httpClientFactory, 
     {
         var client = httpClientFactory.CreateClient();
         var interval = Interval(timeframe);
-        var url = $"https://api.twelvedata.com/time_series?symbol={Uri.EscapeDataString(providerSymbol)}&interval={interval}&outputsize=120&apikey={apiKey}";
+        var url = $"https://api.twelvedata.com/time_series?symbol={Uri.EscapeDataString(providerSymbol)}&interval={interval}&outputsize=120&timezone=UTC&apikey={apiKey}";
         var response = await client.GetAsync(url, ct);
         var text = await response.Content.ReadAsStringAsync(ct);
         using var doc = JsonDocument.Parse(text);
@@ -145,7 +145,10 @@ public class TwelveDataMarketDataProvider(IHttpClientFactory httpClientFactory, 
         {
             var v = rows[i];
             var openTime = DateTime.Parse(v.GetProperty("datetime").GetString()!, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
-            var isComplete = i < rows.Count - 1; // most recent bar may still be forming
+            // Complete means the bar has actually closed in real time - never merely
+            // "not the last row": a feed whose clock or time zone is off would
+            // otherwise present bars from the future (or the forming bar) as closed.
+            var isComplete = i < rows.Count - 1 && openTime + duration <= receivedAt;
 
             candles.Add(new NormalizedCandle(
                 canonicalSymbol, providerSymbol, Name, timeframe,

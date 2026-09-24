@@ -195,6 +195,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
         var key = Key(result.InstrumentSymbol, result.Timeframe);
         if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
+        if (IsInCooldownLocked(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString())) return;
 
         var qualifiedAt = DateTime.UtcNow;
         // Real per-instrument metadata when configured; an unconfigured
@@ -349,6 +350,26 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     // direction reversal while the original is still open never gets a
     // ledger row, so it shouldn't get a fresh Telegram alert either. Returns
     // the currently open entry's direction, or null if nothing is open.
+    // After a trade closes, the same idea in the same direction may not be
+    // re-entered for a few candles: a setup that just failed is still "there" on
+    // the very next scan, and re-firing it immediately is re-buying the loss.
+    internal const int CooldownCandles = 4;
+
+    private bool IsInCooldownLocked(string symbol, string timeframe, string direction)
+    {
+        var window = TimeframeConfig.Duration(TimeframeIntervals.ParseLabel(timeframe) ?? Timeframe.H1) * CooldownCandles;
+        var now = DateTime.UtcNow;
+        return _entries.Any(e => e.Symbol == symbol && e.Timeframe == timeframe && e.Direction == direction
+            && e.ClosedAtUtc is { } closed && now - closed < window);
+    }
+
+    // True when a signal would be blocked by the post-close cooldown; used by the
+    // alert service so Telegram never announces something the ledger refuses.
+    public bool IsInCooldown(string symbol, string timeframe, string direction)
+    {
+        lock (_lock) return IsInCooldownLocked(symbol, timeframe, direction);
+    }
+
     public string? GetOpenDirection(string symbol, string timeframe)
     {
         lock (_lock)

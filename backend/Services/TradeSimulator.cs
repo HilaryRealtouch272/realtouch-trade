@@ -51,7 +51,7 @@ public static class TradeSimulator
         IReadOnlyList<NormalizedCandle>? fineCandles = null)
     {
         var relevant = candles
-            .Where(c => c.IsComplete && c.OpenTimeUtc >= entry.QualifiedAtUtc)
+            .Where(c => c.IsComplete && c.OpenTimeUtc >= entry.QualifiedAtUtc && c.CloseTimeUtc <= now)
             .OrderBy(c => c.OpenTimeUtc).ToList();
 
         foreach (var candle in relevant)
