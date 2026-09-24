@@ -469,6 +469,24 @@ How it is bounded, so it stays honest and measurable:
 `StrategyEvaluation.ScoreFloor` is the one constant to change if the floor
 is ever revisited.
 
+### Reachable entries only (2026-09-24)
+
+An entry zone is eligible only if price can reach it within 3 ATR
+(`MaxEntryDistanceAtrMultiple` in `Strategy/EntryStopTarget.cs`) - about what
+price typically travels over a plan's 10-candle life. If the preferred zone
+type is out of reach the next type is used; if nothing is reachable there is
+no plan, so nothing is alerted or logged. Before this, a live CAKE/USDT 4H
+Long was planned with its entry 24% below the market: it could never
+trigger, and its distance inflated the reward-to-risk (5.5) and the score
+built on it. TP3 is also always at least 1R beyond TP2 (it could previously
+land below TP2 when TP2 came from a far key level).
+
+Pending signals (a qualified setup whose price has not reached the entry
+yet) were tried - alerted, logged as Pending, filled on a touch, withdrawn if
+the setup stopped qualifying - and deliberately removed. Alerts and ledger
+rows still wait for `Triggered`, so every tracked trade is one that was
+actually announced.
+
 ## Not yet implemented
 
 - **Extending Section 7's live wiring to FX/Metals/Energy** - blocked on
