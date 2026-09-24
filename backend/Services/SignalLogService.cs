@@ -83,7 +83,11 @@ public record QualificationLogEntry(
     // and calendar state on every candidate and resolved trade).
     string? Session = null,
     string? CalendarState = null,
-    string? NewsState = null
+    string? NewsState = null,
+    // How many of TP1-TP3 price has actually TOUCHED (0-3). In this simulation every touched
+    // target is a limit fill, so touched equals executed; the field keeps the two distinct in
+    // the record so a future partial-fill rule cannot silently merge them.
+    int? TargetsTouched = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the

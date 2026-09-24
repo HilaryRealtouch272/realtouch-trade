@@ -519,3 +519,26 @@ never blocks); 4H bars are built from 1H on UTC boundaries; 15m same-candle
 stop/target order is settled stop-first and counted as uncertain; entries assume
 the plan's preferred entry fills when the engine reports the setup Triggered.
 Crypto (Coinbase) only - FX history needs a paid data source.
+
+## Higher-timeframe targets, stale-data gate and shadow strategies (2026-09-24)
+
+- **Targets see higher timeframes.** The trade plan's key levels now include the
+  levels of the context timeframes (cached with their Market Condition). TP2 is the
+  nearest opposing level beyond 1R from ANY timeframe, TP3 the furthest beyond TP2,
+  and each stop and target names the timeframe and level that justified it (e.g.
+  "nearest opposing key level (Daily PreviousDayHigh)"). A nearby Daily/4H barrier
+  therefore caps TP2 and the mandatory R:R gate rejects the setup - the
+  obstacle-adjusted reward the review asked for. In the 60-day BTC/USDT 15m backtest
+  the trade set was unchanged, because 7 of its 9 trades were Range trades, which use
+  their own plan.
+- **Stale data blocks.** A required context timeframe that is stale or missing
+  fails the candidate with `DATA_STALE` instead of silently skipping that timeframe.
+- **Shadow strategies** (Session Liquidity Sweep + MSS, Volatility Contraction
+  Breakout + Retest, Zone Mitigation, Failed Breakout + Reclaim) are evaluated on every
+  scan and recorded to `shadow-candidates.json`; they never alert and never enter the
+  ledger. `--backtest-shadow SYMBOL TF DAYS` validates them on the same simulator. First
+  run, BTC/USDT 15m, 60 days: 327 trades, profit factor 0.96, expectancy -0.02R, out-of-sample
+  PF 0.82 - none has earned promotion, so all stay shadow. Volatility Contraction produced
+  no trades. Zone Mitigation uses setup-timeframe zones (higher-timeframe zone detection
+  is not built).
+- **Targets touched** is recorded separately from targets executed.

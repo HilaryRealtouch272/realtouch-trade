@@ -53,7 +53,9 @@ public class SignalOrchestrator(
     // When true (the default) the trade plan's targets also see the higher-timeframe key
     // levels, so a nearby Daily/4H barrier caps TP2 and, through the R:R gate, rejects a
     // setup whose path is blocked. Off only to compare against the old behaviour.
-    bool useHigherTimeframeLevels = true)
+    bool useHigherTimeframeLevels = true,
+    // Shadow strategies are evaluated and recorded here, never alerted or entered.
+    ShadowCandidateStore? shadowStore = null)
 {
     private DateTime Now() => clock?.Invoke() ?? DateTime.UtcNow;
 
@@ -195,6 +197,12 @@ public class SignalOrchestrator(
             }
 
             var primary = SelectPrimary(evaluations, condition);
+
+            if (shadowStore is not null)
+            {
+                var shadowCandidates = ShadowStrategies.Evaluate(mainCandles, displayTimeframe, structure, obs, fvgs, keyLevels, MinStopCostFloor(instrument.Symbol));
+                shadowStore.Record(instrument.Symbol, timeframeLabel, Now(), TimeframeConfig.Duration(displayTimeframe), shadowCandidates);
+            }
 
             var scanNow = Now();
             var freshness = completedCandles.Count > 0 ? (scanNow - completedCandles[^1].CloseTimeUtc).TotalMinutes : (double?)null;

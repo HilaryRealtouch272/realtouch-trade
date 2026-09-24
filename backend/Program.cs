@@ -25,6 +25,7 @@ builder.Services.AddSingleton<IMarketDataProvider, TwelveDataMarketDataProvider>
 builder.Services.AddSingleton<IMarketDataProvider, CoinbaseMarketDataProvider>();
 builder.Services.AddSingleton<IFineCandleSource, FineCandleSource>();
 builder.Services.AddSingleton<TradeReconciler>();
+builder.Services.AddSingleton<ShadowCandidateStore>();
 builder.Services.AddSingleton<IEconomicCalendarProvider, FinnhubEconomicCalendarProvider>();
 builder.Services.AddSingleton<MarketauxNewsProvider>();
 builder.Services.AddSingleton<AlphaVantageNewsProvider>();
@@ -60,6 +61,15 @@ var app = builder.Build();
 // always-on server used during development, unaffected by this.
 // Backtest: replays the real engine over Coinbase history. Usage:
 //   dotnet run -- --backtest BTC/USDT 15m 30      (symbol, 15m or 1H, days)
+if (args.Contains("--backtest-shadow"))
+{
+    var i = Array.IndexOf(args, "--backtest-shadow");
+    var tf = TimeframeIntervals.ParseLabel(args[i + 2]) ?? throw new ArgumentException("Timeframe must be 15m or 1H");
+    var report = await new RealtouchSmartTrade.Api.Backtesting.Backtester().RunShadowAsync(args[i + 1], tf, int.Parse(args[i + 3]), new Progress<string>(Console.WriteLine));
+    Console.WriteLine(RealtouchSmartTrade.Api.Backtesting.BacktestFormatter.Format(report));
+    return;
+}
+
 if (args.Contains("--backtest"))
 {
     var i = Array.IndexOf(args, "--backtest");
@@ -339,6 +349,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var signalLog = services.GetRequiredService<SignalLogService>();
     var diagnosticsStore = services.GetRequiredService<StrategyDiagnosticsStore>();
     var reconciler = services.GetRequiredService<TradeReconciler>();
+    var shadowStore = services.GetRequiredService<ShadowCandidateStore>();
     var env = services.GetRequiredService<IHostEnvironment>();
     var scanLogger = services.GetRequiredService<ILogger<Program>>();
 
@@ -466,6 +477,10 @@ async Task RunScanOnceAsync(IServiceProvider services)
     Directory.CreateDirectory(Path.GetDirectoryName(diagnosticsOutputPath) is { Length: > 0 } diagDir ? diagDir : ".");
     await File.WriteAllTextAsync(diagnosticsOutputPath,
         System.Text.Json.JsonSerializer.Serialize(diagnosticsStore.BuildSnapshot(), jsonOptions));
+
+    // Shadow-mode candidates (never alerted or entered) for the static site.
+    var shadowPath = Environment.GetEnvironmentVariable("SHADOW_OUTPUT_PATH") ?? Path.Combine(env.ContentRootPath, "shadow-candidates.json");
+    await File.WriteAllTextAsync(shadowPath, System.Text.Json.JsonSerializer.Serialize(shadowStore.GetAll(), jsonOptions));
 
     // Replay open and recently closed crypto trades against one-minute candles and
     // report any difference from what the tracker recorded. Never fatal.

@@ -74,7 +74,7 @@ public static class TradeSimulator
         IntrabarSequenceUncertain = false, MaxFavorableExcursionR = null, MaxAdverseExcursionR = null,
         GrossMovementUnits = null, CostMovementUnits = null, NetMovementUnits = null, MonetaryPnL = null,
         PercentageReturn = null, FinalOutcome = null, ClosureReason = null, HoldingDurationHours = null,
-        LastProcessedUtc = null
+        LastProcessedUtc = null, TargetsTouched = null
     };
 
     // Settles an open trade from ONE-MINUTE candles: it starts at the trade's
@@ -178,6 +178,8 @@ public static class TradeSimulator
         }
 
         bool Reached(decimal level) => isLong ? price >= level : price <= level;
+        var touched = (Reached(entry.Tp1) ? 1 : 0) + (Reached(entry.Tp2) ? 1 : 0) + (Reached(entry.Tp3) ? 1 : 0);
+        if (touched > (entry.TargetsTouched ?? 0)) entry = entry with { TargetsTouched = touched };
         var stopped = isLong ? price <= entry.Stop : price >= entry.Stop;
 
         if (stopped)
