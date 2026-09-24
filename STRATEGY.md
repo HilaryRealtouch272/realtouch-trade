@@ -488,6 +488,26 @@ be checked. Check high-impact news yourself before entering." Not supplied at
 all (null) and setup checks that were never assessed still block. The
 Finnhub key itself still needs replacing (GitHub secret `FINNHUB__APIKEYS`).
 
+### Minimum tradeable stop (2026-09-24)
+
+Four trades taken after the fixes exposed stops inside the noise: a 0.5 pip
+EUR/USD stop (a "+21.19R" win that was really +8.8 pips), a 21-point stop on
+an $84,475 BTC entry (stopped out for -1R in 37 minutes), and a 1.9 pip stop.
+Because reward is measured in multiples of the stop, a tiny stop produces
+absurd reward-to-risk (17.5, 20.9) that inflated scores to A/A+ and the
+average R. Both offenders were the Range model, whose plan put the stop only
+0.10 x ATR beyond the boundary, so its risk was always a tenth of a candle.
+
+A stop must now be at least `max(0.5 x ATR, 3 x (spread + slippage))` from
+entry (`MinimumStopDistance`). A tighter stop is WIDENED to that minimum
+rather than rejected, so the setup survives with a tradeable stop and an
+honest reward-to-risk (which may now fail the 2:1 gate - that is the point).
+Applies to both plan builders. If the cost floor alone exceeds 8 x ATR the
+instrument is untradeable on that timeframe and there is no plan. The
+spread and slippage come from `InstrumentMetadataCatalog` (CAKE corrected to
+its real ~0.003 spread). Historical R multiples from before this change are
+unreliable where a tiny stop inflated them.
+
 ### Reachable entries only (2026-09-24)
 
 An entry zone is eligible only if price can reach it within 3 ATR

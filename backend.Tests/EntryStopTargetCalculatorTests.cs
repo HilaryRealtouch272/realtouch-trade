@@ -151,10 +151,13 @@ public class EntryStopTargetCalculatorTests
     }
 
     [Fact]
-    public void RejectsAnIrrationallyTightStopDistance()
+    public void WidensAnIrrationallyTightStopToTheMinimumTradeableDistanceInsteadOfPlanningOnNoise()
     {
         // A degenerate zone (min == max) forces a near-zero stop distance once
         // the ATR buffer is applied on top of an already-tiny structural level.
+        // Such a stop is inside candle noise, so it is widened to the minimum
+        // tradeable distance (0.5 ATR) rather than planned as-is - or thrown
+        // away, which would lose the setup.
         var ctx = BuildUptrendContext();
         var completed = ctx.candles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList();
         var tinyBlock = new OrderBlock(
@@ -173,6 +176,29 @@ public class EntryStopTargetCalculatorTests
             new[] { tinyBlock }, Array.Empty<FairValueGap>(), Array.Empty<RealtouchWillisZone>(),
             ctx.sweeps, ctx.levels);
 
-        Assert.Null(plan);
+        Assert.NotNull(plan);
+        var atr = Indicators.Atr(completed, 14)[^1]!.Value;
+        var risk = Math.Abs(plan!.Entry.PreferredEntry - plan.Stop.Price);
+        Assert.True(risk >= 0.5m * atr, $"stop distance {risk} must be at least 0.5 ATR ({0.5m * atr})");
+        Assert.True(plan.Stop.Price < plan.Entry.PreferredEntry, "a Long stop stays below entry");
+        Assert.Contains("widened", plan.Stop.Reason);
+    }
+
+    [Theory]
+    // isLong, entry, stop, atr, costFloor -> expected stop, expected rational
+    [InlineData(true, 100.0, 99.9, 2.0, 0.0, 99.0, true)]    // 0.1 tight: widened to 0.5 ATR = 1.0
+    [InlineData(true, 100.0, 99.9, 2.0, 3.0, 97.0, true)]    // cost floor (3.0) beats 0.5 ATR
+    [InlineData(true, 100.0, 97.0, 2.0, 0.0, 97.0, true)]    // already far enough: untouched
+    [InlineData(false, 100.0, 100.1, 2.0, 0.0, 101.0, true)] // Short mirror
+    [InlineData(false, 100.0, 100.1, 2.0, 3.0, 103.0, true)]
+    [InlineData(true, 100.0, 99.9, 2.0, 17.0, 83.0, false)]  // costs alone exceed 8 ATR: untradeable, no plan
+    public void ATooTightStopIsWidenedToTheLargerOfHalfAnAtrAndTheCostFloor(
+        bool isLong, double entry, double stop, double atr, double costFloor, double expectedStop, bool expectedRational)
+    {
+        var result = EntryStopTargetCalculator.EnforceMinimumStop(
+            new StopPlan((decimal)stop, "structure", IsRational: true), (decimal)entry, isLong, (decimal)atr, (decimal)costFloor);
+
+        Assert.Equal((decimal)expectedStop, result.Price);
+        Assert.Equal(expectedRational, result.IsRational);
     }
 }

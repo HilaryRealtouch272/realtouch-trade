@@ -14,7 +14,8 @@ public static class RangeTradePlan
     private const decimal StopAtrBuffer = 0.10m;
 
     public static TradePlan? Build(
-        IReadOnlyList<NormalizedCandle> allCandles, Timeframe timeframe, SetupDirection direction, DateTime lastCloseTimeUtc)
+        IReadOnlyList<NormalizedCandle> allCandles, Timeframe timeframe, SetupDirection direction, DateTime lastCloseTimeUtc,
+        decimal minStopCostFloor = 0m)
     {
         var completed = allCandles.Where(c => c.IsComplete && c.Quality == DataQuality.Ok).OrderBy(c => c.OpenTimeUtc).ToList();
         const int rangeLookback = 20;
@@ -33,7 +34,14 @@ public static class RangeTradePlan
         var buffer = StopAtrBuffer * atr.Value;
 
         var preferredEntry = boundary;
-        var stopPrice = isLong ? boundary - buffer : boundary + buffer;
+        // The stop used to be the boundary plus ONLY the 0.10xATR buffer, so the
+        // risk was always a tenth of a candle: equilibrium is always many times
+        // further away, so reward-to-risk came out at 17.5 and 20.9 on live
+        // trades (a 21-point BTC stop, a half-pip EUR/USD stop) - inflating the
+        // score, and stopped out on noise within minutes. The stop now sits at
+        // least the minimum tradeable distance beyond the boundary.
+        var stopOffset = Math.Max(buffer, EntryStopTargetCalculator.MinimumStopDistance(atr.Value, minStopCostFloor));
+        var stopPrice = isLong ? boundary - stopOffset : boundary + stopOffset;
         var riskDistance = Math.Abs(preferredEntry - stopPrice);
         if (riskDistance <= 0) return null;
 
@@ -43,7 +51,8 @@ public static class RangeTradePlan
             EntryTimeframe: timeframe, ExpiryUtc: lastCloseTimeUtc + TimeframeConfig.Duration(timeframe) * 10,
             InvalidationPrice: stopPrice, Triggered: true, ZoneSource: "RangeBoundary");
 
-        var stop = new StopPlan(stopPrice, "range boundary, plus 0.10xATR(14) buffer", IsRational: true);
+        var stop = new StopPlan(stopPrice, "range boundary, plus at least the minimum tradeable stop distance",
+            IsRational: stopOffset <= EntryStopTargetCalculator.MaxRationalStopAtrMultiple * atr.Value);
 
         var tp1 = isLong ? preferredEntry + riskDistance : preferredEntry - riskDistance; // ~1R
         var targets = new TargetPlan(
@@ -51,6 +60,8 @@ public static class RangeTradePlan
             equilibrium, "range equilibrium",
             oppositeBoundary, "opposite range boundary",
             EntryStopTargetCalculator.Tp1Weight, EntryStopTargetCalculator.Tp2Weight, EntryStopTargetCalculator.Tp3Weight);
+
+        if (!stop.IsRational) return null;
 
         var reward = Math.Abs(targets.Tp2 - preferredEntry);
         var rr = riskDistance == 0 ? 0 : reward / riskDistance;

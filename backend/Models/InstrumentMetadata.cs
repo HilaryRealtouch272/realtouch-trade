@@ -54,7 +54,7 @@ public static class InstrumentMetadataCatalog
         // Priced around $2.55 at verification time (much lower price and
         // liquidity than BTC/ETH) - smaller quote-currency spread/slippage
         // to match, sized off Coinbase's real ~0.003 bid/ask at the time.
-        new InstrumentMetadata("CAKE/USDT", "crypto", 3, 0.001m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.01m, DefaultSlippageUnits: 0.01m),
+        new InstrumentMetadata("CAKE/USDT", "crypto", 3, 0.001m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.004m, DefaultSlippageUnits: 0.003m),
     };
 
     public static InstrumentMetadata For(string symbol) =>

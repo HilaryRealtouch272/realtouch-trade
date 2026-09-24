@@ -189,7 +189,7 @@ public class SignalOrchestrator(
 
             var candidate = primary.Candidate!;
             var htfAlignment = contextCache.TryGetValue(candidate.Direction, out var htf) ? htf : (HtfAlignment?)null;
-            var tradePlan = await BuildTradePlan(model: primary.StrategyId, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, candidate.Direction);
+            var tradePlan = await BuildTradePlan(model: primary.StrategyId, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, candidate.Direction, MinStopCostFloor(instrument.Symbol));
 
             if (tradePlan is null)
             {
@@ -237,10 +237,22 @@ public class SignalOrchestrator(
         }
     }
 
+    // A stop must be at least this many times the instrument's round-trip cost
+    // (spread plus slippage, from InstrumentMetadataCatalog) so costs cannot eat
+    // a large share of the risk. 0 for an instrument with no configured costs -
+    // the ATR-based minimum then still applies.
+    private const decimal MinStopCostMultiple = 3m;
+
+    internal static decimal MinStopCostFloor(string symbol) =>
+        InstrumentMetadataCatalog.TryGet(symbol, out var meta) && meta is not null
+            ? (meta.DefaultSpreadUnits + meta.DefaultSlippageUnits) * meta.MovementUnitSize * MinStopCostMultiple
+            : 0m;
+
     private async Task<TradePlan?> BuildTradePlan(
         SetupModelType model, IReadOnlyList<NormalizedCandle> mainCandles, Timeframe displayTimeframe, StructureResult structure,
         IReadOnlyList<OrderBlock> obs, IReadOnlyList<FairValueGap> fvgs, IReadOnlyList<RealtouchWillisZone> willis,
-        IReadOnlyList<LiquiditySweep> sweeps, IReadOnlyList<KeyLevel> keyLevels, SetupDirection direction)
+        IReadOnlyList<LiquiditySweep> sweeps, IReadOnlyList<KeyLevel> keyLevels, SetupDirection direction,
+        decimal minStopCostFloor = 0m)
     {
         await Task.CompletedTask;
         // Range Boundary Rejection needs its own plan (target = equilibrium
@@ -250,9 +262,9 @@ public class SignalOrchestrator(
         if (model == SetupModelType.RangeBoundaryRejection)
         {
             var lastCloseTime = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).Last().CloseTimeUtc;
-            return RangeTradePlan.Build(mainCandles, displayTimeframe, direction, lastCloseTime);
+            return RangeTradePlan.Build(mainCandles, displayTimeframe, direction, lastCloseTime, minStopCostFloor);
         }
-        return EntryStopTargetCalculator.Compute(mainCandles, displayTimeframe, direction, structure, obs, fvgs, willis, sweeps, keyLevels);
+        return EntryStopTargetCalculator.Compute(mainCandles, displayTimeframe, direction, structure, obs, fvgs, willis, sweeps, keyLevels, minStopCostFloor);
     }
 
     // One model's full, independent evaluation: detect -> HTF (if a
@@ -289,7 +301,7 @@ public class SignalOrchestrator(
             htfCache[direction] = htfAlignment;
         }
 
-        var tradePlan = await BuildTradePlan(model, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, direction);
+        var tradePlan = await BuildTradePlan(model, mainCandles, displayTimeframe, structure, obs, fvgs, willis, sweeps, keyLevels, direction, MinStopCostFloor(instrument.Symbol));
 
         SetupCandidate? pass2 = model switch
         {

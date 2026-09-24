@@ -36,8 +36,31 @@ public static class EntryStopTargetCalculator
 {
     private const decimal StopAtrBuffer = 0.10m;
     private const int ExpiryCandles = 10;
-    private const decimal MinRationalStopAtrMultiple = 0.25m;
-    private const decimal MaxRationalStopAtrMultiple = 8m;
+    // A stop tighter than this is inside ordinary candle noise (and, on FX,
+    // inside the spread): it stops out on nothing and, because reward is
+    // measured in multiples of the stop, produces absurd reward-to-risk
+    // (live trades showed 17.5 and 20.9 from stops of 21 BTC points and half
+    // a pip) that inflate the score. A too-tight stop is WIDENED to this
+    // minimum rather than rejected, so the setup survives with a real,
+    // tradeable stop and an honest reward-to-risk.
+    internal const decimal MinStopAtrMultiple = 0.5m;
+    internal const decimal MaxRationalStopAtrMultiple = 8m;
+
+    // The smallest tradeable stop distance: at least MinStopAtrMultiple ATR,
+    // and never less than costFloor (a multiple of the instrument's spread
+    // plus slippage, supplied by the caller) so costs cannot eat the risk.
+    internal static decimal MinimumStopDistance(decimal atr, decimal costFloor) => Math.Max(MinStopAtrMultiple * atr, costFloor);
+
+    internal static StopPlan EnforceMinimumStop(StopPlan stop, decimal entry, bool isLong, decimal atr, decimal costFloor)
+    {
+        var minimum = MinimumStopDistance(atr, costFloor);
+        if (Math.Abs(entry - stop.Price) >= minimum) return stop;
+
+        var widened = isLong ? entry - minimum : entry + minimum;
+        // A floor beyond the upper sanity bound means costs alone make this
+        // instrument untradeable on this timeframe: no plan, not a huge stop.
+        return new StopPlan(widened, stop.Reason + ", widened to the minimum tradeable stop distance", IsRational: minimum <= MaxRationalStopAtrMultiple * atr);
+    }
 
     // How far, in ATR, a zone may sit from the last close and still be a
     // realistic entry. A plan is only live for ExpiryCandles candles, and
@@ -67,7 +90,8 @@ public static class EntryStopTargetCalculator
         IReadOnlyList<FairValueGap> fvgs,
         IReadOnlyList<RealtouchWillisZone> willisZones,
         IReadOnlyList<LiquiditySweep> sweeps,
-        IReadOnlyList<KeyLevel> keyLevels)
+        IReadOnlyList<KeyLevel> keyLevels,
+        decimal minStopCostFloor = 0m)
     {
         var completed = allCandles.Where(c => c.IsComplete && c.Quality == DataQuality.Ok)
             .OrderBy(c => c.OpenTimeUtc).ToList();
@@ -81,6 +105,8 @@ public static class EntryStopTargetCalculator
 
         var entry = BuildEntryPlan(zone.Value, completed, timeframe, isLong, structure);
         var stop = BuildStopPlan(zone.Value, isLong, atr.Value, orderBlocks, sweeps, entry.PreferredEntry);
+        if (!stop.IsRational) return null;
+        stop = EnforceMinimumStop(stop, entry.PreferredEntry, isLong, atr.Value, minStopCostFloor);
         if (!stop.IsRational) return null;
 
         var targets = BuildTargetPlan(entry.PreferredEntry, stop.Price, isLong, keyLevels, atr.Value);
@@ -197,7 +223,8 @@ public static class EntryStopTargetCalculator
         // wrong side of entry is not "a bit off", it's a fundamentally
         // invalid trade plan and must never qualify as rational.
         var correctSide = isLong ? price < entryPrice : price > entryPrice;
-        var isRational = correctSide && atr > 0 && distance >= MinRationalStopAtrMultiple * atr && distance <= MaxRationalStopAtrMultiple * atr;
+        // Too-TIGHT stops are widened afterwards (EnforceMinimumStop), not rejected.
+        var isRational = correctSide && atr > 0 && distance <= MaxRationalStopAtrMultiple * atr;
 
         return new StopPlan(price, $"{chosen.reason}, plus {StopAtrBuffer}xATR(14) buffer", isRational);
     }
