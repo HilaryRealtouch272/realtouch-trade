@@ -487,16 +487,6 @@ position.
   missed), or the tracking window expires unfilled. There was never a
   position, so there is no win, loss or R: `RealizedR` stays null, and
   Unfilled rows are excluded from win rate and average R.
-- **Withdrawn**: a pending signal is a promise the setup is still valid. If
-  the engine re-runs that pair and timeframe on good data (a live price came
-  back) and no longer produces a qualified signal in the same direction, the
-  signal is withdrawn and Telegram says "SETUP WITHDRAWN - do not enter", so
-  it can never fill later as a trade the system no longer endorses. Price is
-  resolved first: if price already traded through the entry, the fill stands
-  (a limit order may have filled before the scan could know). A data failure
-  carries no live price and never withdraws anything; an open position is
-  never withdrawn, only managed by its stop and targets. Like Unfilled, no
-  win, loss or R is recorded.
 - **Skipped**: a signal whose price has already gone through its entry
   without triggering is neither a limit order waiting nor a position, so it
   is not alerted or logged.

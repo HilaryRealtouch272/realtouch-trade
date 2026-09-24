@@ -238,35 +238,10 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             ? ApplyCandleSequence(entry, result.Candles, DateTime.UtcNow)
             : ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
 
-        // A pending signal is a promise that the setup is still valid. Price is
-        // resolved FIRST above - if it already traded through the entry the
-        // fill stands, since a limit order may well have filled before this
-        // scan could know the setup had gone. If it is STILL pending and the
-        // engine re-ran this pair on good data (a live price came back) and
-        // no longer produces a qualified signal in the same direction, the
-        // signal is withdrawn: it must not fill later as a trade the system
-        // no longer endorses, and the trader must be told to stand aside. A
-        // data failure carries no live price, so it never withdraws anything.
-        if (entry.Status == "Pending" && result.LivePrice.HasValue && !StillQualifies(entry, result))
-            entry = Withdraw(entry, DateTime.UtcNow, WithdrawalReason(entry, result));
-
         _entries[index] = entry;
         if (!IsActiveStatus(entry.Status)) _openKeyToEntryId.Remove(key);
         return entry.Status != statusBefore ? entry : null;
     }
-
-    private static bool StillQualifies(QualificationLogEntry entry, OrchestratorResult result) =>
-        result.Success && result.Signal is { } s && s.Direction.ToString() == entry.Direction;
-
-    private static string WithdrawalReason(QualificationLogEntry entry, OrchestratorResult result) =>
-        result.Success && result.Signal is { } s
-            ? $"The setup flipped to {s.Direction} before the {entry.Direction} entry was reached"
-            : $"No longer qualifies before the entry was reached: {result.Reason}";
-
-    // Never entered and now invalid: no position ever existed, so no win, loss
-    // or R - same as Unfilled, but the trader is told to stand aside.
-    private static QualificationLogEntry Withdraw(QualificationLogEntry entry, DateTime now, string reason) =>
-        entry with { Status = "Withdrawn", ClosedAtUtc = now, RealizedR = null, FinalOutcome = "Withdrawn", ClosureReason = reason };
 
     // Checks a fresh price against every OTHER open entry for the same
     // symbol (any timeframe but the one this price already came from -
@@ -554,7 +529,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         return banked + remainingWeight * remainingOutcomeR;
     }
 
-    internal static string FormatOutcomeMessage(QualificationLogEntry entry)
+    private static string FormatOutcomeMessage(QualificationLogEntry entry)
     {
         var (icon, label) = entry.Status switch
         {
@@ -565,7 +540,6 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             "Expired" => ("⌛", "Expired — flat"),
             "Open" => ("✅", "ENTRY FILLED — now a live position"),
             "Unfilled" => ("⌛", "Not filled — no position was ever opened"),
-            "Withdrawn" => ("❌", "SETUP WITHDRAWN — no longer qualifies. Do not enter."),
             _ => ("ℹ️", entry.Status)
         };
         var directionIcon = entry.Direction == "Long" ? "🟢" : "🔴";
@@ -583,20 +557,14 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             "Tp3Hit" => $"TP3 {TelegramSignalFormatter.FormatPrice(entry.Tp3)} · ",
             "StoppedOut" => $"Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} · ",
             "Expired" => $"Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} (not reached) · ",
+            "Unfilled" => $"{entry.ClosureReason} · ",
             _ => ""
         };
 
         return
             $"{icon} *{entry.Symbol}* · {entry.Timeframe} · {directionIcon} {entry.Direction.ToUpperInvariant()} — *{label}*\n" +
-            $"Original setup: Entry {TelegramSignalFormatter.FormatPrice(entry.Entry)} · {levelLine}Grade {entry.Grade} ({entry.Score}/100){realized}{ReasonLine(entry)}";
+            $"Original setup: Entry {TelegramSignalFormatter.FormatPrice(entry.Entry)} · {levelLine}Grade {entry.Grade} ({entry.Score}/100){realized}";
     }
-
-    // Why a signal never became a position. Telegram Markdown mode rejects a
-    // whole message on a stray underscore or asterisk, so strip them.
-    private static string ReasonLine(QualificationLogEntry entry) =>
-        entry.Status is "Unfilled" or "Withdrawn" && !string.IsNullOrWhiteSpace(entry.ClosureReason)
-            ? "\n" + entry.ClosureReason.Replace("_", " ").Replace("*", "")
-            : "";
 
     // A real, generous holding window scaled to the timeframe's own candle
     // duration, measured from when THIS ledger entry started tracking - NOT
