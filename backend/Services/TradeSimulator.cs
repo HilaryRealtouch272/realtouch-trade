@@ -309,12 +309,15 @@ public static class TradeSimulator
         }
         var netR = grossR - costR;
 
-        var outcome = Math.Abs(netR) <= 0.05m ? "Breakeven"
-            : entry.Status == "Tp3Hit" ? "TP3 Win"
-            : entry.Tp2HitAtUtc is not null ? "TP2 Partial Win"
-            : entry.Tp1HitAtUtc is not null ? "TP1 Partial Win"
-            : entry.Status == "StoppedOut" ? "Stopped Out"
-            : "Rule-Based Exit";
+        // The label follows the NET result, not just the event: a stop hit after
+        // TP1 banked can still lose once the remainder and costs are counted.
+        string outcome;
+        if (Math.Abs(netR) <= 0.05m) outcome = "Breakeven";
+        else if (netR > 0)
+            outcome = entry.Status == "Tp3Hit" ? "TP3 Win" : entry.Tp2HitAtUtc is not null ? "TP2 Partial Win"
+                : entry.Tp1HitAtUtc is not null ? "TP1 Partial Win" : "Rule-Based Exit";
+        else
+            outcome = entry.Status == "StoppedOut" ? (entry.Tp1HitAtUtc is not null ? "Partial Profit Then Stop (Net Loss)" : "Stopped Out") : "Rule-Based Exit";
 
         return entry with
         {

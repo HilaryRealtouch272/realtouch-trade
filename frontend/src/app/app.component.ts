@@ -604,19 +604,30 @@ async function tryUnlockTracker(passphrase) {
   return true;
 }
 
-function trackerStatusLabel(status) {
+// The event (what price did) and the economic result (what the trade earned
+// after costs) are different facts: a stop hit after TP1 and TP2 were banked can
+// still finish net positive. The label states the event, the class and suffix
+// state the result, so a stopped trade is never blindly called a loss.
+function trackerStatusLabel(status, e) {
+  const r = e ? tradeR(e) : null;
   switch (status) {
     case "Open": return "Open";
     case "Tp1Hit": return "TP1 hit";
     case "Tp2Hit": return "TP2 hit";
-    case "Tp3Hit": return "TP3 hit (win)";
-    case "StoppedOut": return "Stopped out (loss)";
-    case "Expired": return "Expired (flat)";
+    case "Tp3Hit": return "TP3 hit" + (r !== null && r <= 0 ? " (net not positive after costs)" : " (win)");
+    case "StoppedOut": {
+      if (r === null) return "Stopped out";
+      const partial = e.tp1HitAtUtc ? " after partial profit" : "";
+      return r > EPS_R ? `Stopped${partial} (net profit)` : r < -EPS_R ? `Stopped${partial} (net loss)` : `Stopped${partial} (breakeven)`;
+    }
+    case "Expired": return "Expired (marked to market)";
     default: return status;
   }
 }
 
-function trackerStatusClass(status) {
+function trackerStatusClass(status, e) {
+  const r = e ? tradeR(e) : null;
+  if (r !== null && RESOLVED_STATUSES.includes(status)) return r > EPS_R ? "positive" : r < -EPS_R ? "negative" : "";
   if (status === "Tp3Hit") return "positive";
   if (status === "StoppedOut") return "negative";
   return "";
@@ -738,18 +749,43 @@ async function renderSignalTracker() {
 // qualification engine; it's purely informational until there's a real,
 // meaningful sample size to justify anything more automated.
 const RESOLVED_STATUSES = ["Tp3Hit", "StoppedOut", "Expired"];
+// Below this a net result is treated as breakeven rather than a win or loss.
+const EPS_R = 0.005;
+
+// One classification used by every table, so the same trade can never be a
+// "loss" in one place and a profit in another.
+function classifyTrade(e) {
+  const r = tradeR(e);
+  return {
+    r,
+    tp3: e.status === "Tp3Hit",
+    stopTriggered: e.status === "StoppedOut",
+    netProfitable: r > EPS_R,
+    netLoss: r < -EPS_R,
+    partialThenStop: e.status === "StoppedOut" && !!e.tp1HitAtUtc
+  };
+}
+
+function profitFactor(entries) {
+  let gain = 0, loss = 0;
+  for (const e of entries) { const r = tradeR(e); if (r > 0) gain += r; else loss += -r; }
+  return loss === 0 ? (gain > 0 ? Infinity : 0) : gain / loss;
+}
 
 function computeTrackerBreakdown(entries, keyFn) {
   const groups = new Map();
   for (const e of entries) {
     const key = keyFn(e);
-    if (!groups.has(key)) groups.set(key, { key, resolved: 0, wins: 0, losses: 0, flat: 0, sumR: 0 });
+    if (!groups.has(key)) groups.set(key, { key, resolved: 0, wins: 0, losses: 0, flat: 0, tp3: 0, stops: 0, sumR: 0 });
     const g = groups.get(key);
     g.resolved++;
-    if (e.status === "Tp3Hit") g.wins++;
-    else if (e.status === "StoppedOut") g.losses++;
+    const c = classifyTrade(e);
+    if (c.netProfitable) g.wins++;
+    else if (c.netLoss) g.losses++;
     else g.flat++;
-    g.sumR += tradeR(e);
+    if (c.tp3) g.tp3++;
+    if (c.stopTriggered) g.stops++;
+    g.sumR += c.r;
   }
   return [...groups.values()]
     .map(g => ({ ...g, winRate: g.resolved ? (g.wins / g.resolved) * 100 : 0, avgR: g.resolved ? g.sumR / g.resolved : 0 }))
@@ -777,13 +813,16 @@ function computeTrackerBreakdownByPeriod(entries) {
   const groups = new Map();
   for (const e of entries) {
     const key = isoWeekKey(e.closedAtUtc || e.qualifiedAtUtc);
-    if (!groups.has(key)) groups.set(key, { key, resolved: 0, wins: 0, losses: 0, flat: 0, sumR: 0 });
+    if (!groups.has(key)) groups.set(key, { key, resolved: 0, wins: 0, losses: 0, flat: 0, tp3: 0, stops: 0, sumR: 0 });
     const g = groups.get(key);
     g.resolved++;
-    if (e.status === "Tp3Hit") g.wins++;
-    else if (e.status === "StoppedOut") g.losses++;
+    const c = classifyTrade(e);
+    if (c.netProfitable) g.wins++;
+    else if (c.netLoss) g.losses++;
     else g.flat++;
-    g.sumR += tradeR(e);
+    if (c.tp3) g.tp3++;
+    if (c.stopTriggered) g.stops++;
+    g.sumR += c.r;
   }
   return [...groups.values()]
     .map(g => ({ ...g, winRate: g.resolved ? (g.wins / g.resolved) * 100 : 0, avgR: g.resolved ? g.sumR / g.resolved : 0 }))
@@ -796,7 +835,7 @@ function renderStatsTable(title, rows) {
     <div class="tracker-stats-section">
       <h3>${title}</h3>
       <table class="tracker-stats-table">
-        <thead><tr><th>${title}</th><th>Resolved</th><th>Wins</th><th>Losses</th><th>Flat</th><th>Win rate</th><th>Avg R</th></tr></thead>
+        <thead><tr><th>${title}</th><th>Resolved</th><th>Net profit</th><th>Net loss</th><th>Flat</th><th>Net-profit rate</th><th>TP3</th><th>Stop hit</th><th>Avg R</th></tr></thead>
         <tbody>${rows.map(r => `
           <tr>
             <td>${r.key}</td>
@@ -805,6 +844,8 @@ function renderStatsTable(title, rows) {
             <td class="negative">${r.losses}</td>
             <td>${r.flat}</td>
             <td>${r.winRate.toFixed(0)}%</td>
+            <td>${r.tp3}</td>
+            <td>${r.stops}</td>
             <td class="${r.avgR > 0 ? "positive" : r.avgR < 0 ? "negative" : ""}">${r.avgR.toFixed(2)}R</td>
           </tr>`).join("")}</tbody>
       </table>
@@ -848,26 +889,41 @@ function renderTrackerStats() {
     return;
   }
 
-  const wins = resolved.filter(e => e.status === "Tp3Hit").length;
-  const losses = resolved.filter(e => e.status === "StoppedOut").length;
-  const flat = resolved.filter(e => e.status === "Expired").length;
+  const cls = resolved.map(classifyTrade);
+  const wins = cls.filter(c => c.netProfitable).length;
+  const losses = cls.filter(c => c.netLoss).length;
+  const flat = resolved.length - wins - losses;
+  const tp3 = cls.filter(c => c.tp3).length;
+  const stops = cls.filter(c => c.stopTriggered).length;
+  const partialStops = cls.filter(c => c.partialThenStop).length;
   const winRate = (wins / resolved.length) * 100;
   const avgR = resolved.reduce((sum, e) => sum + tradeR(e), 0) / resolved.length;
   const wilson = wilsonInterval(wins, resolved.length);
+  const pf = profitFactor(resolved);
+  const pct = n => ((n / resolved.length) * 100).toFixed(0) + "%";
+  const ci = (n) => { const w = wilsonInterval(n, resolved.length); return `95% CI ${(w.lower * 100).toFixed(0)}%-${(w.upper * 100).toFixed(0)}%`; };
+  const excursion = key => { const v = resolved.map(e => e[key]).filter(x => typeof x === "number"); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; };
+  const mfe = excursion("maxFavorableExcursionR");
+  const mae = excursion("maxAdverseExcursionR");
   const provisional = resolved.length < 30;
 
   container.innerHTML = `
     <div class="tracker-provisional-banner ${provisional ? "warning" : ""}">${provisional ? "⚠ " : ""}${sampleSizeWarning(resolved.length)}</div>
     <div class="tracker-stats-grid">
       <div class="tracker-stat-tile"><span>Resolved trades</span><strong>${resolved.length}${openCount ? ` <small style="font-size:9px;color:var(--muted-2)">(+${openCount} open)</small>` : ""}</strong></div>
-      <div class="tracker-stat-tile"><span>Win rate${provisional ? " (Provisional)" : ""}</span><strong>${winRate.toFixed(0)}%</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">95% CI: ${(wilson.lower * 100).toFixed(0)}%-${(wilson.upper * 100).toFixed(0)}%</small></div>
-      <div class="tracker-stat-tile"><span>Avg net R</span><strong class="${avgR > 0 ? "positive" : avgR < 0 ? "negative" : ""}">${avgR.toFixed(2)}R</strong></div>
-      <div class="tracker-stat-tile"><span>W / L / Flat</span><strong>${wins} / ${losses} / ${flat}</strong></div>
+      <div class="tracker-stat-tile"><span>Net-profitable rate${provisional ? " (Provisional)" : ""}</span><strong>${winRate.toFixed(0)}%</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">95% CI: ${(wilson.lower * 100).toFixed(0)}%-${(wilson.upper * 100).toFixed(0)}%</small></div>
+      <div class="tracker-stat-tile"><span>TP3 hit rate</span><strong>${pct(tp3)}</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">${tp3} of ${resolved.length} - ${ci(tp3)}</small></div>
+      <div class="tracker-stat-tile"><span>Stop-trigger rate</span><strong>${pct(stops)}</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">${stops} of ${resolved.length} - ${ci(stops)}</small></div>
+      <div class="tracker-stat-tile"><span>Partial profit, then stop</span><strong>${pct(partialStops)}</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">${partialStops} of ${resolved.length}</small></div>
+      <div class="tracker-stat-tile"><span>Expectancy (avg net R)</span><strong class="${avgR > 0 ? "positive" : avgR < 0 ? "negative" : ""}">${avgR.toFixed(2)}R</strong></div>
+      <div class="tracker-stat-tile"><span>Profit factor</span><strong class="${pf > 1 ? "positive" : pf < 1 ? "negative" : ""}">${pf === Infinity ? "n/a (no losses)" : pf.toFixed(2)}</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">break-even is 1.00</small></div>
+      <div class="tracker-stat-tile"><span>Avg MFE / MAE</span><strong>${mfe === null ? "-" : mfe.toFixed(2)}R / ${mae === null ? "-" : mae.toFixed(2)}R</strong></div>
+      <div class="tracker-stat-tile"><span>Profit / loss / flat</span><strong>${wins} / ${losses} / ${flat}</strong></div>
     </div>
     ${renderStatsTable("Setup model", computeTrackerBreakdown(resolved, e => e.setupModel))}
     ${renderStatsTable("Grade", computeTrackerBreakdown(resolved, e => e.grade))}
     ${renderStatsTable("Market condition", computeTrackerBreakdown(resolved, e => e.marketCondition ? formatEnumName(e.marketCondition) : "Unknown"))}
-    ${renderStatsTable("Confirmation", computeTrackerBreakdown(resolved, e => e.scoreFloorNote ? "Score-floor (unconfirmed)" : "Fully confirmed"))}
+    ${renderStatsTable("Confirmation", computeTrackerBreakdown(resolved, e => e.scoreFloorNote ? "Score-floor (legacy, unconfirmed)" : "Fully confirmed"))}
     ${renderStatsTable("Timeframe", computeTrackerBreakdown(resolved, e => e.timeframe))}
     ${renderStatsTable("Symbol", computeTrackerBreakdown(resolved, e => e.symbol))}
     ${renderMovementTable(resolved)}
@@ -982,7 +1038,7 @@ function renderTrackerRows() {
         <td>${e.rewardToRisk.toFixed(1)}R</td>
         <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
         <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
-        <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
+        <td class="${trackerStatusClass(e.status, e)}">${trackerStatusLabel(e.status, e)}${trackerProgressNote(e)}</td>
         ${renderRealizedCell(e)}
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
       </tr>${trackerExpandedIds.has(e.id) ? renderTrackerDetail(e) : ""}`).join("");

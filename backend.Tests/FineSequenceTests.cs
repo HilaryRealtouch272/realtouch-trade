@@ -82,4 +82,21 @@ public class FineSequenceTests
         Assert.Equal("StoppedOut", final.Status);
         Assert.Equal(2, final.Exits!.Count(x => x.Reason is "TP1" or "Stop"));
     }
+
+    [Fact]
+    public void AStopAfterTp1WhoseRemainderLosesMoreThanTheGainIsLabelledANetLossNotAPartialWin()
+    {
+        // TP1 banks a quarter at +1R, the other 75% stops at -1R: net is negative.
+        var candles = new[]
+        {
+            Minute(0, 100m, 112m, 99m, 111m),   // TP1
+            Minute(1, 111m, 112m, 89m, 90m)     // stop
+        };
+
+        var result = TradeSimulator.ApplyFineSequence(Entry(), candles, Q.AddMinutes(10));
+
+        Assert.Equal("StoppedOut", result.Status);
+        Assert.True(result.NetRealizedR < 0);
+        Assert.Equal("Partial Profit Then Stop (Net Loss)", result.FinalOutcome);
+    }
 }
