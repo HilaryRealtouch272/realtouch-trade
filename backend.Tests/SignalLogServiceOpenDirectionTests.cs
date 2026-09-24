@@ -114,21 +114,6 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
     }
 
     [Fact]
-    public async Task AScoreFloorSignalIsLoggedAndTrackedWithItsNoteSoItCanBeMeasuredSeparately()
-    {
-        var service = NewService();
-
-        await service.RecordAndTrackAsync(new[]
-        {
-            QualifyingResult("CAKE/USDT", "1H", "Short", scoreFloorNote: "Score-floor signal (76+): gates not confirmed: range boundary not reached")
-        });
-
-        var entry = Assert.Single(service.GetAll());
-        Assert.Equal("Open", entry.Status);
-        Assert.Contains("Score-floor signal (76+)", entry.ScoreFloorNote);
-    }
-
-    [Fact]
     public async Task AFullyConfirmedSignalIsLoggedWithNoScoreFloorNote()
     {
         var service = NewService();

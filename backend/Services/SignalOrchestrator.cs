@@ -226,7 +226,7 @@ public class SignalOrchestrator(
                 displayTimeframe, candidate, condition, tradePlan, scoreResult, positionSize,
                 lifecycleState, keyLevels, lastPrice, DateTime.UtcNow,
                 calendarVeto, newsCatalyst,
-                scoreFloorNote: primary.ScoreFloorQualified ? BuildScoreFloorNote(primary) : null);
+                scoringProfileId: primary.ScoringProfileId);
 
             return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
         }
@@ -241,12 +241,31 @@ public class SignalOrchestrator(
     // (spread plus slippage, from InstrumentMetadataCatalog) so costs cannot eat
     // a large share of the risk. 0 for an instrument with no configured costs -
     // the ATR-based minimum then still applies.
-    private const decimal MinStopCostMultiple = 3m;
+    private const decimal MinStopCostMultiple = 4m;
 
-    internal static decimal MinStopCostFloor(string symbol) =>
+    // Round-trip spread + slippage + commission of one full position, in price
+    // terms (0 for an instrument with no configured costs).
+    internal static decimal RoundTripCostPrice(string symbol) =>
         InstrumentMetadataCatalog.TryGet(symbol, out var meta) && meta is not null
-            ? (meta.DefaultSpreadUnits + meta.DefaultSlippageUnits) * meta.MovementUnitSize * MinStopCostMultiple
+            ? (meta.DefaultSpreadUnits + meta.DefaultSlippageUnits + meta.CommissionUnits) * meta.MovementUnitSize
             : 0m;
+
+    internal static decimal MinStopCostFloor(string symbol) => RoundTripCostPrice(symbol) * MinStopCostMultiple;
+
+    // Common safety gates (section 5) that apply to EVERY model and are not part
+    // of any model's own weight table.
+    internal const int MinIndependentFamilies = 5;
+    // Round-trip costs may not exceed a quarter of the risk: with the 4x minimum
+    // stop above this can only fail when a stop could not be widened.
+    internal const decimal MaxCostFractionOfRisk = 0.25m;
+
+    internal static List<ReasonCode> EvaluateCommonGates(int independentFamilies, decimal riskDistance, decimal roundTripCostPrice)
+    {
+        var failed = new List<ReasonCode>();
+        if (independentFamilies < MinIndependentFamilies) failed.Add(ReasonCode.INSUFFICIENT_CONFLUENCE);
+        if (riskDistance > 0 && roundTripCostPrice / riskDistance > MaxCostFractionOfRisk) failed.Add(ReasonCode.COST_TOO_HIGH);
+        return failed;
+    }
 
     private async Task<TradePlan?> BuildTradePlan(
         SetupModelType model, IReadOnlyList<NormalizedCandle> mainCandles, Timeframe displayTimeframe, StructureResult structure,
@@ -313,7 +332,6 @@ public class SignalOrchestrator(
         };
 
         var candidate = pass2 ?? pass1;
-        var gatesPassed = candidate.Qualified && tradePlan is not null;
         var failedGates = candidate.Requirements.Where(r => r.Status == RequirementStatus.NotMet).Select(r => MapReasonCode(r.Description)).ToList();
         if (tradePlan is null) failedGates.Add(ReasonCode.ZONE_NOT_FOUND);
         var warnings = candidate.Requirements.Where(r => r.Status is RequirementStatus.NotEvaluated or RequirementStatus.Unavailable).Select(r => MapReasonCode(r.Description)).ToList();
@@ -321,6 +339,11 @@ public class SignalOrchestrator(
         var completedForDisplacement = mainCandles.Where(c => c.IsComplete).OrderBy(c => c.OpenTimeUtc).ToList();
         var displacementAtEntry = tradePlan is not null && completedForDisplacement.Count > 0 &&
             Displacement.IsDisplacementCandle(completedForDisplacement, completedForDisplacement.Count - 1);
+        // Section 10: how volume is treated is a deterministic function of the asset
+        // class and whether reliable volume actually exists in this feed.
+        var assetClass = InstrumentMetadataCatalog.TryGet(instrument.Symbol, out var assetMeta) && assetMeta is not null ? assetMeta.AssetClass : "";
+        var profile = ScoringProfile.For(assetClass, Displacement.HasUsableVolume(completedForDisplacement));
+        var volumeExpansion = profile.ParticipationWeight > 0 && Displacement.HasVolumeExpansion(completedForDisplacement);
         var liquidityEventPresent = sweeps.Any(s => (s.Direction == SweepDirection.Bullish) == (direction == SetupDirection.Long));
         var entryStructureEvent = structure.Events.LastOrDefault(e =>
             direction == SetupDirection.Long ? e.Type is StructureEventType.BullishBos or StructureEventType.BullishChoch
@@ -331,10 +354,10 @@ public class SignalOrchestrator(
             SetupModelType.TrendContinuationPullback => ModelScoring.ScoreTrendContinuation(
                 htfAlignment, candidate.Requirements.Any(r => r.Description.Contains("discount") && r.Status == RequirementStatus.Met),
                 tradePlan?.Entry.ZoneSource, liquidityEventPresent, entryStructureEvent, displacementAtEntry,
-                tradePlan?.RewardToRisk, calendarVeto.State, null),
+                tradePlan?.RewardToRisk, calendarVeto.State, null, profile, volumeExpansion),
             SetupModelType.BreakoutAndRetest => ModelScoring.ScoreBreakoutAndRetest(
                 ModelEvidenceBuilder.BuildBreakout(mainCandles, displayTimeframe, structure, obs, fvgs, direction),
-                displacementAtEntry, tradePlan?.RewardToRisk, calendarVeto.State, null),
+                displacementAtEntry, tradePlan?.RewardToRisk, calendarVeto.State, null, profile, volumeExpansion),
             SetupModelType.LiquiditySweepReversal => ModelScoring.ScoreLiquiditySweepReversal(
                 ModelEvidenceBuilder.BuildReversal(mainCandles, structure, sweeps, obs, fvgs, keyLevels, direction),
                 fvgs.Any(f => (f.Direction == FvgDirection.Bullish) == (direction == SetupDirection.Long) && f.Status != MitigationStatus.Invalidated) ||
@@ -346,43 +369,22 @@ public class SignalOrchestrator(
             _ => throw new ArgumentOutOfRangeException(nameof(model))
         };
 
-        // Universal score floor: a real trade plan plus a score at or above
-        // StrategyEvaluation.ScoreFloor is tradable even when gates are
-        // unconfirmed or the score is under this model's own threshold. The
-        // grade is re-derived against the floor so a promoted 76 reads as B
-        // (not "Tracking", which the alert/ledger rules would reject), and
-        // the candidate is kept because it is now a real signal's source.
-        var promoted = StrategyEvaluation.IsPromotedByScoreFloor(gatesPassed, score.TotalScore, ThresholdFor(model), tradePlan is not null);
-        var grade = promoted ? ModelScoring.GradeFor(score.TotalScore, StrategyEvaluation.ScoreFloor) : score.Grade;
+        // Common safety gates, evaluated once the score (and so the count of
+        // independent families) and the plan (and so the risk distance) exist.
+        var riskDistance = tradePlan is null ? 0m : Math.Abs(tradePlan.Entry.PreferredEntry - tradePlan.Stop.Price);
+        var commonFailures = EvaluateCommonGates(score.Families.Count(f => f.Points > 0), riskDistance, RoundTripCostPrice(instrument.Symbol));
+        failedGates.AddRange(commonFailures);
+        var commonGatesPassed = commonFailures.Count == 0;
+        var gatesPassed = candidate.Qualified && tradePlan is not null && commonGatesPassed;
 
-        return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, grade, ThresholdFor(model),
-            score.Families, failedGates, warnings, gatesPassed || promoted ? candidate : null, direction, promoted);
+        return new StrategyEvaluation(model, StrategyVersion, true, gatesPassed, score.TotalScore, score.Grade, ThresholdFor(model),
+            score.Families, failedGates, warnings, gatesPassed ? candidate : null, direction, false, profile.Id);
     }
 
-    // A fully confirmed setup always outranks a score-floor one, whatever the
-    // scores; within each group the higher score wins.
+    // Only fully confirmed setups qualify (per-model gates and threshold); the
+    // higher score wins.
     internal static StrategyEvaluation? SelectPrimary(IEnumerable<StrategyEvaluation> evaluations) =>
-        evaluations.Where(e => e.Qualified)
-            .OrderBy(e => e.ScoreFloorQualified ? 1 : 0)
-            .ThenByDescending(e => e.Score)
-            .FirstOrDefault();
-
-    // Plain lowercase words only: the Telegram alert is sent in Markdown mode,
-    // where a stray underscore (as in RANGE_BOUNDARY_NOT_REACHED) makes the
-    // API reject the entire message.
-    internal static string BuildScoreFloorNote(StrategyEvaluation e)
-    {
-        static string Words(ReasonCode c) => c.ToString().Replace('_', ' ').ToLowerInvariant();
-        var parts = new List<string>();
-        if (e.FailedGates.Count > 0)
-            parts.Add($"gates not confirmed: {string.Join(", ", e.FailedGates.Select(Words))}");
-        else if (!e.MandatoryGatesPassed && e.Warnings.Count > 0)
-            parts.Add($"checks not evaluated: {string.Join(", ", e.Warnings.Select(Words))}");
-        if (e.Score < e.Threshold)
-            parts.Add($"score {e.Score} is under this model's own {e.Threshold} threshold");
-        return $"Score-floor signal ({StrategyEvaluation.ScoreFloor}+): " +
-               (parts.Count > 0 ? string.Join("; ", parts) : "not confirmed by this model's own rules");
-    }
+        evaluations.Where(e => e.Qualified).OrderByDescending(e => e.Score).FirstOrDefault();
 
     private static int ThresholdFor(SetupModelType model) => model switch
     {

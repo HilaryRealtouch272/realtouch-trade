@@ -440,126 +440,13 @@ listed as "Not done" above at the time:
   trades, not a substitute for this - a genuinely separate subsystem that
   wasn't attempted here, flagged rather than faked.
 
-## Universal score floor (2026-09-24, owner decision)
+## Universal score floor - REMOVED (2026-09-24, owner decision)
 
-Any detected setup with a real trade plan (entry, stop, targets) that scores
-**76 or higher** is now a tradable signal: alerted to Telegram, logged and
-tracked, regardless of whether a model's mandatory gates are confirmed or its
-score is under that model's own 75/78 threshold. This was requested
-explicitly and repeatedly; the tradeoff it accepts is that some alerted
-setups have a structural precondition the model itself did not confirm.
-
-How it is bounded, so it stays honest and measurable:
-
-- **Still required**: a valid trade plan (otherwise there is nothing to trade
-  or track), the hard economic-calendar veto, and price actually trading into
-  the entry zone (`Triggered`) before an alert or ledger row is created.
-- **Never claimed as confirmed**: `MandatoryGatesPassed` stays false on the
-  diagnostics record; a separate `ScoreFloorQualified` flag marks the
-  promotion. Every such alert and ledger row carries a `ScoreFloorNote`
-  naming what was unconfirmed (failed gates, unevaluated checks, or score
-  under the model's own threshold).
-- **Ranking**: a fully confirmed setup always outranks a floor one,
-  whatever the scores.
-- **Measured separately**: the tracker's Performance tab has a
-  "Confirmation" breakdown (Fully confirmed vs Score-floor), so the two
-  populations are never blended into one win rate. Sizing is unchanged from
-  an ordinary B-grade trade.
-
-`StrategyEvaluation.ScoreFloor` is the one constant to change if the floor
-is ever revisited.
-
-### Fill integrity, net results and per-exit records (2026-09-24, sections 14-17)
-
-Every paper trade is now simulated by one class, `Services/TradeSimulator.cs`,
-shared by the live ledger and the backtester so the two can never disagree.
-
-- **Exits are fills.** Each executed slice (TP1 25%, TP2 50%, TP3 25%, the
-  stop on the remainder, or a time exit) is stored with its level, simulated
-  fill, time, fraction and its own gross / cost / net movement and R.
-  Fractions always sum to 1 at closure. Rows recorded before this keep their
-  banked TP legs (rebuilt from their timestamps).
-- **Targets are limit orders** (fill at the level, even past a gap). **A stop
-  is a market order**: it fills at its level, or at the candle's open when the
-  market gapped through it - never better than the level.
-- **Costs are explicit.** Round-trip spread + slippage + commission (per
-  instrument, `InstrumentMetadataCatalog`) is charged in pips/points, weighted
-  by the fraction each exit closes, and converted to R. `RealizedR` is gross;
-  `NetRealizedR` is after costs; monetary P&L and return use NET R. A 1-pip
-  stop with a 1.3-pip cost is a net loss even when it "wins".
-- **Same-candle sequencing.** When a stop and a target both sit inside one
-  candle, the order is settled from finer candles (the 15m candles fetched in
-  the same scan) when they exactly tile it; otherwise the stop-first outcome
-  stands and the trade is flagged `IntrabarSequenceUncertain`. A favourable
-  target is never assumed first.
-- **Time exits are marked to market.** An expired trade's remainder exits at
-  the latest completed close (a rule-based exit), flat at entry only when no
-  price is known.
-- **Entry type** is recorded: a limit at the plan's preferred entry, assumed
-  filled because price was in the zone at signal time. Real broker fills will
-  differ (e.g. a real 4359.30 fill against a 4358.86 plan); the slippage cost
-  line is the paper account's estimate of that.
-- Tracker: net R with gross/cost/net pips on hover, an uncertainty tag, an
-  expandable full section-17 record per trade including each exit fill, and
-  Performance breakdowns by market condition and movement by symbol. Pips are
-  never added across unrelated markets: only FX shares a pip scale.
-
-### An unavailable news calendar no longer blocks trading (2026-09-24)
-
-Every model includes a "no active hard news/economic-calendar veto" check.
-When the calendar feed was down (an invalid Finnhub API key) that check came
-back `NotEvaluated`, and `NotEvaluated` blocked qualification - so a dead
-feed silently vetoed every setup on every model. Measured from the persisted
-scan history (49 hours, 22,500 evaluations): 12,553 detections, 0 qualified;
-322 cleared their own score threshold, of which 123 had no entry zone, 103
-failed a real gate (reward-to-risk under 2: 64, structure confirmation: 33,
-location: 6) and 96 failed nothing except this one unavailable check.
-
-The check now has a separate `Unavailable` status: a real `HardVeto` still
-blocks outright, but a feed that is merely down no longer freezes all trading.
-It is never reported as "no veto": it stays in the diagnostics warnings, and
-every alert sent without a calendar check says "Economic calendar could not
-be checked. Check high-impact news yourself before entering." Not supplied at
-all (null) and setup checks that were never assessed still block. The
-Finnhub key itself still needs replacing (GitHub secret `FINNHUB__APIKEYS`).
-
-### Minimum tradeable stop (2026-09-24)
-
-Four trades taken after the fixes exposed stops inside the noise: a 0.5 pip
-EUR/USD stop (a "+21.19R" win that was really +8.8 pips), a 21-point stop on
-an $84,475 BTC entry (stopped out for -1R in 37 minutes), and a 1.9 pip stop.
-Because reward is measured in multiples of the stop, a tiny stop produces
-absurd reward-to-risk (17.5, 20.9) that inflated scores to A/A+ and the
-average R. Both offenders were the Range model, whose plan put the stop only
-0.10 x ATR beyond the boundary, so its risk was always a tenth of a candle.
-
-A stop must now be at least `max(0.5 x ATR, 3 x (spread + slippage))` from
-entry (`MinimumStopDistance`). A tighter stop is WIDENED to that minimum
-rather than rejected, so the setup survives with a tradeable stop and an
-honest reward-to-risk (which may now fail the 2:1 gate - that is the point).
-Applies to both plan builders. If the cost floor alone exceeds 8 x ATR the
-instrument is untradeable on that timeframe and there is no plan. The
-spread and slippage come from `InstrumentMetadataCatalog` (CAKE corrected to
-its real ~0.003 spread). Historical R multiples from before this change are
-unreliable where a tiny stop inflated them.
-
-### Reachable entries only (2026-09-24)
-
-An entry zone is eligible only if price can reach it within 3 ATR
-(`MaxEntryDistanceAtrMultiple` in `Strategy/EntryStopTarget.cs`) - about what
-price typically travels over a plan's 10-candle life. If the preferred zone
-type is out of reach the next type is used; if nothing is reachable there is
-no plan, so nothing is alerted or logged. Before this, a live CAKE/USDT 4H
-Long was planned with its entry 24% below the market: it could never
-trigger, and its distance inflated the reward-to-risk (5.5) and the score
-built on it. TP3 is also always at least 1R beyond TP2 (it could previously
-land below TP2 when TP2 came from a far key level).
-
-Pending signals (a qualified setup whose price has not reached the entry
-yet) were tried - alerted, logged as Pending, filled on a touch, withdrawn if
-the setup stopped qualifying - and deliberately removed. Alerts and ledger
-rows still wait for `Triggered`, so every tracked trade is one that was
-actually announced.
+The 76+ score floor briefly let setups with unconfirmed gates trade. It produced
+signals like a range long inside a downtrend with structure confirmation missing,
+and has been removed. A signal now qualifies only through its own model gates, the
+common gates (5 independent families, round-trip cost <= 25% of risk) and its own
+threshold (75/75/78/78), as the brief specifies.
 
 ## Not yet implemented
 

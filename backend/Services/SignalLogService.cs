@@ -72,7 +72,9 @@ public record QualificationLogEntry(
     decimal CommissionUnits = 0m,
     decimal? EntryFillPrice = null,
     string? EntryType = null,
-    DateTime? EntryTimeUtc = null
+    DateTime? EntryTimeUtc = null,
+    // Which scoring profile produced this signal's score (section 10).
+    string? ScoringProfileId = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -214,7 +216,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             EntrySpreadUnits: meta?.DefaultSpreadUnits ?? 0m, SlippageUnits: meta?.DefaultSlippageUnits ?? 0m,
             ScoreFloorNote: signal.ScoreFloorNote,
             Exits: Array.Empty<ExitFill>(), CommissionUnits: meta?.CommissionUnits ?? 0m,
-            EntryFillPrice: signal.PreferredEntry, EntryType: TradeSimulator.EntryTypeDescription, EntryTimeUtc: qualifiedAt);
+            EntryFillPrice: signal.PreferredEntry, EntryType: TradeSimulator.EntryTypeDescription, EntryTimeUtc: qualifiedAt,
+            ScoringProfileId: signal.ScoringProfileId);
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;

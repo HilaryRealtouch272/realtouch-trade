@@ -51,7 +51,8 @@ public record SignalResult(
     // score floor rather than the model's own gates and threshold: says
     // plainly what was unconfirmed, so an alert or ledger row can never be
     // mistaken for a fully confirmed trade.
-    string? ScoreFloorNote = null
+    string? ScoreFloorNote = null,
+    string? ScoringProfileId = null
 );
 
 public static class SignalResultBuilder
@@ -61,7 +62,7 @@ public static class SignalResultBuilder
         Timeframe analysisTimeframe, SetupCandidate candidate, MarketCondition condition,
         TradePlan tradePlan, ConfluenceScoreResult score, PositionSizeResult positionSize,
         SignalState status, IReadOnlyList<KeyLevel> keyLevels, decimal livePrice, DateTime nowUtc,
-        CalendarVetoResult? calendarVeto = null, NewsCatalystResult? newsCatalyst = null, string? scoreFloorNote = null)
+        CalendarVetoResult? calendarVeto = null, NewsCatalystResult? newsCatalyst = null, string? scoreFloorNote = null, string? scoringProfileId = null)
     {
         var id = $"{symbol}:{TimeframeIntervals.Label(analysisTimeframe)}:{candidate.Model}:{nowUtc:yyyyMMddHHmmss}";
         var reasoning = string.Join(" ", candidate.Requirements
@@ -109,7 +110,8 @@ public static class SignalResultBuilder
             // digits of arithmetic noise (see Indicators.Atr) that has no
             // business reaching a user-facing string.
             InvalidationConditions: $"Price closes beyond {Math.Round(tradePlan.Entry.InvalidationPrice, 5)} before trigger, or beyond stop {Math.Round(tradePlan.Stop.Price, 5)} after trigger. {tradePlan.Stop.Reason}.",
-            ScoreFloorNote: scoreFloorNote
+            ScoreFloorNote: scoreFloorNote,
+            ScoringProfileId: scoringProfileId
         );
     }
 }

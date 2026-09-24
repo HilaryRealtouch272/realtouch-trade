@@ -21,6 +21,31 @@ public static class ModelScoring
         _ => "No setup"
     };
 
+    // Section 10: the "Displacement and participation" family is 10 points.
+    // With reliable exchange volume (crypto), 3 of them reward volume expansion
+    // and displacement carries 7; where volume is absent or unreliable (FX,
+    // metals, or a crypto feed without volume) those 3 points are reallocated
+    // to displacement, deterministically per profile - never inflating the
+    // total, never awarding volume points that were not earned.
+    private static ConfluenceFamilyScore ScoreDisplacementParticipation(
+        ScoringProfile? profile, bool displacement, bool structureEvent, bool volumeExpansion, bool allowStructureOnlyCredit)
+    {
+        const string name = "Displacement and participation";
+        var p = profile ?? ScoringProfile.Default;
+        var displacementPoints = displacement ? p.DisplacementWeight
+            : allowStructureOnlyCredit && structureEvent ? p.DisplacementWeight / 2 : 0;
+        var participationPoints = p.ParticipationWeight > 0 && volumeExpansion ? p.ParticipationWeight : 0;
+
+        var basis = displacement ? "Entry is backed by a displacement candle"
+            : allowStructureOnlyCredit && structureEvent ? "Structure event present without a qualifying displacement candle"
+            : allowStructureOnlyCredit ? "No displacement or structure event to support momentum"
+            : "No qualifying displacement candle";
+        if (p.ParticipationWeight > 0)
+            basis += volumeExpansion ? $"; volume expansion confirmed (+{p.ParticipationWeight}, {p.Id})" : $"; no volume expansion ({p.Id})";
+
+        return Family(name, displacementPoints + participationPoints, ScoringProfile.FamilyWeight, basis);
+    }
+
     private static ConfluenceFamilyScore Family(string name, int points, int max, string basis) => new(name, Math.Clamp(points, 0, max), max, basis);
 
     private static ConfluenceFamilyScore ScoreRewardToRisk(decimal? rr, int max)
@@ -60,7 +85,8 @@ public static class ModelScoring
     public static ConfluenceScoreResult ScoreTrendContinuation(
         HtfAlignment? htfAlignment, bool locationQualified, string? zoneSource, bool liquidityEventPresent,
         StructureEventType? entryStructureEvent, bool displacementAtEntry, decimal? rewardToRisk,
-        CalendarVetoState? calendarVeto, NewsCatalystState? newsCatalyst)
+        CalendarVetoState? calendarVeto, NewsCatalystState? newsCatalyst,
+        ScoringProfile? profile = null, bool volumeExpansion = false)
     {
         var families = new List<ConfluenceFamilyScore>
         {
@@ -91,11 +117,7 @@ public static class ModelScoring
                 StructureEventType.BullishBos or StructureEventType.BearishBos => Family("Lower-timeframe BOS/CHoCH confirmation", 12, 15, "Confirmed BOS (continuation) in the setup's direction"),
                 _ => Family("Lower-timeframe BOS/CHoCH confirmation", 0, 15, "No confirmed structure event in the setup's direction")
             },
-            displacementAtEntry
-                ? Family("Displacement and participation", 10, 10, "Entry is backed by a displacement candle")
-                : entryStructureEvent is not null
-                    ? Family("Displacement and participation", 5, 10, "Structure event present without a qualifying displacement candle")
-                    : Family("Displacement and participation", 0, 10, "No displacement or structure event to support momentum"),
+            ScoreDisplacementParticipation(profile, displacementAtEntry, entryStructureEvent is not null, volumeExpansion, allowStructureOnlyCredit: true),
             ScoreRewardToRisk(rewardToRisk, 5),
             ScoreSessionNewsMacro(calendarVeto, newsCatalyst, 5)
         };
@@ -105,7 +127,8 @@ public static class ModelScoring
     }
 
     // --- 6.2 Breakout and Retest (75/15/20/10/20/15/10/5/5) ---
-    public static ConfluenceScoreResult ScoreBreakoutAndRetest(BreakoutEvidence e, bool displacementAtEntry, decimal? rewardToRisk, CalendarVetoState? calendarVeto, NewsCatalystState? newsCatalyst)
+    public static ConfluenceScoreResult ScoreBreakoutAndRetest(BreakoutEvidence e, bool displacementAtEntry, decimal? rewardToRisk, CalendarVetoState? calendarVeto, NewsCatalystState? newsCatalyst,
+        ScoringProfile? profile = null, bool volumeExpansion = false)
     {
         var families = new List<ConfluenceFamilyScore>
         {
@@ -113,9 +136,7 @@ public static class ModelScoring
                 ? Family("Quality and maturity of range or boundary", 15, 15, "A confirmed structural boundary was broken")
                 : Family("Quality and maturity of range or boundary", 0, 15, "No confirmed boundary break found in the detection window"),
             Family("Breakout-close strength", (int)Math.Round(e.BreakoutBodyRatio * 20), 20, $"Breaking candle body ratio {e.BreakoutBodyRatio:P0}"),
-            displacementAtEntry
-                ? Family("Displacement and participation", 10, 10, "Entry is backed by a displacement candle")
-                : Family("Displacement and participation", 0, 10, "No qualifying displacement candle"),
+            ScoreDisplacementParticipation(profile, displacementAtEntry, false, volumeExpansion, allowStructureOnlyCredit: false),
             e.RetestReached
                 ? Family("Retest quality", 20, 20, "Price has returned to the broken level or its evidence zone")
                 : Family("Retest quality", 0, 20, "Price has not yet retested the broken level"),

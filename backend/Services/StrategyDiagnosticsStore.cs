@@ -63,7 +63,7 @@ public class StrategyDiagnosticsStore(IHostEnvironment env)
             var models = byModel.Select(g =>
             {
                 var detected = g.Count(e => e.Detected);
-                var qualified = g.Count(e => e.Detected && (e.ScoreFloorQualified || (e.MandatoryGatesPassed && e.Score >= e.Threshold)));
+                var qualified = g.Count(e => e.Detected && e.MandatoryGatesPassed && e.Score >= e.Threshold);
                 var rejected = detected - qualified;
                 var avgScore = g.Where(e => e.Detected).Select(e => (double)e.Score).DefaultIfEmpty(0).Average();
                 // Near-miss: the structural pattern was genuinely there

@@ -10,6 +10,24 @@ public static class Displacement
     private const decimal MinBodyToMedianRatio = 1.5m;
     private const decimal MinBodyToRangeRatio = 0.65m;
 
+    // Volume is only ever used where it is genuinely reliable (section 10): every
+    // one of the last 21 completed candles must carry a positive volume. FX
+    // feeds usually have none, or only tick counts of unclear meaning, and
+    // then it is simply not used - never guessed or defaulted.
+    public static bool HasUsableVolume(IReadOnlyList<NormalizedCandle> completed, int lookback = 21) =>
+        completed.Count >= lookback && completed.Skip(completed.Count - lookback).All(c => c.Volume is > 0);
+
+    // The latest completed candle's volume is at least 1.5x the median of the
+    // 20 candles before it.
+    public static bool HasVolumeExpansion(IReadOnlyList<NormalizedCandle> completed, decimal ratio = 1.5m)
+    {
+        if (!HasUsableVolume(completed)) return false;
+        var last = completed[^1].Volume!.Value;
+        var prior = completed.Skip(completed.Count - 21).Take(20).Select(c => c.Volume!.Value).OrderBy(v => v).ToList();
+        var median = (prior[9] + prior[10]) / 2;
+        return median > 0 && last >= ratio * median;
+    }
+
     public static bool IsDisplacementCandle(IReadOnlyList<NormalizedCandle> completedCandles, int index)
     {
         if (index < 20 || index >= completedCandles.Count) return false;

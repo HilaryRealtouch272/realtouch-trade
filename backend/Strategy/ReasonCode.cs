@@ -32,5 +32,9 @@ public enum ReasonCode
     VOLUME_UNAVAILABLE,
     DUPLICATE_SIGNAL,
     NO_QUALIFYING_ZONE,
-    HTF_CONFLICT
+    HTF_CONFLICT,
+    // Common gates (section 5). Appended, never inserted: diagnostics persist
+    // reason codes as integers.
+    INSUFFICIENT_CONFLUENCE,
+    COST_TOO_HIGH
 }

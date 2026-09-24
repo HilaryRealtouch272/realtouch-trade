@@ -77,11 +77,11 @@ public class RangeTradePlanTests
     }
 
     [Theory]
-    [InlineData("EUR/USD", 0.00039)]  // (1.0 + 0.3) pips x 0.0001 x 3
-    [InlineData("BTC/USDT", 24.0)]     // (5 + 3) points x 1 x 3
-    [InlineData("XAU/USD", 1.2)]       // (30 + 10) points x 0.01 x 3
+    [InlineData("EUR/USD", 0.00052)]  // (1.0 + 0.3) pips x 0.0001 x 4
+    [InlineData("BTC/USDT", 32.0)]     // (5 + 3) points x 1 x 4
+    [InlineData("XAU/USD", 1.6)]       // (30 + 10) points x 0.01 x 4
     [InlineData("NOT/CONFIGURED", 0.0)] // no metadata: only the ATR minimum applies
-    public void TheCostFloorIsThreeTimesTheInstrumentsSpreadPlusSlippageInPriceTerms(string symbol, double expected)
+    public void TheCostFloorIsFourTimesTheInstrumentsSpreadPlusSlippageInPriceTerms(string symbol, double expected)
     {
         Assert.Equal((decimal)expected, SignalOrchestrator.MinStopCostFloor(symbol));
     }

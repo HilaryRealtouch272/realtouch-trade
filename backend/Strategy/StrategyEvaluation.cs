@@ -32,24 +32,16 @@ public record StrategyEvaluation(
     // the score is under this model's own threshold. MandatoryGatesPassed
     // is deliberately left honest (false) in that case - the diagnostics
     // record must never claim gates passed when they did not.
-    bool ScoreFloorQualified = false
+    bool ScoreFloorQualified = false,
+    // Which scoring profile produced this score (section 10): how volume was
+    // treated for this asset class and data availability.
+    string? ScoringProfileId = null
 )
 {
-    // Owner's explicit decision: any detected setup with a real trade plan
-    // (entry, stop, targets) scoring this or higher is a tradable signal,
-    // logged and tracked, regardless of unconfirmed mandatory gates.
-    public const int ScoreFloor = 76;
-
-    // Whether an evaluation is promoted by the floor rather than qualifying
-    // normally. A setup that already qualifies through its own gates and
-    // threshold is NOT "promoted" - it stays a fully confirmed signal. A
-    // plan-less evaluation can never be promoted (nothing to trade or track).
-    public static bool IsPromotedByScoreFloor(bool gatesPassed, int score, int threshold, bool tradePlanExists) =>
-        tradePlanExists && score >= ScoreFloor && !(gatesPassed && score >= threshold);
-
-    // Qualified = detected AND either (a) every mandatory gate passed and the
-    // score cleared this model's own threshold (75/75/78/78 per section 6),
-    // or (b) promoted by the universal score floor above.
-    public bool Qualified => Detected && (ScoreFloorQualified || (MandatoryGatesPassed && Score >= Threshold));
+    // Qualified = detected, every mandatory gate passed (including the common
+    // gates) and the score cleared this model's own threshold (75/75/78/78).
+    // ScoreFloorQualified is a legacy field, always false now; it is kept only so
+    // diagnostics persisted while the 76+ floor existed still deserialize.
+    public bool Qualified => Detected && MandatoryGatesPassed && Score >= Threshold;
     public int IndependentFamilyCount => ConfluenceFamilies.Count(f => f.Points > 0);
 }
