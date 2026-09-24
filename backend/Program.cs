@@ -58,6 +58,22 @@ var app = builder.Build();
 // JSON file directly instead of calling a live backend that no longer exists
 // between runs. Local `dotnet run` (no args) still starts the normal
 // always-on server used during development, unaffected by this.
+// Backtest: replays the real engine over Coinbase history. Usage:
+//   dotnet run -- --backtest BTC/USDT 15m 30      (symbol, 15m or 1H, days)
+if (args.Contains("--backtest"))
+{
+    var i = Array.IndexOf(args, "--backtest");
+    var symbol = args[i + 1];
+    var tf = TimeframeIntervals.ParseLabel(args[i + 2]) ?? throw new ArgumentException("Timeframe must be 15m or 1H");
+    var days = int.Parse(args[i + 3]);
+    var report = await new RealtouchSmartTrade.Api.Backtesting.Backtester().RunAsync(symbol, tf, days, new Progress<string>(Console.WriteLine));
+    var outPath = Environment.GetEnvironmentVariable("BACKTEST_OUTPUT_PATH") ?? "backtest-report.json";
+    await File.WriteAllTextAsync(outPath, System.Text.Json.JsonSerializer.Serialize(report, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals }));
+    Console.WriteLine(RealtouchSmartTrade.Api.Backtesting.BacktestFormatter.Format(report));
+    Console.WriteLine("Full report written to " + Path.GetFullPath(outPath));
+    return;
+}
+
 if (args.Contains("--scan-once"))
 {
     await RunScanOnceAsync(app.Services);

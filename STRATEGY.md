@@ -498,3 +498,24 @@ never lets an unsupported model qualify). The per-model count of
 `MARKET_CONDITION_NOT_SUPPORTED` in diagnostics shows whether a row is too strict.
 Older ledger rows saved before Market Condition was recorded show as "Unknown";
 new rows always carry it.
+
+## Backtesting and walk-forward validation (2026-09-24)
+
+`dotnet run --project backend -- --backtest BTC/USDT 15m 60` replays the REAL
+signal engine (`SignalOrchestrator`) over Coinbase history: at each closed candle
+it sees only what had closed by then (`ReplayMarketDataProvider`, no look-ahead),
+decides exactly as it does live (same gates, thresholds, plan, cooldown), and each
+trade is settled by the same `TradeSimulator` the live ledger uses. Ledger entries
+are built by the shared `SignalLogService.CreateEntry`.
+
+Reported per run: net-profitable rate with Wilson interval, TP3 and stop counts,
+expectancy, profit factor, max drawdown in R, four walk-forward folds, a 70/30
+in-sample / out-of-sample split and a by-model table. Anything under 30 trades is
+labelled provisional. Nothing is tuned on the in-sample part, so the out-of-sample
+segment is a check on later data, not a fit-then-test artefact.
+
+Known limits: calendar and news are not simulated (checks are Unavailable, which
+never blocks); 4H bars are built from 1H on UTC boundaries; 15m same-candle
+stop/target order is settled stop-first and counted as uncertain; entries assume
+the plan's preferred entry fills when the engine reports the setup Triggered.
+Crypto (Coinbase) only - FX history needs a paid data source.

@@ -46,8 +46,13 @@ public class SignalOrchestrator(
     INewsProvider newsProvider,
     StrategyDiagnosticsStore diagnosticsStore,
     IHostEnvironment env,
-    ILogger<SignalOrchestrator> logger)
+    ILogger<SignalOrchestrator> logger,
+    // The clock the engine reads. Live use leaves it null (real UTC); a backtest supplies
+    // the replay's current time so caches, expiry and freshness behave as they did then.
+    Func<DateTime>? clock = null)
 {
+    private DateTime Now() => clock?.Invoke() ?? DateTime.UtcNow;
+
     private record CachedCondition(MarketCondition Condition, DateTime FetchedAtUtc);
     private record CalendarCacheEntry(CalendarResult Result, DateTime FetchedAtUtc);
     private record NewsCacheEntry(NewsResult Result, DateTime FetchedAtUtc);
@@ -177,7 +182,7 @@ public class SignalOrchestrator(
 
             var primary = SelectPrimary(evaluations, condition);
 
-            var scanNow = DateTime.UtcNow;
+            var scanNow = Now();
             var freshness = completedCandles.Count > 0 ? (scanNow - completedCandles[^1].CloseTimeUtc).TotalMinutes : (double?)null;
             diagnosticsStore.Record(instrument.Symbol, timeframeLabel, scanNow, condition, evaluations,
                 new DiagnosticsContext(
@@ -230,7 +235,7 @@ public class SignalOrchestrator(
             var signal = SignalResultBuilder.Build(
                 StrategyVersion, instrument.Symbol, instrument.Group, provider.Name,
                 displayTimeframe, candidate, condition, tradePlan, scoreResult, positionSize,
-                lifecycleState, keyLevels, lastPrice, DateTime.UtcNow,
+                lifecycleState, keyLevels, lastPrice, Now(),
                 calendarVeto, newsCatalyst,
                 scoringProfileId: primary.ScoringProfileId);
 
@@ -449,7 +454,7 @@ public class SignalOrchestrator(
     {
         var contextTfs = TimeframeHierarchy.ContextTimeframes(displayTimeframe).Distinct().ToList();
         var result = new Dictionary<Timeframe, MarketCondition>();
-        var now = DateTime.UtcNow;
+        var now = Now();
 
         foreach (var tf in contextTfs)
         {
@@ -489,7 +494,7 @@ public class SignalOrchestrator(
 
     private async Task<CalendarVetoResult> GetCalendarVeto(IReadOnlyCollection<string> affectedCurrencies)
     {
-        var now = DateTime.UtcNow;
+        var now = Now();
         if (_cachedCalendar is null || now - _calendarCachedAtUtc >= CalendarCacheTtl)
         {
             _cachedCalendar = await calendarProvider.GetUpcomingEventsAsync(now.AddHours(-2), now.AddDays(7));
@@ -501,7 +506,7 @@ public class SignalOrchestrator(
 
     private async Task<NewsCatalystResult> GetNewsCatalyst(string canonicalSymbol, SetupDirection direction)
     {
-        var now = DateTime.UtcNow;
+        var now = Now();
         if (!_newsCache.TryGetValue(canonicalSymbol, out var cached) || now - cached.FetchedAtUtc >= NewsCacheTtl)
         {
             var result = await newsProvider.GetNewsAsync(canonicalSymbol);

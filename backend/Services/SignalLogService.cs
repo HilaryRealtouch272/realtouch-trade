@@ -212,30 +212,11 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         return map;
     }
 
-    private static string? FirstWord(string? state) => string.IsNullOrWhiteSpace(state) ? null : state.Split(new[] { ':', ' ' }, 2)[0];
-
-    private void RecordIfNewLocked(OrchestratorResult result)
+    // The one place a tracked trade is created from a qualified signal: the live
+    // ledger and the backtester both call it, so they cannot drift apart.
+    internal static QualificationLogEntry CreateEntry(OrchestratorResult result, DateTime qualifiedAt)
     {
-        if (!result.Success || result.Signal is null) return;
-        var signal = result.Signal;
-        if (signal.Grade is not ("A+" or "A" or "B")) return;
-        // A real, meeting-the-bar setup that price hasn't actually traded
-        // into yet is a genuine setup - just not a filled position. Logging
-        // it as "Open" immediately meant the very first price check could
-        // find current price already past TP1/TP2 (since those targets sit
-        // below - or above, for a Long - the entry zone, and price never
-        // needed to enter that zone to already be past them), reporting a
-        // "TP2 hit" trade that was never actually entered. Wait for
-        // EntryPlan.Triggered (price genuinely in the zone + a real
-        // matching-direction structure event) before this becomes a tracked,
-        // P&L-bearing position.
-        if (!signal.Triggered) return;
-
-        var key = Key(result.InstrumentSymbol, result.Timeframe);
-        if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
-        if (IsInCooldownLocked(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString())) return;
-
-        var qualifiedAt = DateTime.UtcNow;
+        var signal = result.Signal!;
         // Real per-instrument metadata when configured; an unconfigured
         // symbol still gets tracked (never silently drop a real qualifying
         // trade over missing pip-display config) but with empty asset
@@ -259,6 +240,34 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             ScoringProfileId: signal.ScoringProfileId,
             Session: TradingSessions.Describe(qualifiedAt),
             CalendarState: FirstWord(signal.EconomicCalendarState), NewsState: FirstWord(signal.NewsState));
+
+        return entry;
+    }
+
+    private static string? FirstWord(string? state) => string.IsNullOrWhiteSpace(state) ? null : state.Split(new[] { ':', ' ' }, 2)[0];
+
+    private void RecordIfNewLocked(OrchestratorResult result)
+    {
+        if (!result.Success || result.Signal is null) return;
+        var signal = result.Signal;
+        if (signal.Grade is not ("A+" or "A" or "B")) return;
+        // A real, meeting-the-bar setup that price hasn't actually traded
+        // into yet is a genuine setup - just not a filled position. Logging
+        // it as "Open" immediately meant the very first price check could
+        // find current price already past TP1/TP2 (since those targets sit
+        // below - or above, for a Long - the entry zone, and price never
+        // needed to enter that zone to already be past them), reporting a
+        // "TP2 hit" trade that was never actually entered. Wait for
+        // EntryPlan.Triggered (price genuinely in the zone + a real
+        // matching-direction structure event) before this becomes a tracked,
+        // P&L-bearing position.
+        if (!signal.Triggered) return;
+
+        var key = Key(result.InstrumentSymbol, result.Timeframe);
+        if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
+        if (IsInCooldownLocked(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString())) return;
+
+        var entry = CreateEntry(result, DateTime.UtcNow);
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;
