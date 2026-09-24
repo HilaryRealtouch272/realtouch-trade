@@ -21,6 +21,61 @@ public class EntryStopTargetCalculatorTests
         return (candles, structure, obs, fvgs, willis, sweeps, levels);
     }
 
+    [Theory]
+    // The real CAKE/USDT 4H case: Long, price 2.58, zone 1.94-1.98, ATR ~0.05
+    // so the 3-ATR reach is 0.15 - a 24% pullback is nowhere near reachable.
+    [InlineData(true, 2.58, 1.94, 1.98, 0.15, false)]
+    [InlineData(true, 2.58, 2.40, 2.46, 0.15, true)]   // within reach: 0.12 above the zone top
+    [InlineData(true, 2.58, 2.44, 2.50, 0.15, true)]   // closer still
+    [InlineData(true, 2.45, 2.40, 2.50, 0.15, true)]   // price already inside the zone
+    [InlineData(true, 2.30, 2.40, 2.50, 0.15, true)]   // price already below a Long zone: left to invalidation rules
+    [InlineData(false, 2.00, 2.40, 2.50, 0.15, false)] // Short mirrored: zone 0.40 above price
+    [InlineData(false, 2.30, 2.40, 2.50, 0.15, true)]  // Short: zone 0.10 above price
+    [InlineData(false, 2.45, 2.40, 2.50, 0.15, true)]  // Short: price inside the zone
+    public void AZoneIsOnlyARealisticEntryIfPriceCanReachItWithinTheEntryWindow(
+        bool isLong, double lastClose, double zoneMin, double zoneMax, double maxDistance, bool expected)
+    {
+        Assert.Equal(expected, EntryStopTargetCalculator.IsReachable(
+            isLong, (decimal)lastClose, (decimal)zoneMin, (decimal)zoneMax, (decimal)maxDistance));
+    }
+
+    private static KeyLevel Level(decimal price) => new(
+        KeyLevelType.ConfirmedSwingHigh, Timeframe.H4, price, price, DateTime.UtcNow, DateTime.UtcNow, false, false, 1);
+
+    [Fact]
+    public void Tp3IsAlwaysBeyondTp2EvenWhenTp2ComesFromAFarKeyLevelAndNothingLiesPastIt()
+    {
+        // Regression: Long, entry 100, stop 99 (1R). The nearest opposing key
+        // level is at 106 (6R), so TP2 = 106. With nothing beyond it, TP3 used
+        // to fall back to a flat 3R = 103 - BELOW TP2. It must be at least 1R
+        // past TP2.
+        var plan = EntryStopTargetCalculator.BuildTargetPlan(100m, 99m, isLong: true, new[] { Level(106m) }, atr: 1m);
+
+        Assert.Equal(106m, plan.Tp2);
+        Assert.True(plan.Tp3 > plan.Tp2, $"TP3 {plan.Tp3} must be beyond TP2 {plan.Tp2}");
+        Assert.Equal(107m, plan.Tp3);
+    }
+
+    [Fact]
+    public void Tp3IsAlwaysBeyondTp2ForAShortToo()
+    {
+        var plan = EntryStopTargetCalculator.BuildTargetPlan(100m, 101m, isLong: false, new[] { Level(94m) }, atr: 1m);
+
+        Assert.Equal(94m, plan.Tp2);
+        Assert.True(plan.Tp3 < plan.Tp2);
+        Assert.Equal(93m, plan.Tp3);
+    }
+
+    [Fact]
+    public void WithNoKeyLevelsTheTargetsKeepTheirPlainRMultiples()
+    {
+        var plan = EntryStopTargetCalculator.BuildTargetPlan(100m, 99m, isLong: true, Array.Empty<KeyLevel>(), atr: 1m);
+
+        Assert.Equal(101m, plan.Tp1);
+        Assert.Equal(102m, plan.Tp2);
+        Assert.Equal(103m, plan.Tp3);
+    }
+
     [Fact]
     public void ReturnsNullWhenNoQualifyingZoneExists()
     {

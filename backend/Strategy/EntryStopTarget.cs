@@ -39,6 +39,17 @@ public static class EntryStopTargetCalculator
     private const decimal MinRationalStopAtrMultiple = 0.25m;
     private const decimal MaxRationalStopAtrMultiple = 8m;
 
+    // How far, in ATR, a zone may sit from the last close and still be a
+    // realistic entry. A plan is only live for ExpiryCandles candles, and
+    // over 10 candles price typically travels about 3 ATR (one-sigma
+    // excursion scales with the square root of time), so a zone farther
+    // than that is not a setup price is going to reach - it is a stale
+    // level. Without this bound, a real CAKE/USDT 4H Long was planned with
+    // its entry 24% below the market: it could never trigger, and its
+    // enormous distance inflated the reward-to-risk (5.5) and the score
+    // built on it.
+    private const decimal MaxEntryDistanceAtrMultiple = 3m;
+
     // Position-scaling weights per target - public so anything computing
     // real blended P&L on a partially-resolved trade (see
     // Services/SignalLogService.cs) uses the exact same split rather than
@@ -65,7 +76,7 @@ public static class EntryStopTargetCalculator
         if (atr is null) return null;
 
         var isLong = direction == SetupDirection.Long;
-        var zone = ChooseZone(isLong, orderBlocks, willisZones, fvgs);
+        var zone = ChooseZone(isLong, orderBlocks, willisZones, fvgs, completed[^1].Close, atr.Value * MaxEntryDistanceAtrMultiple);
         if (zone is null) return null;
 
         var entry = BuildEntryPlan(zone.Value, completed, timeframe, isLong, structure);
@@ -82,21 +93,36 @@ public static class EntryStopTargetCalculator
 
     private readonly record struct ZoneChoice(decimal Min, decimal Max, DateTime OriginUtc, string Source);
 
-    private static ZoneChoice? ChooseZone(bool isLong, IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<RealtouchWillisZone> willisZones, IReadOnlyList<FairValueGap> fvgs)
+    // A zone is a realistic entry only if price does not have to travel more
+    // than maxDistance to reach it. A Long needs price to come DOWN to the
+    // zone's top edge; a Short needs it to come UP to the zone's bottom edge.
+    // Price already inside or beyond the zone counts as reachable (distance
+    // is not positive) - that case is left to the existing invalidation rules.
+    internal static bool IsReachable(bool isLong, decimal lastClose, decimal zoneMin, decimal zoneMax, decimal maxDistance) =>
+        isLong ? lastClose - zoneMax <= maxDistance : zoneMin - lastClose <= maxDistance;
+
+    private static ZoneChoice? ChooseZone(bool isLong, IReadOnlyList<OrderBlock> orderBlocks, IReadOnlyList<RealtouchWillisZone> willisZones, IReadOnlyList<FairValueGap> fvgs,
+        decimal lastClose, decimal maxDistance)
     {
         // Prefer a Willis Zone (the richest, most-confirmed zone type), then a
         // plain order block, then a bare FVG - matches "first qualified FVG or
         // the overlapping order-block zone" (section 16) with the Willis Zone
         // (order block + FVG overlap + retracement) taking priority when present.
-        var willis = willisZones.LastOrDefault(z => (z.Direction == OrderBlockDirection.Bullish) == isLong);
+        // Within a type, the most recent zone price can actually reach wins; a
+        // preferred type whose zones are all out of reach falls through to the
+        // next type rather than planning an entry price will never see.
+        var willis = willisZones.LastOrDefault(z => (z.Direction == OrderBlockDirection.Bullish) == isLong &&
+            IsReachable(isLong, lastClose, Math.Min(z.ProximalBoundary, z.DistalBoundary), Math.Max(z.ProximalBoundary, z.DistalBoundary), maxDistance));
         if (willis is not null)
             return new ZoneChoice(Math.Min(willis.ProximalBoundary, willis.DistalBoundary), Math.Max(willis.ProximalBoundary, willis.DistalBoundary), willis.CandleTimeUtc, "WillisZone");
 
-        var ob = orderBlocks.LastOrDefault(o => OrderBlockDetector.IsValid(o) && (o.Direction == OrderBlockDirection.Bullish) == isLong);
+        var ob = orderBlocks.LastOrDefault(o => OrderBlockDetector.IsValid(o) && (o.Direction == OrderBlockDirection.Bullish) == isLong &&
+            IsReachable(isLong, lastClose, Math.Min(o.ProximalBoundary, o.DistalBoundary), Math.Max(o.ProximalBoundary, o.DistalBoundary), maxDistance));
         if (ob is not null)
             return new ZoneChoice(Math.Min(ob.ProximalBoundary, ob.DistalBoundary), Math.Max(ob.ProximalBoundary, ob.DistalBoundary), ob.CandleTimeUtc, "OrderBlock");
 
-        var fvg = fvgs.LastOrDefault(f => f.Status != MitigationStatus.Invalidated && (f.Direction == FvgDirection.Bullish) == isLong);
+        var fvg = fvgs.LastOrDefault(f => f.Status != MitigationStatus.Invalidated && (f.Direction == FvgDirection.Bullish) == isLong &&
+            IsReachable(isLong, lastClose, f.Lower, f.Upper, maxDistance));
         if (fvg is not null)
             return new ZoneChoice(fvg.Lower, fvg.Upper, fvg.OriginCandleTimeUtc, "FairValueGap");
 
@@ -176,7 +202,7 @@ public static class EntryStopTargetCalculator
         return new StopPlan(price, $"{chosen.reason}, plus {StopAtrBuffer}xATR(14) buffer", isRational);
     }
 
-    private static TargetPlan BuildTargetPlan(decimal entry, decimal stop, bool isLong, IReadOnlyList<KeyLevel> keyLevels, decimal atr)
+    internal static TargetPlan BuildTargetPlan(decimal entry, decimal stop, bool isLong, IReadOnlyList<KeyLevel> keyLevels, decimal atr)
     {
         var riskDistance = Math.Abs(entry - stop);
         var tp1 = isLong ? entry + riskDistance : entry - riskDistance; // ~1R, section 18 default
@@ -198,10 +224,15 @@ public static class EntryStopTargetCalculator
             .Select(l => isLong ? l.Upper : l.Lower)
             .Where(p => isLong ? p > tp2 : p < tp2)
             .ToList();
+        // The 3R fallback must still land BEYOND TP2: TP2 can come from a far
+        // key level (well past 3R), and a flat 3R would then put TP3 on the
+        // wrong side of it (a Long with TP3 below TP2) - a target order that
+        // cannot happen, which would also make the ledger credit TP3 before
+        // TP2. At least 1R past TP2 in that case.
         var tp3 = externalLevels.Count > 0
             ? (isLong ? externalLevels.Max() : externalLevels.Min())
-            : (isLong ? entry + riskDistance * 3 : entry - riskDistance * 3);
-        var tp3Basis = externalLevels.Count > 0 ? "external/higher-timeframe liquidity level" : "3R measured-move projection (no further key level found)";
+            : (isLong ? Math.Max(entry + riskDistance * 3, tp2 + riskDistance) : Math.Min(entry - riskDistance * 3, tp2 - riskDistance));
+        var tp3Basis = externalLevels.Count > 0 ? "external/higher-timeframe liquidity level" : "3R measured-move projection, at least 1R beyond TP2 (no further key level found)";
 
         return new TargetPlan(tp1, "~1R (nearest opposing internal liquidity)", tp2, tp2Basis, tp3, tp3Basis, Tp1Weight, Tp2Weight, Tp3Weight);
     }
