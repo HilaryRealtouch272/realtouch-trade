@@ -45,10 +45,20 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
                 // a live trade yet, and alerting "here's your trade" for one
                 // sent a real Telegram message about a position that was
                 // never actually filled.
-                var qualifies = result.Success && result.Signal is not null && result.Signal.Grade is "A+" or "A" or "B" && result.Signal.Triggered;
+                // Also alerts a qualified signal still waiting for price to
+                // reach its entry (labeled PENDING in the message, and tracked
+                // in the ledger as Pending until price really fills it) - not
+                // only ones already in the zone. See SignalLogService.IsActionable.
+                var qualifies = result.Success && result.Signal is not null && SignalLogService.IsActionable(result.Signal);
 
                 if (!qualifies)
                 {
+                    // While the ledger is still tracking this signal (pending or
+                    // open), keep its alert record: a score that flickers just
+                    // under the bar for one scan must not re-alert the same
+                    // signal when it comes back.
+                    if (signalLog.GetOpenDirection(result.InstrumentSymbol, result.Timeframe) is not null) continue;
+
                     // Clear any prior record so a FUTURE requalification (after
                     // genuinely dropping out) is treated as new, not suppressed
                     // as a stale duplicate of something that's no longer true.
