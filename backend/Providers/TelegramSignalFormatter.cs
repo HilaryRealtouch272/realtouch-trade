@@ -45,11 +45,7 @@ public static class TelegramSignalFormatter
             $"🎯 Entry {Fmt(s.PreferredEntry)}  (zone {Fmt(s.EntryZoneMin)}–{Fmt(s.EntryZoneMax)})\n" +
             $"🛑 Stop {Fmt(s.Stop)}\n" +
             $"🏁 TP1 {Fmt(s.Tp1)} · TP2 {Fmt(s.Tp2)} · TP3 {Fmt(s.Tp3)}\n" +
-            $"⚖️ R:R {s.RewardToRisk:0.0}\n" +
-            // A qualified setup whose price has not reached the entry is a
-            // limit level to wait for, not a fill - say so plainly.
-            (s.Triggered ? "" : $"⏳ *PENDING* — price is {Fmt(s.LivePrice)} now, entry not reached yet. Not a live position until it is.\n") +
-            "\n" +
+            $"⚖️ R:R {s.RewardToRisk:0.0}\n\n" +
             $"{(topConfluences.Count > 0 ? string.Join("\n", topConfluences) : "• No confluence scored above zero")}\n\n" +
             $"📰 News: {ShortState(s.NewsState)}   📅 Calendar: {ShortState(s.EconomicCalendarState)}\n" +
             $"🚫 {invalidationShort}" +

@@ -606,8 +606,6 @@ async function tryUnlockTracker(passphrase) {
 
 function trackerStatusLabel(status) {
   switch (status) {
-    case "Pending": return "Pending (waiting for entry)";
-    case "Unfilled": return "Unfilled (never entered)";
     case "Open": return "Open";
     case "Tp1Hit": return "TP1 hit";
     case "Tp2Hit": return "TP2 hit";
@@ -621,7 +619,6 @@ function trackerStatusLabel(status) {
 function trackerStatusClass(status) {
   if (status === "Tp3Hit") return "positive";
   if (status === "StoppedOut") return "negative";
-  if (status === "Pending") return "pending";
   return "";
 }
 
@@ -841,13 +838,10 @@ function renderTrackerStats() {
   const container = $("#trackerStatsBody");
   if (!container) return;
   const resolved = trackerEntries.filter(e => RESOLVED_STATUSES.includes(e.status));
-  // Pending signals (entry not reached) and Unfilled ones (never entered) are
-  // not positions: they are neither open trades nor results.
-  const openCount = trackerEntries.filter(e => ["Open", "Tp1Hit", "Tp2Hit"].includes(e.status)).length;
-  const pendingCount = trackerEntries.filter(e => e.status === "Pending").length;
+  const openCount = trackerEntries.length - resolved.length;
 
   if (!resolved.length) {
-    container.innerHTML = `<p class="markup-tip" style="padding:18px;">No resolved trades yet${openCount ? ` (${openCount} still open)` : ""}${pendingCount ? ` (${pendingCount} pending entry)` : ""} - performance stats need at least a few closed setups to show anything meaningful.</p>`;
+    container.innerHTML = `<p class="markup-tip" style="padding:18px;">No resolved trades yet${openCount ? ` (${openCount} still open)` : ""} - performance stats need at least a few closed setups to show anything meaningful.</p>`;
     return;
   }
 
@@ -862,7 +856,7 @@ function renderTrackerStats() {
   container.innerHTML = `
     <div class="tracker-provisional-banner ${provisional ? "warning" : ""}">${provisional ? "⚠ " : ""}${sampleSizeWarning(resolved.length)}</div>
     <div class="tracker-stats-grid">
-      <div class="tracker-stat-tile"><span>Resolved trades</span><strong>${resolved.length}${openCount || pendingCount ? ` <small style="font-size:9px;color:var(--muted-2)">(+${[openCount ? openCount + " open" : "", pendingCount ? pendingCount + " pending" : ""].filter(Boolean).join(", ")})</small>` : ""}</strong></div>
+      <div class="tracker-stat-tile"><span>Resolved trades</span><strong>${resolved.length}${openCount ? ` <small style="font-size:9px;color:var(--muted-2)">(+${openCount} open)</small>` : ""}</strong></div>
       <div class="tracker-stat-tile"><span>Win rate${provisional ? " (Provisional)" : ""}</span><strong>${winRate.toFixed(0)}%</strong><small style="display:block;font-size:8px;color:var(--muted-2);margin-top:2px">95% CI: ${(wilson.lower * 100).toFixed(0)}%-${(wilson.upper * 100).toFixed(0)}%</small></div>
       <div class="tracker-stat-tile"><span>Avg realized R</span><strong class="${avgR > 0 ? "positive" : avgR < 0 ? "negative" : ""}">${avgR.toFixed(2)}R</strong></div>
       <div class="tracker-stat-tile"><span>W / L / Flat</span><strong>${wins} / ${losses} / ${flat}</strong></div>
@@ -895,8 +889,8 @@ function renderTrackerRows() {
         <td>${formatPrice(e.stop, 5)}</td>
         <td>${e.rewardToRisk.toFixed(1)}R</td>
         <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
-        <td>${(RESOLVED_STATUSES.includes(e.status) || e.status === "Unfilled") && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
-        <td class="${trackerStatusClass(e.status)}" title="${e.closureReason || ""}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
+        <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
+        <td class="${trackerStatusClass(e.status)}">${trackerStatusLabel(e.status)}${trackerProgressNote(e)}</td>
         <td class="${e.realizedR == null ? "" : e.realizedR > 0 ? "positive" : e.realizedR < 0 ? "negative" : ""}">${e.realizedR == null ? "—" : `${e.realizedR.toFixed(2)}R${e.netMovementUnits == null ? "" : `<small style="display:block;font-size:8px;color:var(--muted-2)">${e.netMovementUnits > 0 ? "+" : ""}${e.netMovementUnits.toFixed(1)} ${e.movementUnitLabel || "units"}</small>`}`}</td>
         <td>${IS_STATIC_DEPLOYMENT ? "" : `<button type="button" class="icon-button small" data-delete-row="${e.id}" title="Delete this row" aria-label="Delete this row">×</button>`}</td>
       </tr>`).join("");

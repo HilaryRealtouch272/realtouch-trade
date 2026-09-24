@@ -58,12 +58,7 @@ public record QualificationLogEntry(
     // (unconfirmed gates and/or under its model's own threshold). Kept on
     // the row so those trades can be measured separately from fully
     // confirmed ones - mixing the two would blur what each is worth.
-    string? ScoreFloorNote = null,
-    // When a Pending entry actually filled (price traded through its entry
-    // level). Null for entries created already in the zone. Every
-    // stop/target/excursion check starts from here, never from the earlier
-    // signal time: price action before the fill is not part of the trade.
-    DateTime? TriggeredAtUtc = null
+    string? ScoreFloorNote = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -108,29 +103,13 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     private static Dictionary<string, string> InitOpenKeys(List<QualificationLogEntry> entries)
     {
         var map = new Dictionary<string, string>();
-        foreach (var e in entries.Where(e => IsActiveStatus(e.Status)))
+        foreach (var e in entries.Where(e => IsOpenStatus(e.Status)))
             map[Key(e.Symbol, e.Timeframe)] = e.Id;
         return map;
     }
 
     private static string Key(string symbol, string timeframe) => $"{symbol}|{timeframe}";
-
-    // IN a position: price checks, excursions and the holding window apply.
     private static bool IsOpenStatus(string status) => status is "Open" or "Tp1Hit" or "Tp2Hit";
-
-    // Being tracked at all: a position, or a signal still waiting for price to
-    // reach its entry ("Pending"). One active entry per (symbol, timeframe).
-    private static bool IsActiveStatus(string status) => status == "Pending" || IsOpenStatus(status);
-
-    // A qualified signal is worth alerting and logging when price is already
-    // in the entry zone (Triggered), or is still on the approach side of the
-    // entry with the level yet to be reached (a Long needs price to come DOWN
-    // to its entry, a Short UP to it). Price that has already gone through the
-    // entry level without triggering is neither a live position nor a limit
-    // order still waiting - it is a missed or broken setup, so it is skipped.
-    public static bool IsActionable(SignalResult s) =>
-        s.Grade is "A+" or "A" or "B" &&
-        (s.Triggered || (s.Direction == SetupDirection.Long ? s.LivePrice > s.PreferredEntry : s.LivePrice < s.PreferredEntry));
 
     // Fire-and-forget from the caller's point of view (same reasoning as
     // SignalAlertService): a Telegram outage must never slow down or fail
@@ -178,15 +157,18 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     {
         if (!result.Success || result.Signal is null) return;
         var signal = result.Signal;
+        if (signal.Grade is not ("A+" or "A" or "B")) return;
         // A real, meeting-the-bar setup that price hasn't actually traded
-        // into yet is a genuine signal - just not a filled position. It is
-        // logged as "Pending" and only becomes an "Open", P&L-bearing trade
-        // once price really trades through its entry (see ApplyCandleSequence).
-        // Logging it as "Open" immediately was a real bug: the very first
-        // price check could find price already past TP1/TP2 (those targets
-        // sit beyond the entry, so price never needed to reach the entry to
-        // be past them) and report a "TP2 hit" trade that was never entered.
-        if (!IsActionable(signal)) return;
+        // into yet is a genuine setup - just not a filled position. Logging
+        // it as "Open" immediately meant the very first price check could
+        // find current price already past TP1/TP2 (since those targets sit
+        // below - or above, for a Long - the entry zone, and price never
+        // needed to enter that zone to already be past them), reporting a
+        // "TP2 hit" trade that was never actually entered. Wait for
+        // EntryPlan.Triggered (price genuinely in the zone + a real
+        // matching-direction structure event) before this becomes a tracked,
+        // P&L-bearing position.
+        if (!signal.Triggered) return;
 
         var key = Key(result.InstrumentSymbol, result.Timeframe);
         if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
@@ -205,7 +187,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             Entry: signal.PreferredEntry, Stop: signal.Stop, Tp1: signal.Tp1, Tp2: signal.Tp2, Tp3: signal.Tp3,
             RewardToRisk: signal.RewardToRisk,
             QualifiedAtUtc: qualifiedAt, TrackingExpiryUtc: qualifiedAt + HoldingWindow(result.Timeframe),
-            Status: signal.Triggered ? "Open" : "Pending", Tp1HitAtUtc: null, Tp2HitAtUtc: null, ClosedAtUtc: null, RealizedR: null,
+            Status: "Open", Tp1HitAtUtc: null, Tp2HitAtUtc: null, ClosedAtUtc: null, RealizedR: null,
             StrategyVersion: signal.StrategyVersion, AssetClass: meta?.AssetClass ?? "", MarketCondition: signal.Condition.ToString(),
             FinalStop: signal.Stop, RiskPercent: signal.RiskPercent, RiskAmount: signal.RiskAmount, PositionSize: signal.PositionSize,
             EntrySpreadUnits: meta?.DefaultSpreadUnits ?? 0m, SlippageUnits: meta?.DefaultSlippageUnits ?? 0m,
@@ -239,7 +221,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             : ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
 
         _entries[index] = entry;
-        if (!IsActiveStatus(entry.Status)) _openKeyToEntryId.Remove(key);
+        if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
         return entry.Status != statusBefore ? entry : null;
     }
 
@@ -264,7 +246,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             entry = candles is { Count: > 0 } ? ApplyCandleSequence(entry, candles, now) : ApplyPriceAndExpiry(entry, livePrice, now);
 
             _entries[index] = entry;
-            if (!IsActiveStatus(entry.Status)) _openKeyToEntryId.Remove(key);
+            if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
             if (entry.Status != statusBefore) changed.Add(entry);
         }
         return changed;
@@ -276,39 +258,9 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     // without either real price movement or real elapsed time behind it.
     internal static QualificationLogEntry ApplyPriceAndExpiry(QualificationLogEntry entry, decimal? livePrice, DateTime now)
     {
-        if (entry.Status == "Pending")
-        {
-            entry = ResolvePendingByPrice(entry, livePrice, now);
-            if (!IsOpenStatus(entry.Status)) return ApplyExpiry(entry, now); // still waiting, or unfilled
-        }
-
         entry = ApplyPrice(entry, livePrice, now);
         return ApplyExpiry(entry, now);
     }
-
-    // With only a single live price (no candles): reaching the entry level
-    // fills a pending signal; reaching TP1 first means the move was missed.
-    private static QualificationLogEntry ResolvePendingByPrice(QualificationLogEntry entry, decimal? livePrice, DateTime now)
-    {
-        if (!livePrice.HasValue) return entry;
-        var isLong = entry.Direction == "Long";
-        var price = livePrice.Value;
-        if (isLong ? price <= entry.Entry : price >= entry.Entry) return Fill(entry, now);
-        if (isLong ? price >= entry.Tp1 : price <= entry.Tp1)
-            return Unfill(entry, now, "Price reached TP1 without ever trading into the entry");
-        return entry;
-    }
-
-    // A pending signal becomes a real position only when price trades through
-    // its entry. The holding window restarts from the fill so a late fill is
-    // not expired the moment it happens.
-    private static QualificationLogEntry Fill(QualificationLogEntry entry, DateTime filledAtUtc) =>
-        entry with { Status = "Open", TriggeredAtUtc = filledAtUtc, TrackingExpiryUtc = filledAtUtc + HoldingWindow(entry.Timeframe) };
-
-    // Never entered: no position ever existed, so there is no win or loss to
-    // report - RealizedR stays null rather than a fabricated 0 or +R.
-    private static QualificationLogEntry Unfill(QualificationLogEntry entry, DateTime now, string reason) =>
-        entry with { Status = "Unfilled", ClosedAtUtc = now, RealizedR = null, FinalOutcome = "Unfilled", ClosureReason = reason };
 
     // Regression: a real production trade (XAU/USD 1H, short) hit its real
     // stop, but because only a SINGLE scalar price ever got checked per
@@ -326,35 +278,10 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     internal static QualificationLogEntry ApplyCandleSequence(QualificationLogEntry entry, IReadOnlyList<Models.NormalizedCandle> candles, DateTime now)
     {
         var isLong = entry.Direction == "Long";
-        // Once filled, only candles strictly AFTER the fill candle count: the
-        // fill candle's adverse side was applied at the moment of the fill,
-        // and nothing before it is part of the trade. Before a fill (or for an
-        // entry created already in its zone) everything since the signal counts.
-        var relevant = candles
-            .Where(c => c.IsComplete && (entry.TriggeredAtUtc is { } filled ? c.OpenTimeUtc > filled : c.OpenTimeUtc >= entry.QualifiedAtUtc))
-            .OrderBy(c => c.OpenTimeUtc);
+        var relevant = candles.Where(c => c.IsComplete && c.OpenTimeUtc >= entry.QualifiedAtUtc).OrderBy(c => c.OpenTimeUtc);
 
         foreach (var candle in relevant)
         {
-            if (entry.Status == "Pending")
-            {
-                if (isLong ? candle.Low <= entry.Entry : candle.High >= entry.Entry)
-                {
-                    // Price traded through the entry: filled. Which extreme of
-                    // this candle came first is unknown, so only the ADVERSE
-                    // one is applied (it can stop the trade out); the favorable
-                    // extreme is never credited from the candle that filled it.
-                    entry = Fill(entry, candle.OpenTimeUtc);
-                    entry = ApplyPrice(entry, isLong ? candle.Low : candle.High, now);
-                }
-                else if (isLong ? candle.High >= entry.Tp1 : candle.Low <= entry.Tp1)
-                {
-                    entry = Unfill(entry, now, "Price reached TP1 without ever trading into the entry");
-                    break;
-                }
-                continue;
-            }
-
             if (!IsOpenStatus(entry.Status)) break;
             var (firstPrice, secondPrice) = isLong ? (candle.Low, candle.High) : (candle.High, candle.Low);
             entry = ApplyPrice(entry, firstPrice, now);
@@ -366,10 +293,6 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
     private static QualificationLogEntry ApplyPrice(QualificationLogEntry entry, decimal? livePrice, DateTime now)
     {
-        // A pending signal is not a position: no stop, target or excursion
-        // applies until it has filled.
-        if (entry.Status == "Pending") return entry;
-
         if (livePrice.HasValue)
         {
             var price = livePrice.Value;
@@ -445,9 +368,6 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     // hits ever got a chance to resolve the trade first.
     private static QualificationLogEntry ApplyExpiry(QualificationLogEntry entry, DateTime now)
     {
-        if (entry.Status == "Pending" && now > entry.TrackingExpiryUtc)
-            return Unfill(entry, now, $"Never filled within the tracking window ({(now - entry.QualifiedAtUtc).TotalHours:0.#}h)");
-
         if (IsOpenStatus(entry.Status) && now > entry.TrackingExpiryUtc)
         {
             // Whatever wasn't closed by a real target hit just times out with
@@ -456,7 +376,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             var riskDistance = Math.Abs(entry.Entry - entry.Stop);
             var r = BlendedRealizedR(entry, riskDistance, remainingOutcomeR: 0m);
             entry = Finalize(entry with { Status = "Expired", ClosedAtUtc = now, RealizedR = r }, now,
-                $"Tracking window expired ({(now - (entry.TriggeredAtUtc ?? entry.QualifiedAtUtc)).TotalHours:0.#}h) with no further target reached");
+                $"Tracking window expired ({(now - entry.QualifiedAtUtc).TotalHours:0.#}h) with no further target reached");
         }
 
         return entry;
@@ -501,7 +421,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             GrossMovementUnits = gross, CostMovementUnits = cost, NetMovementUnits = net, MovementUnitLabel = unitLabel,
             MonetaryPnL = monetaryPnl, PercentageReturn = percentageReturn,
             FinalOutcome = outcome, ClosureReason = closureReason,
-            HoldingDurationHours = (closedAtUtc - (entry.TriggeredAtUtc ?? entry.QualifiedAtUtc)).TotalHours
+            HoldingDurationHours = (closedAtUtc - entry.QualifiedAtUtc).TotalHours
         };
     }
 
@@ -538,8 +458,6 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             "Tp3Hit" => ("🏆", "TP3 hit — WIN"),
             "StoppedOut" => ("🛑", "Stopped out — LOSS"),
             "Expired" => ("⌛", "Expired — flat"),
-            "Open" => ("✅", "ENTRY FILLED — now a live position"),
-            "Unfilled" => ("⌛", "Not filled — no position was ever opened"),
             _ => ("ℹ️", entry.Status)
         };
         var directionIcon = entry.Direction == "Long" ? "🟢" : "🔴";
@@ -557,7 +475,6 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             "Tp3Hit" => $"TP3 {TelegramSignalFormatter.FormatPrice(entry.Tp3)} · ",
             "StoppedOut" => $"Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} · ",
             "Expired" => $"Stop {TelegramSignalFormatter.FormatPrice(entry.Stop)} (not reached) · ",
-            "Unfilled" => $"{entry.ClosureReason} · ",
             _ => ""
         };
 

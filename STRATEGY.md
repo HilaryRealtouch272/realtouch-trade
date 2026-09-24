@@ -452,8 +452,8 @@ setups have a structural precondition the model itself did not confirm.
 How it is bounded, so it stays honest and measurable:
 
 - **Still required**: a valid trade plan (otherwise there is nothing to trade
-  or track), the hard economic-calendar veto, and an entry price can
-  realistically reach (see "Pending signals" below).
+  or track), the hard economic-calendar veto, and price actually trading into
+  the entry zone (`Triggered`) before an alert or ledger row is created.
 - **Never claimed as confirmed**: `MandatoryGatesPassed` stays false on the
   diagnostics record; a separate `ScoreFloorQualified` flag marks the
   promotion. Every such alert and ledger row carries a `ScoreFloorNote`
@@ -468,38 +468,6 @@ How it is bounded, so it stays honest and measurable:
 
 `StrategyEvaluation.ScoreFloor` is the one constant to change if the floor
 is ever revisited.
-
-### Pending signals (2026-09-24)
-
-A qualified signal whose price has not reached its entry yet is alerted and
-logged, not held back until it triggers. It is labeled PENDING in Telegram
-and tracked in the ledger as `Pending` - a limit level to wait for, not a
-position.
-
-- **Fill**: it becomes `Open` (a P&L-bearing trade) only when a candle trades
-  through the entry level (a Long's Low at or below it, a Short's High at or
-  above it). Only the ADVERSE extreme of the fill candle is applied, since
-  which extreme came first is unknown - a favorable move is never credited
-  from the candle that filled the order. Nothing before the fill counts
-  toward stop, targets or excursions, ever (the earlier "TP2 hit on a trade
-  that was never entered" bug). The holding window restarts from the fill.
-- **Unfilled**: price reaches TP1 without touching the entry (the move was
-  missed), or the tracking window expires unfilled. There was never a
-  position, so there is no win, loss or R: `RealizedR` stays null, and
-  Unfilled rows are excluded from win rate and average R.
-- **Skipped**: a signal whose price has already gone through its entry
-  without triggering is neither a limit order waiting nor a position, so it
-  is not alerted or logged.
-- **Reachable entries only**: a zone is eligible only if price can reach it
-  within 3 ATR (about what price travels over the plan's 10-candle life).
-  Before this, a live CAKE/USDT Long was planned 24% below the market -
-  unreachable, and its distance inflated reward-to-risk and the score.
-  TP3 is also always at least 1R beyond TP2 (it could previously land below
-  it when TP2 came from a far key level).
-- **Alerts**: one alert per distinct signal; the alert record is kept while
-  the ledger is still tracking the signal, so a score flickering under the
-  bar for one scan cannot re-send it. Fills and unfilled outcomes are
-  announced by the ledger's own messages.
 
 ## Not yet implemented
 
