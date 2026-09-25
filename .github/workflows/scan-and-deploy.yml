@@ -86,7 +86,6 @@ jobs:
           # secrets can't be renamed in place, so this maps to them as-is
           # rather than requiring six secrets to be deleted and recreated.
           TwelveData__ApiKeys: ${{ secrets.TWELVEDATA__APIKEYS }}
-          Finnhub__ApiKeys: ${{ secrets.FINNHUB__APIKEYS }}
           AlphaVantage__ApiKeys: ${{ secrets.ALPHAVANTAGE__APIKEYS }}
           Marketaux__ApiKeys: ${{ secrets.MARKETAUX__APIKEYS }}
           Telegram__BotToken: ${{ secrets.TELEGRAM__BOTTOKEN }}

@@ -26,7 +26,7 @@ builder.Services.AddSingleton<IMarketDataProvider, CoinbaseMarketDataProvider>()
 builder.Services.AddSingleton<IFineCandleSource, FineCandleSource>();
 builder.Services.AddSingleton<TradeReconciler>();
 builder.Services.AddSingleton<ShadowCandidateStore>();
-builder.Services.AddSingleton<IEconomicCalendarProvider, FinnhubEconomicCalendarProvider>();
+builder.Services.AddSingleton<IEconomicCalendarProvider, FairEconomyCalendarProvider>();
 builder.Services.AddSingleton<MarketauxNewsProvider>();
 builder.Services.AddSingleton<AlphaVantageNewsProvider>();
 builder.Services.AddSingleton<GdeltNewsProvider>();
@@ -203,7 +203,7 @@ Timeframe[] ResolveTimeframes(string? timeframeParam)
 
 // Both endpoints below now READ ONLY from LatestSignalsStore - they never
 // call the orchestrator/providers themselves. SignalScanBackgroundService is
-// the sole source of real requests to Bybit/Twelve Data/Finnhub/Alpha
+// the sole source of real requests to Bybit/Twelve Data/the calendar feed/Alpha
 // Vantage, on its own always-on schedule, so opening, closing, refreshing,
 // or having many browser tabs on the dashboard no longer changes real
 // request volume at all - everyone just reads the same latest scan.

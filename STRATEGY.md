@@ -460,7 +460,7 @@ threshold (75/75/78/78), as the brief specifies.
   (`Services/SignalEngine.cs`). `/api/signals/crypto` is new and separate -
   the frontend doesn't call it yet.
 - **Sections 21-22 live-data verification**: the logic is built and unit
-  tested against fixture data, but neither Finnhub's calendar endpoint nor
+  tested against fixture data, but neither the calendar feed nor
   Alpha Vantage's news endpoint has been confirmed working against a real
   live call yet (no network access from the environment that built this) -
   needs a real run to confirm before trusting it, same caveat as

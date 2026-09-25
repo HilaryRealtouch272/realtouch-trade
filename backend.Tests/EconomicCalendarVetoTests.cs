@@ -12,7 +12,7 @@ public class EconomicCalendarVetoTests
     [Fact]
     public void ReturnsUnavailableWhenTheCalendarProviderItselfIsUnavailable()
     {
-        var calendar = new CalendarResult(false, "Finnhub API key not configured", Array.Empty<EconomicEvent>());
+        var calendar = new CalendarResult(false, "Calendar feed unavailable", Array.Empty<EconomicEvent>());
 
         var result = EconomicCalendarVeto.Evaluate(calendar, new[] { "USD" }, DateTime.UtcNow);
 

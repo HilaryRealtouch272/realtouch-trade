@@ -84,7 +84,7 @@ public class SignalOrchestrator(
     private readonly string _calendarCachePath = Path.Combine(env.ContentRootPath, ".cache", "calendar-cache.json");
     private readonly string _newsCachePath = Path.Combine(env.ContentRootPath, ".cache", "news-cache.json");
 
-    // Finnhub's calendar is fetched ONCE globally (not per-instrument) and
+    // The economic calendar is fetched ONCE globally (not per-instrument) and
     // filtered per-instrument locally by currency - the veto-window check
     // only needs the event's scheduled time compared against "now", which
     // can be re-evaluated freshly from cached raw events without a new call.
@@ -535,9 +535,15 @@ public class SignalOrchestrator(
         var now = Now();
         if (_cachedCalendar is null || now - _calendarCachedAtUtc >= CalendarCacheTtl)
         {
-            _cachedCalendar = await calendarProvider.GetUpcomingEventsAsync(now.AddHours(-2), now.AddDays(7));
-            _calendarCachedAtUtc = now;
-            DiskCache.Save(_calendarCachePath, new CalendarCacheEntry(_cachedCalendar, _calendarCachedAtUtc));
+            var fresh = await calendarProvider.GetUpcomingEventsAsync(now.AddHours(-2), now.AddDays(7));
+            // A failed refresh must not throw away a good schedule: a week's calendar barely changes
+            // within the hour, so keep the last good one and simply try again next time.
+            if (fresh.Available || _cachedCalendar is null || !_cachedCalendar.Available)
+            {
+                _cachedCalendar = fresh;
+                _calendarCachedAtUtc = now;
+                DiskCache.Save(_calendarCachePath, new CalendarCacheEntry(_cachedCalendar, _calendarCachedAtUtc));
+            }
         }
         return EconomicCalendarVeto.Evaluate(_cachedCalendar, affectedCurrencies, now);
     }

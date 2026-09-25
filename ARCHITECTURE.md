@@ -5,7 +5,7 @@
 ```
 backend/                  ASP.NET Core minimal API (.NET 10)
   Models/                 Data shapes: candles, timeframes, setup catalog, SignalResult
-  Providers/              External data adapters (Bybit, Twelve Data, Finnhub, Alpha Vantage, Telegram)
+  Providers/              External data adapters (Bybit, Twelve Data, Coinbase, the FairEconomy calendar feed, Marketaux/Alpha Vantage/GDELT news, Telegram)
   Services/               MarketDataService - the ACTUAL data path the live endpoints use
   Strategy/               The real structure/strategy engine - see STRATEGY.md
   Program.cs              Minimal API endpoints

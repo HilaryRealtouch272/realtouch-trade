@@ -12,7 +12,7 @@ namespace RealtouchSmartTrade.Api.Services;
 // SignalAlertService (what sends qualified-signal Telegram alerts) - so this
 // is now the ONLY thing that calls the market-data/news/calendar providers;
 // the dashboard being open, closed, or refreshed no longer changes real
-// request volume against Bybit/Twelve Data/Alpha Vantage/Finnhub at all.
+// request volume against Bybit/Twelve Data/Alpha Vantage/the calendar feed at all.
 public class SignalScanBackgroundService(
     SignalOrchestrator orchestrator,
     SignalAlertService alerts,

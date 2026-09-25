@@ -5,7 +5,7 @@ using Xunit;
 
 namespace RealtouchSmartTrade.Tests;
 
-// Regression: with the economic-calendar feed down (an invalid Finnhub API
+// Regression: with the economic-calendar feed down (an unreachable calendar
 // key), every model's "no hard news veto" check came back NotEvaluated, and
 // NotEvaluated blocked qualification - so over 49 hours 0 of 12,553 detected
 // setups qualified, 96 of them purely because of this one unavailable check
@@ -67,7 +67,7 @@ public class UnavailableCalendarTests
     [Fact]
     public void AnAlertSentWithoutACalendarCheckSaysSoPlainly()
     {
-        var down = TelegramSignalFormatter.Format(Signal("Unavailable: Finnhub 401 invalid API key"), qualified: true);
+        var down = TelegramSignalFormatter.Format(Signal("Unavailable: Calendar feed 429 too many requests"), qualified: true);
         var clear = TelegramSignalFormatter.Format(Signal("NoVeto: no active hard news or economic event"), qualified: true);
 
         Assert.Contains("Economic calendar could not be checked", down);

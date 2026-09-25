@@ -13,7 +13,6 @@ for the full variable list):
 ```powershell
 cd backend
 dotnet user-secrets set "TwelveData:ApiKeys" "key1,key2,key3"
-dotnet user-secrets set "Finnhub:ApiKeys" "key1,key2"
 dotnet user-secrets set "AlphaVantage:ApiKeys" "key1,key2"
 dotnet user-secrets set "Telegram:BotToken" "..."
 dotnet user-secrets set "Telegram:ChatId" "..."
@@ -33,7 +32,7 @@ In production, use real environment variables with `__` nesting
 | Variable | Required for | Free tier notes |
 |---|---|---|
 | `TwelveData:ApiKey` / `TwelveData:ApiKeys` | FX/Metals live data | 800 credits/day/key, ~8 req/min/key. Multiple comma-separated keys rotate on failure. |
-| `Finnhub:ApiKey` / `Finnhub:ApiKeys` | Economic calendar (adapter built, not wired to any endpoint yet) | Free tier calendar access may be limited - not yet confirmed empirically. |
+| (none) | Economic calendar | The calendar feed is keyless (FairEconomy weekly JSON). |
 | `AlphaVantage:ApiKey` / `AlphaVantage:ApiKeys` | News + sentiment (adapter built, not wired to any endpoint yet) | 25 requests/day/key on the free tier. |
 | `Fred:ApiKeys` | Not used by any code yet | Stored for future use only. |
 | `Telegram:BotToken` / `Telegram:ChatId` | `POST /api/telegram/test` only | No automated alerts are sent - manual connectivity test only. |
