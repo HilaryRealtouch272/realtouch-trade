@@ -66,4 +66,16 @@ public class NewsProvidersTests
         Assert.False(none.Available);
         Assert.Contains("GDELT: down", none.UnavailableReason);
     }
+
+    [Fact]
+    public void HeadlinesWithNoSentimentDoNotCountAsScoredSoTheScoredSourceIsStillAsked()
+    {
+        var unscored = new NewsResult(true, null, new[] { new NewsItem("h", "s", "https://u/1", DateTime.UtcNow, new[] { "XAU/USD" }, null, null) });
+        var scoredItem = new NewsResult(true, null, new[] { new NewsItem("h2", "s", "https://u/2", DateTime.UtcNow, new[] { "XAU/USD" }, 0.8, -0.3) });
+
+        Assert.False(CompositeNewsProvider.HasScoredItem(unscored));
+        Assert.True(CompositeNewsProvider.HasScoredItem(scoredItem));
+        Assert.Equal(2, CompositeNewsProvider.Combine(unscored, scoredItem).Items.Count);
+        Assert.True(CompositeNewsProvider.Combine(new NewsResult(false, "down", Array.Empty<NewsItem>()), scoredItem).Available);
+    }
 }

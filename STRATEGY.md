@@ -32,7 +32,7 @@ confirmed at that point in time (no look-ahead):
 - **Bullish BOS**: close > confirmed swing high + 0.10×ATR(14).
 - **Bearish BOS**: close < confirmed swing low − 0.10×ATR(14).
 - **Bullish CHoCH**: same break, but the prior trend state was Bearish
-  (i.e. the broken high was a "protected lower high").
+  (i.e. the broken high was a "protected lower high"). 
 - **Bearish CHoCH**: symmetric.
 - A wick alone never qualifies — only a completed candle's close.
 
