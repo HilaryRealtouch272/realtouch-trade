@@ -33,7 +33,7 @@ public class CompositeNewsProvider(
         return Merge(scored, context, failures);
     }
 
-    internal static bool HasScoredItem(NewsResult r) => r.Available && r.Items.Any(i => i.SentimentScore.HasValue);
+    internal static bool HasScoredItem(NewsResult r) => r.Available && r.Items.Any(i => i.SentimentScore.HasValue && i.RelevanceScore.HasValue);
 
     internal static NewsResult Combine(NewsResult a, NewsResult b)
     {

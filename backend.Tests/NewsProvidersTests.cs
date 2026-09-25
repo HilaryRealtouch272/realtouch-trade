@@ -75,6 +75,8 @@ public class NewsProvidersTests
 
         Assert.False(CompositeNewsProvider.HasScoredItem(unscored));
         Assert.True(CompositeNewsProvider.HasScoredItem(scoredItem));
+        // A sentiment with no relevance (Marketaux) is context only and does not count as scored.
+        Assert.False(CompositeNewsProvider.HasScoredItem(new NewsResult(true, null, new[] { new NewsItem("h", "s", "https://u/3", DateTime.UtcNow, new[] { "BTC/USDT" }, null, 0.4) })));
         Assert.Equal(2, CompositeNewsProvider.Combine(unscored, scoredItem).Items.Count);
         Assert.True(CompositeNewsProvider.Combine(new NewsResult(false, "down", Array.Empty<NewsItem>()), scoredItem).Available);
     }

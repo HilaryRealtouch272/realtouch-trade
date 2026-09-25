@@ -100,7 +100,10 @@ public class MarketauxNewsProvider(IHttpClientFactory httpClientFactory, IConfig
             items.Add(new NewsItem(
                 Headline: title!, Source: article.TryGetProperty("source", out var src) ? src.GetString() ?? "Marketaux" : "Marketaux",
                 Url: url!, PublishedUtc: published, AffectedAssets: new[] { canonicalSymbol },
-                RelevanceScore: sentiment.HasValue ? 1.0 : null, SentimentScore: sentiment));
+                // No relevance: Marketaux scores the entities named in an article, which are not
+                // necessarily the asset (a headline about USDT gave BTC a "conflict"). Without a real
+                // relevance the item is shown as context but can never move the news state.
+                RelevanceScore: null, SentimentScore: sentiment));
         }
         return new NewsResult(true, null, items);
     }

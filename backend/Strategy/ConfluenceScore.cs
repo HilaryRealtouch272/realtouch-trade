@@ -179,6 +179,7 @@ public static class ConfluenceScorer
             case NewsCatalystState.Conflict: reasons.Add("news catalyst Conflicts (0 pts)"); break;
             case NewsCatalystState.Unchecked: reasons.Add("news catalyst Unchecked (0 pts)"); break;
             case NewsCatalystState.Unavailable: reasons.Add("news Unavailable (0 pts)"); break;
+            case NewsCatalystState.Thin: reasons.Add("news Thin - too few scored headlines (0 pts)"); break;
         }
 
         switch (i.CalendarVeto)

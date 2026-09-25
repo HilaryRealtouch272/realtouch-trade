@@ -2,7 +2,8 @@ using RealtouchSmartTrade.Api.Models;
 
 namespace RealtouchSmartTrade.Api.Strategy;
 
-public enum NewsCatalystState { Aligned, Mixed, Conflict, Unchecked, Unavailable }
+// Thin is appended, not inserted: too few scored headlines to call alignment either way.
+public enum NewsCatalystState { Aligned, Mixed, Conflict, Unchecked, Unavailable, Thin }
 
 public record NewsCatalystResult(NewsCatalystState State, string Reason);
 
@@ -12,6 +13,8 @@ public record NewsCatalystResult(NewsCatalystState State, string Reason);
 public static class NewsCatalystEvaluator
 {
     private const double MinRelevance = 0.3; // Alpha Vantage's own relevance_score scale is 0-1
+    // One or two scored headlines is an anecdote, not a read of the news: fewer than this is Thin.
+    internal const int MinScoredItems = 3;
     private const double SentimentThreshold = 0.15; // Alpha Vantage's documented neutral band is roughly [-0.15, 0.15]
 
     public static NewsCatalystResult Evaluate(NewsResult news, SetupDirection direction)
@@ -24,6 +27,9 @@ public static class NewsCatalystEvaluator
             .ToList();
         if (relevant.Count == 0)
             return new(NewsCatalystState.Unchecked, "No sufficiently relevant news items with sentiment data were returned");
+
+        if (relevant.Count < MinScoredItems)
+            return new(NewsCatalystState.Thin, $"Only {relevant.Count} scored headline(s) - too few to call alignment (needs {MinScoredItems})");
 
         var avgSentiment = relevant.Average(i => i.SentimentScore!.Value);
         var isLong = direction == SetupDirection.Long;

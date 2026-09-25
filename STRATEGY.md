@@ -542,3 +542,14 @@ Crypto (Coinbase) only - FX history needs a paid data source.
   no trades. Zone Mitigation uses setup-timeframe zones (higher-timeframe zone detection
   is not built).
 - **Targets touched** is recorded separately from targets executed.
+
+## News state rules (2026-09-25)
+
+News is informational: it never changes whether a signal qualifies. The state is
+Aligned / Mixed / Conflict only when at least 3 headlines carry BOTH a sentiment
+score and a relevance of 0.3 or more; one or two scored headlines is `Thin`.
+Marketaux items carry no relevance (its entity scores need not concern the asset),
+so they are shown as context but cannot move the state; Alpha Vantage's per-ticker
+scores can. The thresholds (+/-0.15 sentiment, 0.3 relevance) are Alpha Vantage's
+documented scale and have not been validated against outcomes - that needs 30+ trades
+with a recorded news state.
