@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text.Json;
 using RealtouchSmartTrade.Api.Models;
+using RealtouchSmartTrade.Api.Services;
 
 namespace RealtouchSmartTrade.Api.Providers;
 
@@ -9,8 +10,40 @@ namespace RealtouchSmartTrade.Api.Providers;
 // Its response shape (headline, source, url, time, per-asset relevance and
 // sentiment scores) maps directly onto the NewsItem schema. Returns an
 // honest "unavailable" result rather than fabricating headlines.
-public class AlphaVantageNewsProvider(IHttpClientFactory httpClientFactory, IConfiguration config) : INewsProvider
+public class AlphaVantageNewsProvider(IHttpClientFactory httpClientFactory, IConfiguration config, IHostEnvironment env) : INewsProvider
 {
+    // Keys that have told us they are out of requests for the day are skipped until the next
+    // UTC day (persisted, because every scheduled scan is a fresh process), and the starting key
+    // rotates so load spreads across all of them instead of always burning key 1 first.
+    private readonly string _exhaustedPath = Path.Combine(env.ContentRootPath, ".cache", "alphavantage-exhausted-keys.json");
+    private static readonly object ExhaustedLock = new();
+    private static int _roundRobin = -1;
+
+    private Dictionary<string, DateTime> LoadExhausted()
+    {
+        lock (ExhaustedLock)
+        {
+            var loaded = DiskCache.Load<Dictionary<string, DateTime>>(_exhaustedPath) ?? new();
+            var stale = loaded.Where(kv => kv.Value.Date < DateTime.UtcNow.Date).Select(kv => kv.Key).ToList();
+            foreach (var k in stale) loaded.Remove(k);
+            if (stale.Count > 0) DiskCache.Save(_exhaustedPath, loaded);
+            return loaded;
+        }
+    }
+
+    private void MarkExhausted(string key)
+    {
+        lock (ExhaustedLock)
+        {
+            var current = DiskCache.Load<Dictionary<string, DateTime>>(_exhaustedPath) ?? new();
+            current[key] = DateTime.UtcNow;
+            DiskCache.Save(_exhaustedPath, current);
+        }
+    }
+
+    internal static bool IsQuotaMessage(string? text) =>
+        text is not null && text.Contains("per day", StringComparison.OrdinalIgnoreCase);
+
     // Alpha Vantage ticker syntax: e.g. "CRYPTO:BTC", "FOREX:EUR", or a plain
     // equity ticker. Adjust per-symbol as real usage confirms exact coverage.
     private static readonly Dictionary<string, string> TickerMap = new()
@@ -35,14 +68,22 @@ public class AlphaVantageNewsProvider(IHttpClientFactory httpClientFactory, ICon
         if (!TickerMap.TryGetValue(canonicalSymbol, out var ticker))
             return new NewsResult(false, $"No Alpha Vantage ticker mapping for {canonicalSymbol}.", Array.Empty<NewsItem>());
 
+        var exhausted = LoadExhausted();
+        var usable = apiKeys.Where(k => !exhausted.ContainsKey(k)).ToList();
+        if (usable.Count == 0)
+            return new NewsResult(false, $"Alpha Vantage: all {apiKeys.Count} key(s) are out of requests for today - not retrying until the next UTC day.", Array.Empty<NewsItem>());
+
+        var start = Interlocked.Increment(ref _roundRobin);
         string? lastError = null;
-        foreach (var apiKey in apiKeys)
+        for (var n = 0; n < usable.Count; n++)
         {
+            var apiKey = usable[(start + n) % usable.Count];
             var result = await FetchWithKey(canonicalSymbol, ticker, apiKey, ct);
             if (result.Available) return result;
             lastError = result.UnavailableReason;
+            if (IsQuotaMessage(lastError)) MarkExhausted(apiKey);
         }
-        return new NewsResult(false, $"Alpha Vantage: all {apiKeys.Count} API key(s) failed. Last error: {lastError}", Array.Empty<NewsItem>());
+        return new NewsResult(false, $"Alpha Vantage: all {usable.Count} usable API key(s) failed. Last error: {lastError}", Array.Empty<NewsItem>());
     }
 
     private async Task<NewsResult> FetchWithKey(string canonicalSymbol, string ticker, string apiKey, CancellationToken ct)

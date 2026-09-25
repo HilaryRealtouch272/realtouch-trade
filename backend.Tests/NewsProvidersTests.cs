@@ -80,4 +80,15 @@ public class NewsProvidersTests
         Assert.Equal(2, CompositeNewsProvider.Combine(unscored, scoredItem).Items.Count);
         Assert.True(CompositeNewsProvider.Combine(new NewsResult(false, "down", Array.Empty<NewsItem>()), scoredItem).Available);
     }
+
+    [Theory]
+    [InlineData("Thank you for using Alpha Vantage! Our standard API rate limit is 25 requests per day.", true)]
+    [InlineData("This is a premium endpoint", false)]
+    [InlineData("Our standard API call frequency is 5 calls per minute", false)]
+    [InlineData("Invalid API call", false)]
+    [InlineData(null, false)]
+    public void OnlyQuotaMessagesMarkAKeyExhausted(string? message, bool expected)
+    {
+        Assert.Equal(expected, AlphaVantageNewsProvider.IsQuotaMessage(message));
+    }
 }
