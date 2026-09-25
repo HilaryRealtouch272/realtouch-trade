@@ -1,6 +1,5 @@
 using System.Text.RegularExpressions;
 using RealtouchSmartTrade.Api.Models;
-using RealtouchSmartTrade.Api.Strategy;
 
 namespace RealtouchSmartTrade.Api.Providers;
 
@@ -48,7 +47,7 @@ public static class TelegramSignalFormatter
             $"🏁 TP1 {Fmt(s.Tp1)} · TP2 {Fmt(s.Tp2)} · TP3 {Fmt(s.Tp3)}\n" +
             $"⚖️ R:R {s.RewardToRisk:0.0}\n\n" +
             $"{(topConfluences.Count > 0 ? string.Join("\n", topConfluences) : "• No confluence scored above zero")}\n\n" +
-            $"📰 News: {ShortState(s.NewsState)}{NewsDetail(s.NewsEvidence)}   📅 Calendar: {ShortState(s.EconomicCalendarState)}\n" +
+            $"📰 News: {ShortState(s.NewsState)}   📅 Calendar: {ShortState(s.EconomicCalendarState)}\n" +
             $"🚫 {invalidationShort}" +
             // The economic calendar feed being down no longer blocks a signal, so
             // say plainly that no news check happened - never imply it was clear.
@@ -67,20 +66,6 @@ public static class TelegramSignalFormatter
     // the dashboard, not a glanceable alert.
     private static string ShortState(string full) => full.Split(':', '-')[0].Trim();
 
-    // e.g. " (4 scored, relevance 0.62, newest 42m ago)" - plain words only (Markdown mode).
-    internal static string NewsDetail(NewsEvidence? e, DateTime? nowUtc = null)
-    {
-        if (e is null || e.ItemsSeen == 0) return "";
-        var now = nowUtc ?? DateTime.UtcNow;
-        var parts = new List<string> { $"{e.ItemsCounted} scored" };
-        if (e.AverageRelevance is { } r) parts.Add($"relevance {r:0.00}");
-        if (e.NewestPublishedUtc is { } n)
-        {
-            var age = now - n;
-            parts.Add(age.TotalMinutes < 90 ? $"newest {Math.Max(0, (int)age.TotalMinutes)}m ago" : $"newest {(int)age.TotalHours}h ago");
-        }
-        return " (" + string.Join(", ", parts) + ")";
-    }
 
     private static string FamilyIcon(string family) => family switch
     {

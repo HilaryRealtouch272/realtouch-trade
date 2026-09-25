@@ -1,5 +1,4 @@
 using RealtouchSmartTrade.Api.Models;
-using RealtouchSmartTrade.Api.Providers;
 using RealtouchSmartTrade.Api.Strategy;
 using Xunit;
 
@@ -48,16 +47,5 @@ public class NewsEvidenceTests
         Assert.Equal(Now.AddMinutes(-200), e.OldestCountedUtc);
         Assert.Equal(3, e.Items.Count(i => i.Counted));
         Assert.False(e.Items.First(i => i.Relevance is null).Counted);
-    }
-
-    [Fact]
-    public void TheAlertShowsHowManyHeadlinesHowRelevantAndHowFresh()
-    {
-        var e = new NewsEvidence(5, 3, -0.4, 0.7, Now.AddMinutes(-42), Now.AddMinutes(-200), Array.Empty<NewsEvidenceItem>());
-
-        Assert.Equal(" (3 scored, relevance 0.70, newest 42m ago)", TelegramSignalFormatter.NewsDetail(e, Now));
-        Assert.Equal("", TelegramSignalFormatter.NewsDetail(null, Now));
-        Assert.Contains("newest 5h ago", TelegramSignalFormatter.NewsDetail(
-            new NewsEvidence(1, 0, null, null, Now.AddHours(-5), null, Array.Empty<NewsEvidenceItem>()), Now));
     }
 }
