@@ -52,7 +52,10 @@ public record SignalResult(
     // plainly what was unconfirmed, so an alert or ledger row can never be
     // mistaken for a fully confirmed trade.
     string? ScoreFloorNote = null,
-    string? ScoringProfileId = null
+    string? ScoringProfileId = null,
+    // What the news looked like at signal time: counts, average sentiment and relevance,
+    // newest/oldest article times and the headlines themselves.
+    NewsEvidence? NewsEvidence = null
 );
 
 public static class SignalResultBuilder
@@ -111,7 +114,8 @@ public static class SignalResultBuilder
             // business reaching a user-facing string.
             InvalidationConditions: $"Price closes beyond {Math.Round(tradePlan.Entry.InvalidationPrice, 5)} before trigger, or beyond stop {Math.Round(tradePlan.Stop.Price, 5)} after trigger. {tradePlan.Stop.Reason}.",
             ScoreFloorNote: scoreFloorNote,
-            ScoringProfileId: scoringProfileId
+            ScoringProfileId: scoringProfileId,
+            NewsEvidence: newsCatalyst?.Evidence
         );
     }
 }

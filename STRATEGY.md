@@ -553,3 +553,9 @@ so they are shown as context but cannot move the state; Alpha Vantage's per-tick
 scores can. The thresholds (+/-0.15 sentiment, 0.3 relevance) are Alpha Vantage's
 documented scale and have not been validated against outcomes - that needs 30+ trades
 with a recorded news state.
+
+Recency and evidence: only headlines published within the last 12 hours count toward
+the state. Every signal and ledger row now stores the news evidence - headlines seen
+and counted, average relevance and sentiment, newest and oldest counted article times
+and the newest six headlines with their time, relevance and sentiment - and the alert
+shows "(N scored, relevance R, newest Xm ago)" beside the news state.

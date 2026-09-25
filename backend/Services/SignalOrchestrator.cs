@@ -552,6 +552,6 @@ public class SignalOrchestrator(
             _newsCache[canonicalSymbol] = cached;
             DiskCache.Save(_newsCachePath, _newsCache.ToDictionary(kv => kv.Key, kv => new NewsCacheEntry(kv.Value.Result, kv.Value.FetchedAtUtc)));
         }
-        return NewsCatalystEvaluator.Evaluate(cached.Result, direction);
+        return NewsCatalystEvaluator.Evaluate(cached.Result, direction, now);
     }
 }

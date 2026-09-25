@@ -966,6 +966,19 @@ function renderTrackerStats() {
     ${renderStatsTable("Week (UTC)", computeTrackerBreakdownByPeriod(resolved))}`;
 }
 
+// What the news looked like when the trade was entered: how many headlines counted, how relevant and
+// bullish/bearish they were on average, and how fresh - plus the newest few headlines with their age.
+function newsEvidenceText(e) {
+  const n = e.news;
+  const ago = t => { const m = Math.max(0, Math.round((new Date(e.qualifiedAtUtc) - new Date(t)) / 60000)); return m < 90 ? `${m}m` : `${Math.round(m / 60)}h`; };
+  const head = `${e.newsState || "-"}: ${n.itemsCounted} of ${n.itemsSeen} headlines counted` +
+    (n.averageRelevance != null ? `, relevance ${n.averageRelevance.toFixed(2)}` : "") +
+    (n.averageSentiment != null ? `, sentiment ${n.averageSentiment.toFixed(2)}` : "") +
+    (n.newestPublishedUtc ? `, newest ${ago(n.newestPublishedUtc)} before entry` : "");
+  const items = (n.items || []).slice(0, 3).map(i => `[${i.counted ? "counted" : "not counted"}, ${ago(i.publishedUtc)} before entry${i.relevance != null ? `, rel ${i.relevance.toFixed(2)}` : ""}${i.sentiment != null ? `, sent ${i.sentiment.toFixed(2)}` : ""}] ${i.headline}`);
+  return items.length ? head + " | " + items.join(" | ") : head;
+}
+
 // Realized result cell: NET of costs where recorded (older rows only have gross),
 // with gross / cost / net movement on hover and the unit each result is in.
 function renderRealizedCell(e) {
@@ -1015,6 +1028,7 @@ function renderTrackerDetail(e) {
         ${kv("Closed", t(e.closedAtUtc))}${kv("Holding", held)}
         ${kv("Gross movement", fmtUnits(e.grossMovementUnits, unit))}${kv("Trading costs", e.costMovementUnits == null ? null : `${Number(e.costMovementUnits).toFixed(1)} ${unit}`)}${kv("Net movement", fmtUnits(e.netMovementUnits, unit))}
         ${kv("Monetary P&L (net)", e.monetaryPnL == null ? null : Number(e.monetaryPnL).toFixed(2))}${kv("Return (net)", e.percentageReturn == null ? null : `${Number(e.percentageReturn).toFixed(3)}%`)}
+        ${e.news ? kv("News at entry", newsEvidenceText(e)) : (e.newsState ? kv("News at entry", e.newsState) : "")}
         ${kv("Realised R (gross / net)", e.realizedR == null ? null : `${e.realizedR.toFixed(2)} / ${e.netRealizedR == null ? "—" : e.netRealizedR.toFixed(2)}`)}
         ${kv("Max favourable / adverse", e.maxFavorableExcursionR == null ? null : `${e.maxFavorableExcursionR.toFixed(2)}R / ${e.maxAdverseExcursionR.toFixed(2)}R`)}
         ${kv("Outcome", e.finalOutcome)}${kv("Reason for closure", e.closureReason)}

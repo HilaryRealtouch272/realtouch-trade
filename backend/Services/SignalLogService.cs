@@ -87,7 +87,9 @@ public record QualificationLogEntry(
     // How many of TP1-TP3 price has actually TOUCHED (0-3). In this simulation every touched
     // target is a limit fill, so touched equals executed; the field keeps the two distinct in
     // the record so a future partial-fill rule cannot silently merge them.
-    int? TargetsTouched = null
+    int? TargetsTouched = null,
+    // The news evidence (times, relevance, sentiment, headlines) at the moment of entry.
+    NewsEvidence? News = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -243,7 +245,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             EntryFillPrice: signal.PreferredEntry, EntryType: TradeSimulator.EntryTypeDescription, EntryTimeUtc: qualifiedAt,
             ScoringProfileId: signal.ScoringProfileId,
             Session: TradingSessions.Describe(qualifiedAt),
-            CalendarState: FirstWord(signal.EconomicCalendarState), NewsState: FirstWord(signal.NewsState));
+            CalendarState: FirstWord(signal.EconomicCalendarState), NewsState: FirstWord(signal.NewsState),
+            News: signal.NewsEvidence);
 
         return entry;
     }
