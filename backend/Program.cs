@@ -414,6 +414,8 @@ async Task RunScanOnceAsync(IServiceProvider services)
     }
 
     var fxResults = new List<OrchestratorResult>();
+    var fxLastPath = Path.Combine(env.ContentRootPath, ".cache", "fx-last-results.json");
+    var fxLast = DiskCache.Load<List<OrchestratorResult>>(fxLastPath) ?? new();
     var fxInstruments = SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData).ToList();
     foreach (var tf in TimeframeIntervals.All)
     {
@@ -421,7 +423,17 @@ async Task RunScanOnceAsync(IServiceProvider services)
         var hasFullPriorCoverage = fxInstruments.All(i => priorResults.ContainsKey((i.Symbol, label)));
         var fxClosed = RealtouchSmartTrade.Api.Models.MarketHours.FxClosed(now);
         var due = !fxClosed && (!schedule.TryGetValue(label, out var lastScan) || now - lastScan >= TimeframeIntervals.FxPollInterval(tf));
-        if (fxClosed && !hasFullPriorCoverage) continue; // weekend and nothing to carry forward: nothing to show
+        if (fxClosed)
+        {
+            // Weekend: no new prices, so show the last real results for this timeframe. Prefer the
+            // previous snapshot; otherwise the forex results saved by the last weekday scan.
+            foreach (var i in fxInstruments)
+            {
+                if (priorResults.TryGetValue((i.Symbol, label), out var p)) fxResults.Add(p);
+                else if (fxLast.FirstOrDefault(r => r.InstrumentSymbol == i.Symbol && r.Timeframe == label) is { } saved) fxResults.Add(saved);
+            }
+            continue;
+        }
 
         if (!due && hasFullPriorCoverage)
         {
@@ -441,6 +453,8 @@ async Task RunScanOnceAsync(IServiceProvider services)
         schedule[label] = now;
     }
     DiskCache.Save(schedulePath, schedule);
+    // Keep the weekday results so a weekend run can still show them; never overwrite them with weekend reuse.
+    if (!RealtouchSmartTrade.Api.Models.MarketHours.FxClosed(now)) DiskCache.Save(fxLastPath, fxResults);
 
     var allResults = cryptoResults.Concat(fxResults).ToList();
     await alerts.CheckAndNotifyAsync(allResults);
