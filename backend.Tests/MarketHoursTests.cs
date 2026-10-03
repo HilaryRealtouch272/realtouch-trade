@@ -33,6 +33,6 @@ public class MarketHoursTests
     public void OutcomeUpdatesForFifteenMinuteTradesAreNotSent(string timeframe, bool send)
     {
         var entry = new QualificationLogEntry("x", "BTC/USDT", timeframe, "Long", "TrendContinuationPullback", "A", 86, 1m, 0.9m, 1.1m, 1.2m, 1.4m, 2m, DateTime.UtcNow, DateTime.UtcNow, "Tp1Hit", null, null, null, null);
-        Assert.Equal(send, SignalLogService.ShouldSendOutcome(entry));
+        Assert.Equal(send, SignalLogService.ShouldSendOutcome(entry, new DateTime(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc)));
     }
 }

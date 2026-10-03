@@ -188,7 +188,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         foreach (var entry in changed)
         {
             // 15m trades are tracked on the dashboard only, so their TP/stop updates are not sent either.
-            if (!ShouldSendOutcome(entry)) continue;
+            if (!ShouldSendOutcome(entry, DateTime.UtcNow)) continue;
             var (success, error) = await telegram.SendAsync(FormatOutcomeMessage(entry));
             if (!success) logger.LogWarning("Outcome Telegram alert failed for {Symbol} {Timeframe} ({Status}): {Error}", entry.Symbol, entry.Timeframe, entry.Status, error);
         }
@@ -353,7 +353,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         IReadOnlyList<Models.NormalizedCandle>? fineCandles = null) =>
         TradeSimulator.ApplyCandleSequence(entry, candles, now, fineCandles);
 
-    internal static bool ShouldSendOutcome(QualificationLogEntry entry) => entry.Timeframe != "15m";
+    internal static bool ShouldSendOutcome(QualificationLogEntry entry, DateTime utc) => MarketHours.TelegramAllowed(entry.Symbol, entry.Timeframe, utc);
 
     private static string FormatOutcomeMessage(QualificationLogEntry entry)
     {

@@ -1,3 +1,4 @@
+using RealtouchSmartTrade.Api.Models;
 using RealtouchSmartTrade.Api.Providers;
 
 namespace RealtouchSmartTrade.Api.Services;
@@ -42,7 +43,7 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
             foreach (var result in results)
             {
                 // 15m signals stay on the dashboard only: they are too frequent to alert on.
-                if (result.Timeframe == "15m") continue;
+                if (!MarketHours.TelegramAllowed(result.InstrumentSymbol, result.Timeframe, DateTime.UtcNow)) continue;
 
                 var key = Key(result.InstrumentSymbol, result.Timeframe);
                 // Triggered = price has genuinely traded into the entry zone

@@ -11,4 +11,12 @@ public static class MarketHours
         DayOfWeek.Friday => utc.Hour >= 22,
         _ => false
     };
+
+    // Whether a result may go to Telegram now: 15m never does, and forex only while the market is open.
+    public static bool TelegramAllowed(string symbol, string timeframe, DateTime utc)
+    {
+        if (timeframe == "15m") return false;
+        var isFx = SetupCatalog.Instruments.Any(i => i.Symbol == symbol && i.Source == DataSource.TwelveData);
+        return !(isFx && FxClosed(utc));
+    }
 }
