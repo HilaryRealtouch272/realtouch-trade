@@ -25,4 +25,14 @@ public class MarketHoursTests
         Assert.False(SignalAlertService.SameSetup("Long", "TrendContinuationPullback", "Short", "TrendContinuationPullback"));
         Assert.False(SignalAlertService.SameSetup("Long", "TrendContinuationPullback", "Long", "BreakoutAndRetest"));
     }
+
+    [Theory]
+    [InlineData("15m", false)]
+    [InlineData("1H", true)]
+    [InlineData("Daily", true)]
+    public void OutcomeUpdatesForFifteenMinuteTradesAreNotSent(string timeframe, bool send)
+    {
+        var entry = new QualificationLogEntry("x", "BTC/USDT", timeframe, "Long", "TrendContinuationPullback", "A", 86, 1m, 0.9m, 1.1m, 1.2m, 1.4m, 2m, DateTime.UtcNow, DateTime.UtcNow, "Tp1Hit", null, null, null, null);
+        Assert.Equal(send, SignalLogService.ShouldSendOutcome(entry));
+    }
 }
