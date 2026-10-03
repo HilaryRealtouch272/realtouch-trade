@@ -98,6 +98,9 @@ public class SignalScanBackgroundService(
 
     private async Task ScanFxAsync(Timeframe timeframe, CancellationToken ct)
     {
+        // Forex is closed at weekends: no new prices, so no new signals. The dashboard keeps its last values.
+        if (MarketHours.FxClosed(DateTime.UtcNow)) { logger.LogInformation("FX closed - skipping {Timeframe} scan", timeframe); return; }
+
         var results = new List<OrchestratorResult>();
         var first = true;
         foreach (var instrument in SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData))

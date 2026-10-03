@@ -419,12 +419,14 @@ async Task RunScanOnceAsync(IServiceProvider services)
     {
         var label = TimeframeIntervals.Label(tf);
         var hasFullPriorCoverage = fxInstruments.All(i => priorResults.ContainsKey((i.Symbol, label)));
-        var due = !schedule.TryGetValue(label, out var lastScan) || now - lastScan >= TimeframeIntervals.FxPollInterval(tf);
+        var fxClosed = RealtouchSmartTrade.Api.Models.MarketHours.FxClosed(now);
+        var due = !fxClosed && (!schedule.TryGetValue(label, out var lastScan) || now - lastScan >= TimeframeIntervals.FxPollInterval(tf));
+        if (fxClosed && !hasFullPriorCoverage) continue; // weekend and nothing to carry forward: nothing to show
 
         if (!due && hasFullPriorCoverage)
         {
-            scanLogger.LogInformation("Skipping FX {Timeframe} - last scanned {Ago} ago, carrying forward prior results",
-                label, now - lastScan);
+            scanLogger.LogInformation("Skipping FX {Timeframe} - {Reason}, carrying forward prior results",
+                label, fxClosed ? "market closed" : "scanned recently");
             fxResults.AddRange(fxInstruments.Select(i => priorResults[(i.Symbol, label)]));
             continue;
         }

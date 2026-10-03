@@ -21,6 +21,9 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
     // is not a duplicate of the last message.
     private record AlertedState(string Direction, string SetupModel, string Grade);
 
+    internal static bool SameSetup(string previousDirection, string previousModel, string direction, string model) =>
+        previousDirection == direction && previousModel == model;
+
     private readonly string _statePath = Path.Combine(env.ContentRootPath, ".cache", "alert-state.json");
     private readonly Dictionary<string, AlertedState> _lastAlerted =
         DiskCache.Load<Dictionary<string, AlertedState>>(Path.Combine(env.ContentRootPath, ".cache", "alert-state.json")) ?? new();
@@ -38,6 +41,9 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
         {
             foreach (var result in results)
             {
+                // 15m signals stay on the dashboard only: they are too frequent to alert on.
+                if (result.Timeframe == "15m") continue;
+
                 var key = Key(result.InstrumentSymbol, result.Timeframe);
                 // Triggered = price has genuinely traded into the entry zone
                 // (see EntryPlan.Triggered / SignalLogService.RecordIfNewLocked) -
@@ -79,7 +85,9 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
                 bool isDuplicate;
                 lock (_lock)
                 {
-                    isDuplicate = _lastAlerted.TryGetValue(key, out var previous) && previous == current;
+                    // Same direction and model is the same setup. A grade change alone (A to A+) is
+                    // not new information, so it must not send a second alert for the same trade.
+                    isDuplicate = _lastAlerted.TryGetValue(key, out var previous) && SameSetup(previous.Direction, previous.SetupModel, current.Direction, current.SetupModel);
                     if (!isDuplicate) _lastAlerted[key] = current;
                 }
                 if (isDuplicate) continue;
