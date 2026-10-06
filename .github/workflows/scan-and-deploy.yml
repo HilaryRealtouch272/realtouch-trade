@@ -33,6 +33,9 @@ concurrency:
 jobs:
   scan-and-deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -132,37 +135,6 @@ jobs:
             sleep $((attempt * 3))
           done
 
-      - name: Publish scan results for the site
-        uses: actions/upload-artifact@v4
-        with:
-          name: site-data
-          if-no-files-found: warn
-          path: |
-            signals.json
-            signal-log.json
-            diagnostics.json
-            reconciliation.json
-            shadow-candidates.json
-
-
-  deploy-site:
-    # Runs only after a successful scan. A GitHub Pages outage can stop the site from updating,
-    # but never the scan, the alerts or the saved state.
-    needs: scan-and-deploy
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Download the scan results
-        uses: actions/download-artifact@v4
-        with:
-          name: site-data
-          path: site-data
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -178,9 +150,13 @@ jobs:
         working-directory: frontend
         run: npx ng build --configuration production --base-href "/${{ github.event.repository.name }}/"
 
-      - name: Copy the scan results into the site
+      - name: Copy signals snapshot into the frontend build
         run: |
-          cp site-data/*.json frontend/dist/frontend/browser/ 2>/dev/null || echo "no scan results to copy"
+          cp signals.json frontend/dist/frontend/browser/signals.json
+          cp signal-log.json frontend/dist/frontend/browser/signal-log.json
+          cp diagnostics.json frontend/dist/frontend/browser/diagnostics.json
+          cp reconciliation.json frontend/dist/frontend/browser/reconciliation.json || echo "no reconciliation report this run"
+          cp shadow-candidates.json frontend/dist/frontend/browser/shadow-candidates.json || echo "no shadow candidates this run"
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
