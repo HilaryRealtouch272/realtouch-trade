@@ -22,7 +22,7 @@ public static class TelegramSignalFormatter
         return Math.Round(v, decimals).ToString($"F{decimals}");
     }
 
-    public static string Format(SignalResult s, bool qualified)
+    public static string Format(SignalResult s, bool qualified, string? gradeChange = null)
     {
         var Fmt = FormatPrice;
         var directionIcon = s.Direction.ToString() == "Long" ? "🟢" : "🔴";
@@ -41,6 +41,7 @@ public static class TelegramSignalFormatter
         return
             $"{header}\n" +
             $"📊 *{s.Grade}* ({s.SetupQualityScore}/100) · {SpaceWords(s.SetupModel.ToString())}\n" +
+            (gradeChange is null ? "" : $"🔁 Grade changed {gradeChange}\n") +
             $"🧭 {SpaceWords(s.Condition.ToString())}\n\n" +
             $"🎯 Entry {Fmt(s.PreferredEntry)}  (zone {Fmt(s.EntryZoneMin)}–{Fmt(s.EntryZoneMax)})\n" +
             $"🛑 Stop {Fmt(s.Stop)}\n" +

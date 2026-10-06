@@ -1,5 +1,8 @@
 using RealtouchSmartTrade.Api.Models;
+using RealtouchSmartTrade.Api.Models;
+using RealtouchSmartTrade.Api.Providers;
 using RealtouchSmartTrade.Api.Services;
+using RealtouchSmartTrade.Api.Strategy;
 using Xunit;
 
 namespace RealtouchSmartTrade.Tests;
@@ -19,11 +22,12 @@ public class MarketHoursTests
     }
 
     [Fact]
-    public void AGradeChangeOnTheSameSetupIsNotANewAlert()
+    public void AGradeChangeIsLabelledInTheTelegramMessage()
     {
-        Assert.True(SignalAlertService.SameSetup("Long", "TrendContinuationPullback", "Long", "TrendContinuationPullback"));
-        Assert.False(SignalAlertService.SameSetup("Long", "TrendContinuationPullback", "Short", "TrendContinuationPullback"));
-        Assert.False(SignalAlertService.SameSetup("Long", "TrendContinuationPullback", "Long", "BreakoutAndRetest"));
+        var signal = new SignalResult("BTC/USDT:1H:x", "v", "BTC/USDT", "crypto", "Coinbase", "1H", "15m", SetupDirection.Long, MarketCondition.Ranging, SetupModelType.RangeBoundaryRejection,
+            SignalState.Triggered, 96, "A+", DateTime.UtcNow, DateTime.UtcNow, 83289m, 83242m, 83335m, 83289m, true, 83058m, 83519m, 84451m, 85613m, 5m, 0.5m, 100m, 1m, Array.Empty<KeyLevel>(), Array.Empty<ConfluenceFamilyScore>(), "", "", "", "", "", "", "");
+        Assert.Contains("Grade changed A → A+", TelegramSignalFormatter.Format(signal, true, "A → A+"));
+        Assert.DoesNotContain("Grade changed", TelegramSignalFormatter.Format(signal, true));
     }
 
     [Theory]

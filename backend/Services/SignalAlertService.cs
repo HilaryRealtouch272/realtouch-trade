@@ -22,8 +22,6 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
     // is not a duplicate of the last message.
     private record AlertedState(string Direction, string SetupModel, string Grade);
 
-    internal static bool SameSetup(string previousDirection, string previousModel, string direction, string model) =>
-        previousDirection == direction && previousModel == model;
 
     private readonly string _statePath = Path.Combine(env.ContentRootPath, ".cache", "alert-state.json");
     private readonly Dictionary<string, AlertedState> _lastAlerted =
@@ -84,16 +82,20 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
                 var current = new AlertedState(signal.Direction.ToString(), signal.SetupModel.ToString(), signal.Grade);
 
                 bool isDuplicate;
+                string? gradeChange = null;
                 lock (_lock)
                 {
-                    // Same direction and model is the same setup. A grade change alone (A to A+) is
-                    // not new information, so it must not send a second alert for the same trade.
-                    isDuplicate = _lastAlerted.TryGetValue(key, out var previous) && SameSetup(previous.Direction, previous.SetupModel, current.Direction, current.SetupModel);
+                    // Identical state (same direction, model and grade) is a duplicate. A grade move on the
+                    // same direction and model is sent again, labelled as a grade change.
+                    isDuplicate = _lastAlerted.TryGetValue(key, out var previous) && previous == current;
+                    if (!isDuplicate && _lastAlerted.TryGetValue(key, out var before) &&
+                        before.Direction == current.Direction && before.SetupModel == current.SetupModel && before.Grade != current.Grade)
+                        gradeChange = $"{before.Grade} → {current.Grade}";
                     if (!isDuplicate) _lastAlerted[key] = current;
                 }
                 if (isDuplicate) continue;
 
-                var (success, error) = await telegram.SendAsync(TelegramSignalFormatter.Format(signal, qualified: true));
+                var (success, error) = await telegram.SendAsync(TelegramSignalFormatter.Format(signal, qualified: true, gradeChange: gradeChange));
                 if (success) Persist();
                 else logger.LogWarning("Qualified-signal Telegram alert failed for {Symbol} {Timeframe}: {Error}", result.InstrumentSymbol, result.Timeframe, error);
             }
