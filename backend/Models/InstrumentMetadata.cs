@@ -59,9 +59,6 @@ public static class InstrumentMetadataCatalog
         // to match, sized off Coinbase's real ~0.003 bid/ask at the time.
         new InstrumentMetadata("CAKE/USDT", "crypto", 3, 0.001m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.004m, DefaultSlippageUnits: 0.003m),
         new InstrumentMetadata("SOL/USDT", "crypto", 2, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.02m, DefaultSlippageUnits: 0.02m),
-        new InstrumentMetadata("XRP/USDT", "crypto", 4, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.0002m, DefaultSlippageUnits: 0.0002m),
-        new InstrumentMetadata("ADA/USDT", "crypto", 4, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.0002m, DefaultSlippageUnits: 0.0002m),
-        new InstrumentMetadata("LINK/USDT", "crypto", 3, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.005m, DefaultSlippageUnits: 0.005m),
     };
 
     public static InstrumentMetadata For(string symbol) =>
