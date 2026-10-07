@@ -27,7 +27,6 @@ const instruments = [
   { baseId: "xrp-f", symbol: "XRP/USDT", name: "XRP Perpetual", group: "Crypto Futures", icon: "XRP", decimals: 4, tv: "BINANCE:XRPUSDT.P" },
   { baseId: "ada-f", symbol: "ADA/USDT", name: "Cardano Perpetual", group: "Crypto Futures", icon: "ADA", decimals: 4, tv: "BINANCE:ADAUSDT.P" },
   { baseId: "link-f", symbol: "LINK/USDT", name: "Chainlink Perpetual", group: "Crypto Futures", icon: "LINK", decimals: 3, tv: "BINANCE:LINKUSDT.P" },
-  { baseId: "avax-f", symbol: "AVAX/USDT", name: "Avalanche Perpetual", group: "Crypto Futures", icon: "AVAX", decimals: 3, tv: "BINANCE:AVAXUSDT.P" },
   { baseId: "eurusd", symbol: "EUR/USD", name: "Euro / US Dollar", group: "FX", icon: "€", decimals: 4, tv: "OANDA:EURUSD" },
   { baseId: "gbpusd", symbol: "GBP/USD", name: "British Pound / US Dollar", group: "FX", icon: "£", decimals: 4, tv: "OANDA:GBPUSD" },
   { baseId: "gbpjpy", symbol: "GBP/JPY", name: "British Pound / Yen", group: "FX", icon: "¥", decimals: 2, tv: "OANDA:GBPJPY" },

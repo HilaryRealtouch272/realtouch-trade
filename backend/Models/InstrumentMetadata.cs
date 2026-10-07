@@ -62,7 +62,6 @@ public static class InstrumentMetadataCatalog
         new InstrumentMetadata("XRP/USDT", "crypto", 4, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.0002m, DefaultSlippageUnits: 0.0002m),
         new InstrumentMetadata("ADA/USDT", "crypto", 4, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.0002m, DefaultSlippageUnits: 0.0002m),
         new InstrumentMetadata("LINK/USDT", "crypto", 3, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.005m, DefaultSlippageUnits: 0.005m),
-        new InstrumentMetadata("AVAX/USDT", "crypto", 3, 1m, MovementUnitName.Point, 1m, "USDT", DefaultSpreadUnits: 0.01m, DefaultSlippageUnits: 0.01m),
     };
 
     public static InstrumentMetadata For(string symbol) =>
