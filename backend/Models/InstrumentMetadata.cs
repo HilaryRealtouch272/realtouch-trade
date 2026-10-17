@@ -43,6 +43,11 @@ public static class InstrumentMetadataCatalog
         // GBP/JPY is a wider cross than the majors above - real typical
         // retail spread reflects that.
         new InstrumentMetadata("GBP/JPY", "fx", 2, 0.001m, MovementUnitName.Pip, 0.01m, "JPY", DefaultSpreadUnits: 2.5m, DefaultSlippageUnits: 0.7m),
+        new InstrumentMetadata("USD/JPY", "fx", 2, 0.001m, MovementUnitName.Pip, 0.01m, "JPY", DefaultSpreadUnits: 1.2m, DefaultSlippageUnits: 0.4m),
+        new InstrumentMetadata("AUD/USD", "fx", 4, 0.00001m, MovementUnitName.Pip, 0.0001m, "USD", DefaultSpreadUnits: 1.3m, DefaultSlippageUnits: 0.4m),
+        new InstrumentMetadata("USD/CAD", "fx", 4, 0.00001m, MovementUnitName.Pip, 0.0001m, "CAD", DefaultSpreadUnits: 1.5m, DefaultSlippageUnits: 0.4m),
+        new InstrumentMetadata("USD/CHF", "fx", 4, 0.00001m, MovementUnitName.Pip, 0.0001m, "CHF", DefaultSpreadUnits: 1.6m, DefaultSlippageUnits: 0.5m),
+        new InstrumentMetadata("NZD/USD", "fx", 4, 0.00001m, MovementUnitName.Pip, 0.0001m, "USD", DefaultSpreadUnits: 2.0m, DefaultSlippageUnits: 0.6m),
         new InstrumentMetadata("XAU/USD", "metal", 1, 0.01m, MovementUnitName.Point, 0.01m, "USD", DefaultSpreadUnits: 30m, DefaultSlippageUnits: 10m),
         new InstrumentMetadata("XAG/USD", "metal", 2, 0.001m, MovementUnitName.Point, 0.001m, "USD", DefaultSpreadUnits: 3m, DefaultSlippageUnits: 1m),
         new InstrumentMetadata("WTI/USD", "energy", 2, 0.01m, MovementUnitName.Point, 0.01m, "USD", DefaultSpreadUnits: 4m, DefaultSlippageUnits: 1.5m),

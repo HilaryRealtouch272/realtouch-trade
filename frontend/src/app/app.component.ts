@@ -27,6 +27,11 @@ const instruments = [
   { baseId: "eurusd", symbol: "EUR/USD", name: "Euro / US Dollar", group: "FX", icon: "€", decimals: 4, tv: "OANDA:EURUSD" },
   { baseId: "gbpusd", symbol: "GBP/USD", name: "British Pound / US Dollar", group: "FX", icon: "£", decimals: 4, tv: "OANDA:GBPUSD" },
   { baseId: "gbpjpy", symbol: "GBP/JPY", name: "British Pound / Yen", group: "FX", icon: "¥", decimals: 2, tv: "OANDA:GBPJPY" },
+  { baseId: "usdjpy", symbol: "USD/JPY", name: "US Dollar / Yen", group: "FX", icon: "¥", decimals: 2, tv: "OANDA:USDJPY" },
+  { baseId: "audusd", symbol: "AUD/USD", name: "Australian Dollar / US Dollar", group: "FX", icon: "A$", decimals: 4, tv: "OANDA:AUDUSD" },
+  { baseId: "usdcad", symbol: "USD/CAD", name: "US Dollar / Canadian Dollar", group: "FX", icon: "C$", decimals: 4, tv: "OANDA:USDCAD" },
+  { baseId: "usdchf", symbol: "USD/CHF", name: "US Dollar / Swiss Franc", group: "FX", icon: "Fr", decimals: 4, tv: "OANDA:USDCHF" },
+  { baseId: "nzdusd", symbol: "NZD/USD", name: "New Zealand Dollar / US Dollar", group: "FX", icon: "NZ$", decimals: 4, tv: "OANDA:NZDUSD" },
   { baseId: "gold", symbol: "XAU/USD", name: "Gold Spot", group: "Metals", icon: "Au", decimals: 1, tv: "OANDA:XAUUSD" },
   // Confirmed unavailable on the free Twelve Data plan/symbol set (see
   // backend/Services/MarketDataService.cs and DATA_SOURCES.md) - the backend

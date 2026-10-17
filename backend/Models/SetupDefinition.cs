@@ -61,6 +61,11 @@ public static class SetupCatalog
         new InstrumentDefinition("eurusd", "EUR/USD", "Euro / US Dollar", "FX", "€", 4, DataSource.TwelveData, "EUR/USD", "", new[] { "EUR", "USD" }),
         new InstrumentDefinition("gbpusd", "GBP/USD", "British Pound / US Dollar", "FX", "£", 4, DataSource.TwelveData, "GBP/USD", "", new[] { "GBP", "USD" }),
         new InstrumentDefinition("gbpjpy", "GBP/JPY", "British Pound / Yen", "FX", "¥", 2, DataSource.TwelveData, "GBP/JPY", "", new[] { "GBP", "JPY" }),
+        new InstrumentDefinition("usdjpy", "USD/JPY", "US Dollar / Yen", "FX", "¥", 2, DataSource.TwelveData, "USD/JPY", "", new[] { "USD", "JPY" }),
+        new InstrumentDefinition("audusd", "AUD/USD", "Australian Dollar / US Dollar", "FX", "A$", 4, DataSource.TwelveData, "AUD/USD", "", new[] { "AUD", "USD" }),
+        new InstrumentDefinition("usdcad", "USD/CAD", "US Dollar / Canadian Dollar", "FX", "C$", 4, DataSource.TwelveData, "USD/CAD", "", new[] { "USD", "CAD" }),
+        new InstrumentDefinition("usdchf", "USD/CHF", "US Dollar / Swiss Franc", "FX", "Fr", 4, DataSource.TwelveData, "USD/CHF", "", new[] { "USD", "CHF" }),
+        new InstrumentDefinition("nzdusd", "NZD/USD", "New Zealand Dollar / US Dollar", "FX", "NZ$", 4, DataSource.TwelveData, "NZD/USD", "", new[] { "NZD", "USD" }),
         new InstrumentDefinition("gold", "XAU/USD", "Gold Spot", "Metals", "Au", 1, DataSource.TwelveData, "XAU/USD", "", new[] { "USD" }),
         // Commented out: confirmed unavailable on the free Twelve Data plan/symbol
         // set (see MarketDataService.KnownUnavailableSymbols and DATA_SOURCES.md).
