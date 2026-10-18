@@ -1164,6 +1164,47 @@ function deleteSelectedTrackerRows() {
   });
 }
 
+// Every field worth having in an export, in a fixed column order. Pulled directly off
+// the raw entry (not just what's rendered on screen), so fields like session/calendar
+// state and every exit fill are included even though no table column shows them.
+const LEDGER_EXPORT_COLUMNS = [
+  "id", "symbol", "timeframe", "direction", "setupModel", "grade", "score", "scoringProfileId",
+  "marketCondition", "assetClass", "strategyVersion",
+  "entry", "stop", "finalStop", "tp1", "tp2", "tp3", "rewardToRisk",
+  "riskPercent", "riskAmount", "positionSize", "entrySpreadUnits", "slippageUnits",
+  "entryType", "entryFillPrice", "entryTimeUtc", "qualifiedAtUtc",
+  "status", "stopHitAtUtc", "closedAtUtc", "holdingDurationHours",
+  "realizedR", "netRealizedR", "grossMovementUnits", "costMovementUnits", "netMovementUnits",
+  "movementUnitLabel", "monetaryPnL", "percentageReturn",
+  "maxFavorableExcursionR", "maxAdverseExcursionR", "intrabarSequenceUncertain",
+  "finalOutcome", "closureReason", "scoreFloorNote", "session", "calendarState", "newsState"
+];
+
+// CSV escaping: wrap every field in quotes and double up any quote inside it, per RFC 4180 -
+// the one rule that actually matters here, since symbols/notes can contain commas.
+function csvCell(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "object") value = JSON.stringify(value);
+  return `"${String(value).replace(/"/g, '""')}"`;
+}
+
+function downloadLedgerCsv() {
+  if (!trackerEntries.length) { showToast("Nothing to export yet"); return; }
+  const rows = [LEDGER_EXPORT_COLUMNS.map(csvCell).join(",")];
+  for (const e of trackerEntries) rows.push(LEDGER_EXPORT_COLUMNS.map(col => csvCell(e[col])).join(","));
+
+  const blob = new Blob([rows.join("\r\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `realtouch-ledger-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  showToast(`Exported ${trackerEntries.length} row${trackerEntries.length === 1 ? "" : "s"}`);
+}
+
 function resetTrackerLedger() {
   openConfirm("Permanently delete the ENTIRE tracker ledger - every logged setup and its outcome? This cannot be undone.", "Reset all", async () => {
     try {
@@ -2065,6 +2106,7 @@ function initApp() {
   });
   $("#deleteSelectedRows").addEventListener("click", deleteSelectedTrackerRows);
   $("#resetTracker").addEventListener("click", resetTrackerLedger);
+  $("#downloadLedgerCsv").addEventListener("click", downloadLedgerCsv);
   $("#closeConfirm").addEventListener("click", closeConfirmModal);
   $("#cancelConfirm").addEventListener("click", closeConfirmModal);
   $("#confirmModal").addEventListener("click", event => { if (event.target === $("#confirmModal")) closeConfirmModal(); });
