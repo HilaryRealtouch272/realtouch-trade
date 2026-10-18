@@ -121,10 +121,11 @@ backend behind it.
   This is the most current and most detailed doc in the repo.
 - **`DATA_SOURCES.md`** - every external provider, what it's used for, and
   its real limitations.
-- **`ENVIRONMENT.md`** - required secrets and local setup.
-- **`VALIDATION.md`** and **`ARCHITECTURE.md`** - predate most of the engine
-  described above (multi-model scoring, the paper ledger, the backtester,
-  the shadow strategies) and need a rewrite; treat them as historical until
-  then.
+- **`ENVIRONMENT.md`** - required secrets (local and GitHub Actions) and local setup.
+- **`ARCHITECTURE.md`** - the actual code layout and data flow, including what's
+  legacy/unused.
+- **`VALIDATION.md`** - what's actually been tested and, just as importantly,
+  what hasn't (no FX backtest, no simulated calendar/news in the backtester,
+  grade is not a win-probability).
 
 This system does not execute real trades and is not financial advice.

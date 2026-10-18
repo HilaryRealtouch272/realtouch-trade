@@ -2,59 +2,65 @@
 
 ## What has been validated
 
-**76 automated xUnit tests** (`backend.Tests/`, run with `dotnet test`), all
-passing, using deterministic synthetic candle fixtures (zig-zag uptrends/
-downtrends, ranging sine waves) - never live market data, so results are
-reproducible on every run.
+**276 automated xUnit tests** (`backend.Tests/`, run with `dotnet test`), all
+passing. Most use deterministic synthetic candle fixtures (zig-zag uptrends/
+downtrends, ranging sine waves), so they're reproducible on every run; a
+smaller set (the ledger, the alert dedupe, the reconciler) does real
+construction of the actual services against an in-memory/fake HTTP layer, to
+catch bugs that only show up when the pieces are wired together, not just in
+each function alone.
 
-Coverage by module:
+Coverage spans: non-repainting pivot/BOS/CHoCH detection, Market Condition
+classification, FVG/order-block/premium-discount/Willis Zone/liquidity-sweep
+detection, all four setup models' mandatory gates and model-specific scoring,
+Market Condition routing, the common gates (confluence count, cost ratio),
+entry/stop/target construction (including the minimum tradeable stop and
+higher-timeframe targets), fill simulation (partial exits, costs, same-candle
+stop/target sequencing, net R, MFE/MAE), the paper ledger's idempotent
+Telegram alerts (both the duplicate-signal and duplicate-outcome cases, and
+specifically that the 15-minute/weekend Telegram gate survives the outcome
+dedupe), the 1-minute crypto settlement and its restart watermark, the trade
+reconciler, the news/calendar evaluators (including the 12-hour recency
+window and the 3-headline minimum), the Wilson interval calculation, the
+backtester's no-look-ahead candle provider and its statistics, and the
+shadow-mode strategies.
 
-| Module | What's tested |
-|---|---|
-| `CandleQualityChecker` | Duplicate/gap/stale detection, `HasUsableData` |
-| `PivotDetector` | Confirmed-pivot timing, non-repainting (pivot never usable before its confirmation candle closes) |
-| `StructureAnalyzer` | BOS on trend fixtures, CHoCH on reversal fixtures, every event's referenced pivot confirmed before the event's own candle time |
-| `MarketConditionClassifier` | Trending/Ranging/insufficient-history classification |
-| `Displacement` | Large-directional-candle detection vs. ordinary candles |
-| `FvgDetector` | Gap detection, ATR-width threshold, full mitigation lifecycle |
-| `OrderBlockDetector` | Detection tied to confirmed BOS/CHoCH, distal-boundary validity |
-| `PremiumDiscount` | Range building, zone classification, retracement-fraction thresholds |
-| `WillisZoneDetector` | FVG-overlap and retracement-overlap requirements |
-| `LiquiditySweepDetector` | Full three-part confirmation (breach + close-back + follow-through), correctly ignores an unrelated direction's sweep |
-| `SetupModels` | Precondition gating per model, and specifically that **no candidate can report `Qualified: true`** while entry/stop/target math and HTF alignment are unbuilt |
-| `KeyLevelCatalog` | Previous-day/week levels only on matching timeframe, equal-level clustering, range equilibrium placement, invalidation |
-| `EntryStopTargetCalculator` | Zone selection, stop below/above entry correctly by direction, target ordering, rejection of an irrationally tight stop |
-| `ConfluenceScorer` | Best-case ≈ A+, worst-case = 0/"No setup", every family capped at its own maximum, session/news/macro always 0 and labeled why |
-| `RiskSizing` / `PortfolioSafeguards` | Hard 2% cap enforced even when a higher risk is requested, fee/slippage haircut reduces size, all five safeguard checks (aggregate risk, daily loss, max positions, duplicate signal, correlated exposure) |
-| `SignalLifecycle` | Every transition in the happy path, expiry, invalidation, stop-out, and that terminal states never advance further |
-| `SignalResultBuilder` | One full end-to-end assembly from raw candles through to the final response shape, on a real (fixture) uptrend |
+## What this does NOT mean
 
-## What has NOT been validated
-
-- **No backtesting** (section 28) exists. No win rate, expectancy, profit
-  factor, drawdown, or any other historical performance number has been
-  computed for this strategy, on any market, ever. Nothing in this codebase
-  should be read as evidence the strategy has an edge.
-- **No live signal has been produced end-to-end** against real market data -
-  the tested pipeline above runs entirely on synthetic fixtures. The live
-  endpoints (`/api/setups*`) still run the separate, simpler v1 heuristic
-  (see ARCHITECTURE.md) - the two have not been cross-validated against each
-  other or against real data.
-- **No walk-forward or out-of-sample testing** - there is no historical
-  dataset wired into this project at all yet.
-- Real-world edge cases not covered by the synthetic fixtures (extreme
-  gaps, halts, exchange outages producing partial candles, etc.) are
-  untested.
+- **A real backtest exists and has been run** - see `STRATEGY.md`'s
+  backtesting section for actual results on real Coinbase history. They are
+  still based on small sample sizes (single to low double digits of trades
+  per pair), so treat any number there as provisional, not proof of an edge.
+- **The live paper-trading ledger is the primary source of truth for
+  performance**, not this file or the backtester - check the deployed
+  tracker's Diagnostics tab for current, real numbers. They change every
+  scan; nothing written down here should be trusted once it's gone stale.
+- **No FX backtest exists** - there is no free source of deep intraday FX
+  history, so FX/metals pairs have no historical validation at all, only
+  live paper trades.
+- **The calendar and news state are never simulated in the backtester** -
+  historical calendar/news data doesn't exist for this project, so backtest
+  results are somewhat more permissive than live trading would be around
+  real high-impact events.
+- **Grade is not a probability of winning.** It's a checklist-derived
+  score, not a calibrated win-rate estimate - and the live ledger has, at
+  various points, shown grade A trades performing worse than grade B on a
+  small sample. That's exactly the kind of thing more trades either confirm
+  or disprove; it should not be assumed either way.
 
 ## How to actually validate this before trusting any output
 
-1. Do not treat `SetupQualityScore` or `Grade` as a probability of winning -
-   the spec itself says the same. It is a checklist of internal
-   consistency, not a proven edge.
-2. Before any real backtesting can happen, this needs: a historical candle
-   dataset per instrument/timeframe, a backtest harness reusing these exact
-   `Strategy/` functions (never a separate reimplementation, to avoid
-   look-ahead drift), and realistic cost modeling (spread/commission/
-   slippage) - none of which exist yet.
-3. Treat every commit to this engine as "logic verified to behave as
-   designed on synthetic data," not "verified to make money."
+1. Run `dotnet run --project backend -- --backtest <SYMBOL> <TIMEFRAME> <DAYS>`
+   for a crypto pair and read the output yourself - don't take a summary of
+   it as gospel. It replays the real engine (`SignalOrchestrator`), not a
+   separate reimplementation, so there's no look-ahead drift between what's
+   tested and what's live.
+2. Treat anything under 30 resolved trades for a given model, symbol or
+   timeframe as provisional, and under 50-100 as too early to justify
+   changing any gate or threshold (this is the project's own standing rule,
+   not an external one).
+3. Check the live tracker regularly rather than relying on any one
+   snapshot - the sample size needed to say anything meaningful is still
+   being built up in real time.
+4. For FX specifically, there is no backtest to lean on - judge it purely
+   from accumulated live paper trades, and expect that to take longer.
