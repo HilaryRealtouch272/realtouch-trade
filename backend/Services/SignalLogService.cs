@@ -113,6 +113,12 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         LoadAndMigrate(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")));
     private readonly object _lock = new();
 
+    // Which outcome event (see OutcomeSignature) was last actually sent to Telegram for each entry
+    // ID, so a restart or a later scan that recomputes the same already-reported event never resends it.
+    private readonly string _outcomeAlertStatePath = Path.Combine(env.ContentRootPath, ".cache", "outcome-alert-state.json");
+    private readonly Dictionary<string, string> _lastOutcomeSent =
+        DiskCache.Load<Dictionary<string, string>>(Path.Combine(env.ContentRootPath, ".cache", "outcome-alert-state.json")) ?? new();
+
     // Ledger entries persisted before TrackingExpiryUtc existed deserialize
     // it as default(DateTime) (0001-01-01) - which is always in the past, so
     // IsOpenStatus + now > TrackingExpiryUtc fired instantly and mass-expired
@@ -189,10 +195,35 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         {
             // 15m trades are tracked on the dashboard only, so their TP/stop updates are not sent either.
             if (!ShouldSendOutcome(entry, DateTime.UtcNow)) continue;
+
+            // Idempotent delivery: the exact same lifecycle event for this entry is never sent twice,
+            // even if a later scan (or a restart replaying candles it already applied) reports the
+            // same status again. A genuinely NEW event - say TP1 then later TP2 - still sends, because
+            // its signature differs.
+            var signature = OutcomeSignature(entry);
+            bool alreadySent;
+            lock (_lock) { alreadySent = _lastOutcomeSent.TryGetValue(entry.Id, out var prev) && prev == signature; }
+            if (alreadySent) continue;
+
             var (success, error) = await telegram.SendAsync(FormatOutcomeMessage(entry));
-            if (!success) logger.LogWarning("Outcome Telegram alert failed for {Symbol} {Timeframe} ({Status}): {Error}", entry.Symbol, entry.Timeframe, entry.Status, error);
+            if (success)
+            {
+                lock (_lock)
+                {
+                    _lastOutcomeSent[entry.Id] = signature;
+                    DiskCache.Save(_outcomeAlertStatePath, _lastOutcomeSent);
+                }
+            }
+            else logger.LogWarning("Outcome Telegram alert failed for {Symbol} {Timeframe} ({Status}): {Error}", entry.Symbol, entry.Timeframe, entry.Status, error);
         }
     }
+
+    // Identifies exactly what the outcome alert would say - every field that actually appears in
+    // FormatOutcomeMessage. Two different real events (e.g. TP1 then TP2) always produce different
+    // signatures; the same event recomputed later always produces the same one.
+    private static string OutcomeSignature(QualificationLogEntry entry) => string.Join("|",
+        entry.Status, entry.Tp1HitAtUtc?.Ticks, entry.Tp2HitAtUtc?.Ticks, entry.ClosedAtUtc?.Ticks,
+        entry.RealizedR, entry.NetRealizedR, entry.FinalOutcome);
 
     // One-minute candles for every open trade whose market has a fine feed,
     // fetched from each trade's watermark. A failed fetch just leaves that trade
