@@ -386,19 +386,34 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
     internal static bool ShouldSendOutcome(QualificationLogEntry entry, DateTime utc) => MarketHours.TelegramAllowed(entry.Symbol, entry.Timeframe, utc);
 
-    private static string FormatOutcomeMessage(QualificationLogEntry entry)
+    // Stop-triggered and economically profitable are different concepts (a position can bank
+    // TP1/TP2 before the remainder stops out and still finish net positive): the label always
+    // follows the net result, never just which event closed the trade. Below this threshold a
+    // net result reads as breakeven rather than a win or loss.
+    private const decimal OutcomeEpsilonR = 0.005m;
+
+    internal static (string Icon, string Label) OutcomeLabel(QualificationLogEntry entry, decimal? realizedR)
     {
-        var (icon, label) = entry.Status switch
+        var partial = entry.Tp2HitAtUtc is not null ? " after TP1+TP2 banked" : entry.Tp1HitAtUtc is not null ? " after TP1 banked" : "";
+        string Verdict(string netWord, string lossWord) =>
+            realizedR is null ? "" : realizedR > OutcomeEpsilonR ? netWord : realizedR < -OutcomeEpsilonR ? lossWord : " — breakeven";
+
+        return entry.Status switch
         {
             "Tp1Hit" => ("🎯", "TP1 hit"),
             "Tp2Hit" => ("🎯", "TP2 hit"),
-            "Tp3Hit" => ("🏆", "TP3 hit — WIN"),
-            "StoppedOut" => ("🛑", "Stopped out — LOSS"),
-            "Expired" => ("⌛", "Expired — flat"),
+            "Tp3Hit" => (realizedR is < 0 ? "🛑" : "🏆", $"TP3 hit{Verdict(" — WIN", " — net loss after costs")}"),
+            "StoppedOut" => (realizedR > OutcomeEpsilonR ? "🟢" : "🛑", $"Stopped{(realizedR > OutcomeEpsilonR ? "" : " out")}{partial}{Verdict(" — net profit", " — LOSS")}"),
+            "Expired" => ("⌛", $"Expired{partial}{Verdict(" — net profit", " — net loss")}"),
             _ => ("ℹ️", entry.Status)
         };
-        var directionIcon = entry.Direction == "Long" ? "🟢" : "🔴";
+    }
+
+    private static string FormatOutcomeMessage(QualificationLogEntry entry)
+    {
         var realizedR = entry.NetRealizedR ?? entry.RealizedR;
+        var (icon, label) = OutcomeLabel(entry, realizedR);
+        var directionIcon = entry.Direction == "Long" ? "🟢" : "🔴";
         var realized = realizedR.HasValue
             ? $"\n⚖️ Realized: {realizedR.Value:0.00}R" + (entry.NetRealizedR.HasValue ? " net of costs" : "") + (entry.IntrabarSequenceUncertain ? " (intrabar sequence uncertain)" : "")
             : "";
