@@ -15,9 +15,15 @@ name: Scan and Deploy
 #      TELEGRAM__BOTTOKEN, TELEGRAM__CHATID.
 #      (GITHUB_TOKEN is automatic - no need to add it.)
 on:
-  schedule:
-    - cron: "*/15 * * * *" # every 15 minutes - GitHub may delay this under load
-  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+  # GitHub's own schedule trigger is disabled for now - it was landing every 2-5
+  # hours instead of every 15 minutes (GitHub explicitly documents scheduled
+  # workflows as best-effort, delayed or dropped under load). An external pinger
+  # (cron-job.org) now calls the GitHub API to fire workflow_dispatch every 15
+  # minutes instead, which has been reliable. Re-enable this (and consider
+  # dropping the pinger) if that ever stops being true.
+  # schedule:
+  #   - cron: "*/15 * * * *"
+  workflow_dispatch: {} # lets you trigger a run manually, or via the external pinger
   push:
     branches: [main]
 
