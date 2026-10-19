@@ -41,7 +41,7 @@ public class SignalAlertService(TelegramNotifier telegram, SignalLogService sign
             foreach (var result in results)
             {
                 // 15m signals stay on the dashboard only: they are too frequent to alert on.
-                if (!MarketHours.TelegramAllowed(result.InstrumentSymbol, result.Timeframe, DateTime.UtcNow)) continue;
+                if (!MarketHours.TelegramAllowed(result.InstrumentSymbol, result.Timeframe, result.Signal?.Grade, DateTime.UtcNow)) continue;
 
                 var key = Key(result.InstrumentSymbol, result.Timeframe);
                 // Triggered = price has genuinely traded into the entry zone

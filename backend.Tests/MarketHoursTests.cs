@@ -39,4 +39,51 @@ public class MarketHoursTests
         var entry = new QualificationLogEntry("x", "BTC/USDT", timeframe, "Long", "TrendContinuationPullback", "A", 86, 1m, 0.9m, 1.1m, 1.2m, 1.4m, 2m, DateTime.UtcNow, DateTime.UtcNow, "Tp1Hit", null, null, null, null);
         Assert.Equal(send, SignalLogService.ShouldSendOutcome(entry, new DateTime(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc)));
     }
+
+    // Owner decision: EUR/USD, GBP/USD and GBP/JPY are the explicit carve-out from "15m is
+    // dashboard-only" - everything else still never alerts on 15m, at any grade.
+    private static readonly DateTime AWeekdayNoon = new(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc);
+
+    [Theory]
+    [InlineData("EUR/USD")]
+    [InlineData("GBP/USD")]
+    [InlineData("GBP/JPY")]
+    public void TheCarvedOutPairsAllowFifteenMinuteSignalsOnTelegram(string symbol)
+    {
+        Assert.True(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon));
+        Assert.True(MarketHours.TelegramAllowed(symbol, "15m", "A+", AWeekdayNoon));
+    }
+
+    [Fact]
+    public void EverySymbolOutsideTheCarveOutStillNeverAlertsOnFifteenMinutes()
+    {
+        Assert.False(MarketHours.TelegramAllowed("BTC/USDT", "15m", "A+", AWeekdayNoon));
+        Assert.False(MarketHours.TelegramAllowed("XAU/USD", "15m", "A+", AWeekdayNoon));
+    }
+
+    [Theory]
+    [InlineData("EUR/USD")]
+    [InlineData("GBP/USD")]
+    [InlineData("GBP/JPY")]
+    public void GradeAIsWithheldOnFifteenMinutesEvenForCarvedOutPairs(string symbol)
+    {
+        // Owner decision: no grade-A 15m alerts, even for the pairs that otherwise alert on 15m.
+        Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "A", AWeekdayNoon));
+        Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "a", AWeekdayNoon)); // case-insensitive
+    }
+
+    [Fact]
+    public void GradeAStillAlertsNormallyOnTimeframesAboveFifteenMinutes()
+    {
+        Assert.True(MarketHours.TelegramAllowed("EUR/USD", "1H", "A", AWeekdayNoon));
+        Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "4H", "A", AWeekdayNoon));
+    }
+
+    [Fact]
+    public void TheCarveOutStillPausesOverTheWeekend()
+    {
+        // The carve-out lifts the 15m gate, not the separate FX-closed gate.
+        var saturday = new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc);
+        Assert.False(MarketHours.TelegramAllowed("EUR/USD", "15m", "B", saturday));
+    }
 }

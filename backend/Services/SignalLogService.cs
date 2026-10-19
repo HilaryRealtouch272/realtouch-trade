@@ -384,7 +384,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         IReadOnlyList<Models.NormalizedCandle>? fineCandles = null) =>
         TradeSimulator.ApplyCandleSequence(entry, candles, now, fineCandles);
 
-    internal static bool ShouldSendOutcome(QualificationLogEntry entry, DateTime utc) => MarketHours.TelegramAllowed(entry.Symbol, entry.Timeframe, utc);
+    internal static bool ShouldSendOutcome(QualificationLogEntry entry, DateTime utc) => MarketHours.TelegramAllowed(entry.Symbol, entry.Timeframe, entry.Grade, utc);
 
     // Stop-triggered and economically profitable are different concepts (a position can bank
     // TP1/TP2 before the remainder stops out and still finish net positive): the label always
