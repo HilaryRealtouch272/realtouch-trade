@@ -47,7 +47,8 @@ public class MarketHoursTests
     [Theory]
     [InlineData("EUR/USD")]
     [InlineData("GBP/USD")]
-    [InlineData("GBP/JPY")]
+    // GBP/JPY is in this carve-out too, but is separately paused on Telegram entirely right
+    // now (see the yen-pair tests below) - it's covered there, not here.
     public void TheCarvedOutPairsAllowFifteenMinuteSignalsOnTelegram(string symbol)
     {
         Assert.True(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon));
@@ -85,5 +86,23 @@ public class MarketHoursTests
         // The carve-out lifts the 15m gate, not the separate FX-closed gate.
         var saturday = new DateTime(2026, 10, 3, 12, 0, 0, DateTimeKind.Utc);
         Assert.False(MarketHours.TelegramAllowed("EUR/USD", "15m", "B", saturday));
+    }
+
+    // Owner decision, temporary: the yen pairs are paused on Telegram entirely.
+    [Theory]
+    [InlineData("GBP/JPY")]
+    [InlineData("USD/JPY")]
+    public void TheYenPairsAreHeldBackOnTelegramAtEveryTimeframeAndGrade(string symbol)
+    {
+        Assert.False(MarketHours.TelegramAllowed(symbol, "1H", "A+", AWeekdayNoon));
+        Assert.False(MarketHours.TelegramAllowed(symbol, "Daily", "A+", AWeekdayNoon));
+        Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon)); // GBP/JPY's own 15m carve-out too
+    }
+
+    [Fact]
+    public void OtherFxPairsAreUnaffectedByTheYenPause()
+    {
+        Assert.True(MarketHours.TelegramAllowed("GBP/USD", "1H", "A+", AWeekdayNoon));
+        Assert.True(MarketHours.TelegramAllowed("EUR/USD", "15m", "B", AWeekdayNoon));
     }
 }

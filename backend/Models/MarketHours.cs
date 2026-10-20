@@ -21,10 +21,16 @@ public static class MarketHours
     // B and A+ still alert there. This has no effect on any other timeframe.
     private static bool IsWithheldFifteenMinuteGrade(string? grade) => string.Equals(grade, "A", StringComparison.OrdinalIgnoreCase);
 
-    // Whether a result may go to Telegram now: 15m never does except the carve-out above (and
-    // never for grade A even there), and forex only while the market is open.
+    // Owner decision, temporary: the yen pairs are paused on Telegram entirely (every timeframe,
+    // every grade) - still tracked and shown on the dashboard as normal. Remove from this set to
+    // resume alerting them.
+    private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "GBP/JPY", "USD/JPY" };
+
+    // Whether a result may go to Telegram now: paused symbols never do, 15m never does except the
+    // carve-out above (and never for grade A even there), and forex only while the market is open.
     public static bool TelegramAllowed(string symbol, string timeframe, string? grade, DateTime utc)
     {
+        if (TelegramPaused.Contains(symbol)) return false;
         if (timeframe == "15m" && (!FifteenMinuteAlertsAllowed.Contains(symbol) || IsWithheldFifteenMinuteGrade(grade))) return false;
         var isFx = SetupCatalog.Instruments.Any(i => i.Symbol == symbol && i.Source == DataSource.TwelveData);
         return !(isFx && FxClosed(utc));
