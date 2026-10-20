@@ -88,12 +88,12 @@ public class OutcomeDedupeTests : IDisposable
     public async Task ADifferentLaterEventOnTheSameTradeStillSends()
     {
         var (service, handler) = NewService();
-        await service.RecordAndTrackAsync(new[] { TriggeredResult("ETH/USDT", "1H") });
+        await service.RecordAndTrackAsync(new[] { TriggeredResult("ADA/USDT", "1H") });
 
-        await service.RecordAndTrackAsync(new[] { TriggeredResult("ETH/USDT", "1H") with { LivePrice = 111m } }); // TP1
+        await service.RecordAndTrackAsync(new[] { TriggeredResult("ADA/USDT", "1H") with { LivePrice = 111m } }); // TP1
         Assert.Equal(1, handler.Sent);
 
-        await service.RecordAndTrackAsync(new[] { TriggeredResult("ETH/USDT", "1H") with { LivePrice = 121m } }); // TP2 - a different, real, later event
+        await service.RecordAndTrackAsync(new[] { TriggeredResult("ADA/USDT", "1H") with { LivePrice = 121m } }); // TP2 - a different, real, later event
         Assert.Equal(2, handler.Sent);
     }
 

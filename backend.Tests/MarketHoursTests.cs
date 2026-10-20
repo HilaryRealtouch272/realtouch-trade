@@ -88,11 +88,12 @@ public class MarketHoursTests
         Assert.False(MarketHours.TelegramAllowed("EUR/USD", "15m", "B", saturday));
     }
 
-    // Owner decision, temporary: the yen pairs are paused on Telegram entirely.
+    // Owner decision, temporary: these symbols are paused on Telegram entirely.
     [Theory]
     [InlineData("GBP/JPY")]
     [InlineData("USD/JPY")]
-    public void TheYenPairsAreHeldBackOnTelegramAtEveryTimeframeAndGrade(string symbol)
+    [InlineData("ETH/USDT")]
+    public void PausedSymbolsAreHeldBackOnTelegramAtEveryTimeframeAndGrade(string symbol)
     {
         Assert.False(MarketHours.TelegramAllowed(symbol, "1H", "A+", AWeekdayNoon));
         Assert.False(MarketHours.TelegramAllowed(symbol, "Daily", "A+", AWeekdayNoon));
@@ -100,9 +101,10 @@ public class MarketHoursTests
     }
 
     [Fact]
-    public void OtherFxPairsAreUnaffectedByTheYenPause()
+    public void OtherSymbolsAreUnaffectedByTheTelegramPause()
     {
         Assert.True(MarketHours.TelegramAllowed("GBP/USD", "1H", "A+", AWeekdayNoon));
         Assert.True(MarketHours.TelegramAllowed("EUR/USD", "15m", "B", AWeekdayNoon));
+        Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "1H", "A+", AWeekdayNoon));
     }
 }

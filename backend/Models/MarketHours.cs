@@ -21,10 +21,10 @@ public static class MarketHours
     // B and A+ still alert there. This has no effect on any other timeframe.
     private static bool IsWithheldFifteenMinuteGrade(string? grade) => string.Equals(grade, "A", StringComparison.OrdinalIgnoreCase);
 
-    // Owner decision, temporary: the yen pairs are paused on Telegram entirely (every timeframe,
-    // every grade) - still tracked and shown on the dashboard as normal. Remove from this set to
-    // resume alerting them.
-    private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "GBP/JPY", "USD/JPY" };
+    // Owner decision, temporary: these symbols are paused on Telegram entirely (every timeframe,
+    // every grade) - still tracked and shown on the dashboard as normal. Remove a symbol from
+    // this set to resume alerting it.
+    private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "GBP/JPY", "USD/JPY", "ETH/USDT" };
 
     // Whether a result may go to Telegram now: paused symbols never do, 15m never does except the
     // carve-out above (and never for grade A even there), and forex only while the market is open.
