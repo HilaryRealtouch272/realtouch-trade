@@ -764,7 +764,7 @@ function filteredTrackerEntries() {
 async function renderSignalTracker() {
   const body = $("#trackerBody");
   if (!body) return;
-  body.innerHTML = `<tr><td colspan="12" class="tracker-empty">Loading…</td></tr>`;
+  body.innerHTML = `<tr><td colspan="13" class="tracker-empty">Loading…</td></tr>`;
   trackerSelectedIds.clear();
 
   // Delete/reset need a live backend to act on - the static deployment is a
@@ -780,7 +780,7 @@ async function renderSignalTracker() {
   } catch (err) {
     console.error("Could not reach the signal tracker log:", err);
     trackerEntries = [];
-    body.innerHTML = `<tr><td colspan="12" class="tracker-empty">Could not load the tracker log.</td></tr>`;
+    body.innerHTML = `<tr><td colspan="13" class="tracker-empty">Could not load the tracker log.</td></tr>`;
     renderTrackerStats();
   }
 }
@@ -1019,7 +1019,7 @@ function renderTrackerDetail(e) {
       <td>${fmtUnits(x.netUnits, unit)}</td><td>${Number(x.r).toFixed(2)}R</td></tr>`).join("");
   const held = e.holdingDurationHours == null ? "—" : `${Number(e.holdingDurationHours).toFixed(1)} h`;
   return `
-    <tr class="tracker-detail-row"><td colspan="12">
+    <tr class="tracker-detail-row"><td colspan="13">
       <div class="tracker-detail-grid">
         ${kv("Trade ID", e.id)}${kv("Strategy version", e.strategyVersion)}${kv("Strategy model", formatEnumName(e.setupModel))}
         ${kv("Asset class", e.assetClass)}${kv("Market condition", e.marketCondition ? formatEnumName(e.marketCondition) : "")}
@@ -1079,7 +1079,7 @@ function renderTrackerRows() {
   const rows = filteredTrackerEntries();
 
   if (!rows.length) {
-    body.innerHTML = `<tr><td colspan="12" class="tracker-empty">${trackerEntries.length ? "No rows match this filter." : "No qualified signals logged yet."}</td></tr>`;
+    body.innerHTML = `<tr><td colspan="13" class="tracker-empty">${trackerEntries.length ? "No rows match this filter." : "No qualified signals logged yet."}</td></tr>`;
   } else {
     body.innerHTML = rows.map(e => `
       <tr>
@@ -1087,6 +1087,7 @@ function renderTrackerRows() {
         <td><button type="button" class="tracker-expand" data-expand="${e.id}" aria-label="Show the full trade record" title="Full trade record">${trackerExpandedIds.has(e.id) ? "▾" : "▸"}</button> ${e.symbol}</td>
         <td>${e.timeframe}</td>
         <td><span class="direction ${e.direction.toLowerCase()}">${e.direction.toUpperCase()}</span></td>
+        <td>${formatEnumName(e.setupModel)}</td>
         <td>${e.grade} (${e.score})${e.scoreFloorNote ? ` <small class="pending" title="${e.scoreFloorNote}">floor</small>` : ""}</td>
         <td>${formatPrice(e.entry, 5)}</td>
         <td>${formatPrice(e.stop, 5)}</td>
