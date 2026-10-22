@@ -93,12 +93,30 @@ public class MarketHoursTests
     [InlineData("GBP/JPY")]
     [InlineData("USD/JPY")]
     [InlineData("ETH/USDT")]
-    [InlineData("XAU/USD")]
     public void PausedSymbolsAreHeldBackOnTelegramAtEveryTimeframeAndGrade(string symbol)
     {
         Assert.False(MarketHours.TelegramAllowed(symbol, "1H", "A+", AWeekdayNoon));
         Assert.False(MarketHours.TelegramAllowed(symbol, "Daily", "A+", AWeekdayNoon));
         Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon)); // GBP/JPY's own 15m carve-out too
+    }
+
+    // Owner decision, temporary: XAU/USD is held back from Telegram only during Lagos mornings
+    // (00:00-12:00 WAT, midnight to noon), at every timeframe and grade - outside that window it
+    // alerts normally. This test's "noon" fixture (AWeekdayNoon, 12:00 UTC = 13:00 WAT) is
+    // deliberately outside the window, so it doubles as the "unaffected" case here.
+    [Fact]
+    public void GoldIsHeldBackOnTelegramOnlyDuringLagosMornings()
+    {
+        var justBeforeMidnightWat = new DateTime(2026, 10, 5, 22, 59, 0, DateTimeKind.Utc); // 23:59 WAT - window not yet open
+        var windowOpens = new DateTime(2026, 10, 5, 23, 0, 0, DateTimeKind.Utc);            // 00:00 WAT - window opens
+        var lateMorning = new DateTime(2026, 10, 6, 10, 59, 0, DateTimeKind.Utc);           // 11:59 WAT - still inside
+        var windowCloses = new DateTime(2026, 10, 6, 11, 0, 0, DateTimeKind.Utc);           // 12:00 WAT - window closes
+
+        Assert.True(MarketHours.TelegramAllowed("XAU/USD", "1H", "A+", justBeforeMidnightWat));
+        Assert.False(MarketHours.TelegramAllowed("XAU/USD", "1H", "A+", windowOpens));
+        Assert.False(MarketHours.TelegramAllowed("XAU/USD", "15m", "B", lateMorning));
+        Assert.True(MarketHours.TelegramAllowed("XAU/USD", "1H", "A+", windowCloses));
+        Assert.True(MarketHours.TelegramAllowed("XAU/USD", "1H", "A+", AWeekdayNoon)); // afternoon WAT
     }
 
     [Fact]
