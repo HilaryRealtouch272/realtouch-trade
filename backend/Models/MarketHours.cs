@@ -24,7 +24,7 @@ public static class MarketHours
     // Owner decision, temporary: these symbols are paused on Telegram entirely (every timeframe,
     // every grade) - still tracked and shown on the dashboard as normal. Remove a symbol from
     // this set to resume alerting it.
-    private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "GBP/JPY", "USD/JPY", "ETH/USDT" };
+    private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "GBP/JPY", "USD/JPY", "ETH/USDT", "XAU/USD" };
 
     // Whether a result may go to Telegram now: paused symbols never do, 15m never does except the
     // carve-out above (and never for grade A even there), and forex only while the market is open.

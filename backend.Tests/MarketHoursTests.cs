@@ -93,6 +93,7 @@ public class MarketHoursTests
     [InlineData("GBP/JPY")]
     [InlineData("USD/JPY")]
     [InlineData("ETH/USDT")]
+    [InlineData("XAU/USD")]
     public void PausedSymbolsAreHeldBackOnTelegramAtEveryTimeframeAndGrade(string symbol)
     {
         Assert.False(MarketHours.TelegramAllowed(symbol, "1H", "A+", AWeekdayNoon));
