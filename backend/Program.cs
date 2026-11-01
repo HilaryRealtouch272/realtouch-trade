@@ -74,7 +74,7 @@ if (args.Contains("--backtest"))
 {
     var i = Array.IndexOf(args, "--backtest");
     var symbol = args[i + 1];
-    var tf = TimeframeIntervals.ParseLabel(args[i + 2]) ?? throw new ArgumentException("Timeframe must be 15m or 1H");
+    var tf = TimeframeIntervals.ParseLabel(args[i + 2]) ?? throw new ArgumentException("Timeframe must be 15m, 1H, 4H or Daily");
     var days = int.Parse(args[i + 3]);
     var report = await new RealtouchSmartTrade.Api.Backtesting.Backtester().RunAsync(symbol, tf, days, new Progress<string>(Console.WriteLine));
     var outPath = Environment.GetEnvironmentVariable("BACKTEST_OUTPUT_PATH") ?? "backtest-report.json";

@@ -56,12 +56,35 @@ public static class SetupModels
         _ => new("Weekly/Daily or Daily/4H directional alignment", RequirementStatus.Met) // Aligned or Neutral both proceed per section 7
     };
 
-    private static RequirementCheck EvaluateRr(decimal? rewardToRisk) => rewardToRisk switch
+    // Owner decision: the reward-to-risk floor scales with timeframe instead of one flat 2:1 for
+    // everyone. 15m/1H keep the original 2:1 (they clear it easily - zones are packed densely
+    // relative to swing size there). 4H and Daily ease to 1.7:1 and 1.5:1: a higher-timeframe
+    // setup's stop is a real, wide structural invalidation that doesn't shrink to match whatever
+    // the next key level happens to be, so the same flat multiple punished Daily far more than it
+    // punished 15m/1H for no quality-related reason. BACKTEST_MIN_RR, when set, overrides this
+    // schedule entirely for one-off backtest experimentation; unset (the live path, always) means
+    // this schedule applies exactly as written.
+    private static decimal MinRewardToRisk(Timeframe tf)
     {
-        null => new("Minimum 2:1 projected reward-to-risk", RequirementStatus.NotEvaluated),
-        >= 2m => new("Minimum 2:1 projected reward-to-risk", RequirementStatus.Met),
-        _ => new("Minimum 2:1 projected reward-to-risk", RequirementStatus.NotMet)
-    };
+        if (decimal.TryParse(Environment.GetEnvironmentVariable("BACKTEST_MIN_RR"), out var overrideRr)) return overrideRr;
+        return tf switch
+        {
+            Timeframe.H4 => 1.7m,
+            Timeframe.Daily or Timeframe.Weekly => 1.5m,
+            _ => 2m
+        };
+    }
+
+    private static RequirementCheck EvaluateRr(decimal? rewardToRisk, Timeframe timeframe)
+    {
+        var floor = MinRewardToRisk(timeframe);
+        return rewardToRisk switch
+        {
+            null => new($"Minimum {floor}:1 projected reward-to-risk", RequirementStatus.NotEvaluated),
+            _ when rewardToRisk >= floor => new($"Minimum {floor}:1 projected reward-to-risk", RequirementStatus.Met),
+            _ => new($"Minimum {floor}:1 projected reward-to-risk", RequirementStatus.NotMet)
+        };
+    }
 
     // An active HardVeto blocks qualification outright. A calendar that could
     // not be CHECKED (feed down, e.g. an invalid API key) used to be treated as
@@ -117,7 +140,7 @@ public static class SetupModels
             zoneReq,
             sweepReq,
             structureReq,
-            EvaluateRr(rewardToRisk),
+            EvaluateRr(rewardToRisk, timeframe),
             EvaluateNewsVeto(calendarVeto)
         };
 
@@ -183,7 +206,7 @@ public static class SetupModels
             new("Confirmed breakout Market Condition with displacement", RequirementStatus.Met),
             retestZoneReq,
             chaseReq,
-            EvaluateRr(rewardToRisk),
+            EvaluateRr(rewardToRisk, timeframe),
             EvaluateNewsVeto(calendarVeto)
         };
 
@@ -306,7 +329,7 @@ public static class SetupModels
 
         var requirements = new List<RequirementCheck> { boundaryReq, sweepReq, confirmReq, notDuringBreakout,
             logicalTargetReq,
-            EvaluateRr(rewardToRisk),
+            EvaluateRr(rewardToRisk, timeframe),
             EvaluateNewsVeto(calendarVeto) };
 
         return new SetupCandidate(SetupModelType.RangeBoundaryRejection, direction, timeframe, requirements);

@@ -44,8 +44,8 @@ public class Backtester
     {
         var instrument = SetupCatalog.Instruments.FirstOrDefault(i => i.Symbol == symbol && i.Source == DataSource.Coinbase)
             ?? throw new ArgumentException($"{symbol} is not a Coinbase instrument in the catalog (backtests use Coinbase history).");
-        if (timeframe is not (Timeframe.M15 or Timeframe.H1))
-            throw new ArgumentException("Backtests support the 15m and 1H setup timeframes.");
+        if (timeframe is not (Timeframe.M15 or Timeframe.H1 or Timeframe.H4 or Timeframe.Daily))
+            throw new ArgumentException("Backtests support the 15m, 1H, 4H and Daily setup timeframes.");
 
         var (start, end, replay, m15, h1) = await PrepareAsync(symbol, instrument, days, progress, ct);
         var mainSpan = TimeConfigSpan(timeframe);
@@ -82,12 +82,17 @@ public class Backtester
         var h1 = await CoinbaseHistory.FetchAsync(http, symbol, instrument.FeedSymbol, Timeframe.H1, 3600, start.AddDays(-14), end, ct);
         var d1 = await CoinbaseHistory.FetchAsync(http, symbol, instrument.FeedSymbol, Timeframe.Daily, 86400, start.AddDays(-140), end, ct);
         var h4 = ReplayMarketDataProvider.Aggregate(h1, TimeSpan.FromHours(1), TimeSpan.FromHours(4), Timeframe.H4);
+        // Daily-timeframe setups need Weekly context too (TimeframeHierarchy.ContextTimeframes):
+        // without this, every Daily/Weekly backtest evaluation reads HTF alignment as
+        // NotEvaluated and can never qualify, regardless of any other gate.
+        var weekly = ReplayMarketDataProvider.Aggregate(d1, TimeSpan.FromDays(1), TimeSpan.FromDays(7), Timeframe.Weekly);
 
         var replay = new ReplayMarketDataProvider();
         replay.AddSeries(symbol, Timeframe.M15, m15);
         replay.AddSeries(symbol, Timeframe.H1, h1);
         replay.AddSeries(symbol, Timeframe.H4, h4);
         replay.AddSeries(symbol, Timeframe.Daily, d1);
+        replay.AddSeries(symbol, Timeframe.Weekly, weekly);
         return (start, end, replay, m15, h1);
     }
 
