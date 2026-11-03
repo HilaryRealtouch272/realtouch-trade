@@ -24,10 +24,7 @@ public class MarketauxNewsProvider(IHttpClientFactory httpClientFactory, IConfig
         ["EUR/USD"] = "euro dollar ECB Federal Reserve",
         ["GBP/USD"] = "pound sterling dollar Bank of England",
         ["GBP/JPY"] = "pound yen Bank of England Bank of Japan",
-        ["USD/JPY"] = "dollar yen Bank of Japan",
-        ["AUD/USD"] = "australian dollar RBA",
         ["NZD/JPY"] = "new zealand dollar yen",
-        ["USD/CAD"] = "canadian dollar Bank of Canada",
         ["XAU/USD"] = "gold price",
     };
 

@@ -23,10 +23,7 @@ public class GdeltNewsProvider(IHttpClientFactory httpClientFactory) : INewsProv
         ["EUR/USD"] = "(\"European Central Bank\" OR \"euro zone\" OR \"Federal Reserve\")",
         ["GBP/USD"] = "(\"Bank of England\" OR \"British pound\" OR \"Federal Reserve\")",
         ["GBP/JPY"] = "(\"Bank of England\" OR \"Bank of Japan\" OR \"British pound\")",
-        ["USD/JPY"] = "(\"Bank of Japan\" OR \"Federal Reserve\" OR yen)",
-        ["AUD/USD"] = "(\"Reserve Bank of Australia\" OR \"Australian dollar\")",
         ["NZD/JPY"] = "(\"Reserve Bank of New Zealand\" OR \"Bank of Japan\")",
-        ["USD/CAD"] = "(\"Bank of Canada\" OR \"Canadian dollar\" OR \"crude oil\")",
         ["XAU/USD"] = "(\"gold price\" OR \"safe haven\")",
     };
 

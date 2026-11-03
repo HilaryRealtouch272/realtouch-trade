@@ -91,7 +91,6 @@ public class MarketHoursTests
     // Owner decision, temporary: these symbols are paused on Telegram entirely.
     [Theory]
     [InlineData("GBP/JPY")]
-    [InlineData("USD/JPY")]
     [InlineData("ETH/USDT")]
     public void PausedSymbolsAreHeldBackOnTelegramAtEveryTimeframeAndGrade(string symbol)
     {
