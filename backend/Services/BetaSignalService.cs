@@ -137,6 +137,30 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
 
     private void Persist() => DiskCache.Save(_path, _entries);
 
+    // Telegram rate-limits messages to the SAME chat to roughly 1/second; a scan that
+    // opens/closes many beta trades at once was firing them all with zero delay, and a
+    // throttled (429) send just logged a warning server-side and was silently dropped -
+    // never retried. Real symptom: opens went through, outcomes for trades that actually
+    // hit stop/TP sometimes never did. Paced sends fix this; semaphore (not a lock) since
+    // the wait itself is async.
+    private readonly SemaphoreSlim _sendGate = new(1, 1);
+    private DateTime _lastSendUtc = DateTime.MinValue;
+    private static readonly TimeSpan MinSendGap = TimeSpan.FromMilliseconds(1100);
+
+    private async Task<(bool Success, string? Error)> PacedSendAsync(string text)
+    {
+        await _sendGate.WaitAsync();
+        try
+        {
+            var wait = MinSendGap - (DateTime.UtcNow - _lastSendUtc);
+            if (wait > TimeSpan.Zero) await Task.Delay(wait);
+            var result = await telegram.SendAsync(text, chatIdOverride: _betaChatId);
+            _lastSendUtc = DateTime.UtcNow;
+            return result;
+        }
+        finally { _sendGate.Release(); }
+    }
+
     private async Task SendOpenAsync(QualificationLogEntry e, ShadowCandidate c)
     {
         var directionIcon = e.Direction == "Long" ? "🟢" : "🔴";
@@ -147,7 +171,7 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
             $"🛑 Stop {TelegramSignalFormatter.FormatPrice(e.Stop)}\n" +
             $"🏁 TP1 {TelegramSignalFormatter.FormatPrice(e.Tp1)} · TP2 {TelegramSignalFormatter.FormatPrice(e.Tp2)} · TP3 {TelegramSignalFormatter.FormatPrice(e.Tp3)}\n\n" +
             (c.Evidence.Count > 0 ? string.Join("\n", c.Evidence.Select(ev => $"• {ev}")) : "");
-        var (success, error) = await telegram.SendAsync(text, chatIdOverride: _betaChatId);
+        var (success, error) = await PacedSendAsync(text);
         if (!success) logger.LogWarning("Beta signal Telegram alert failed for {Symbol} {Timeframe}: {Error}", e.Symbol, e.Timeframe, error);
     }
 
@@ -156,7 +180,7 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
         var label = (e.NetRealizedR ?? e.RealizedR ?? 0m) >= 0 ? "WIN" : "LOSS";
         var text = $"🧪 *BETA OUTCOME* · {e.Symbol} · {e.Timeframe} · {e.SetupModel} → {label}\n" +
             $"Net {e.NetRealizedR ?? e.RealizedR:+0.00;-0.00}R · {e.FinalOutcome ?? e.Status}";
-        var (success, error) = await telegram.SendAsync(text, chatIdOverride: _betaChatId);
+        var (success, error) = await PacedSendAsync(text);
         if (!success) logger.LogWarning("Beta outcome Telegram alert failed for {Symbol} {Timeframe}: {Error}", e.Symbol, e.Timeframe, error);
     }
 }
