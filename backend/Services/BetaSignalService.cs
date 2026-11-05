@@ -8,7 +8,10 @@ namespace RealtouchSmartTrade.Api.Services;
 // own Telegram alerts - but kept entirely separate from the real ledger and real alerts so
 // neither can interfere with the other:
 //   - Its own persisted state (.cache/beta-signal-log.json), own one-open-trade-per
-//     (symbol, timeframe, model, direction) dedup, own TradeSimulator-driven tracking.
+//     (symbol, timeframe, model) dedup regardless of direction - same rule the real
+//     ledger uses, so one model can't hold a Long and a Short open at once on the same
+//     symbol+timeframe, which is incoherent (it can't genuinely believe both at the
+//     same time). Own TradeSimulator-driven tracking.
 //   - Its own Telegram messages, clearly marked BETA, sent independently of
 //     SignalAlertService's dedup/pause rules.
 //   - Its entries are tagged Grade="Beta" and only MERGED into the ledger JSON the
@@ -28,8 +31,10 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
         DiskCache.Load<List<QualificationLogEntry>>(Path.Combine(env.ContentRootPath, ".cache", "beta-signal-log.json")) ?? new();
     private readonly object _lock = new();
 
-    private static string Key(string symbol, string timeframe, ShadowModel model, SetupDirection direction) =>
-        $"{symbol}|{timeframe}|{model}|{direction}";
+    // Deliberately NOT keyed by direction: one model can't coherently hold a Long and a
+    // Short open at once on the same symbol+timeframe. A reversal candidate while one is
+    // already open is suppressed, same as the real ledger's rule - see ProcessAsync.
+    private static string Key(string symbol, string timeframe, ShadowModel model) => $"{symbol}|{timeframe}|{model}";
 
     public async Task ProcessAsync(IEnumerable<OrchestratorResult> results)
     {
@@ -59,17 +64,17 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
                 foreach (var closed in justClosed) await SendOutcomeAsync(closed);
 
                 // 2. Open a beta trade for any fresh candidate that doesn't already have one
-                // open for the same (symbol, timeframe, model, direction).
+                // open for the same (symbol, timeframe, model) - in EITHER direction (see Key).
                 if (result.ShadowCandidates is not { Count: > 0 }) continue;
                 foreach (var candidate in result.ShadowCandidates)
                 {
-                    var key = Key(result.InstrumentSymbol, result.Timeframe, candidate.Model, candidate.Direction);
+                    var key = Key(result.InstrumentSymbol, result.Timeframe, candidate.Model);
                     bool alreadyOpen;
                     QualificationLogEntry opened;
                     lock (_lock)
                     {
                         alreadyOpen = _entries.Any(e => TradeSimulator.IsOpen(e.Status) &&
-                            Key(e.Symbol, e.Timeframe, Enum.Parse<ShadowModel>(e.SetupModel), Enum.Parse<SetupDirection>(e.Direction)) == key);
+                            Key(e.Symbol, e.Timeframe, Enum.Parse<ShadowModel>(e.SetupModel)) == key);
                         if (alreadyOpen) continue;
                         opened = OpenEntry(result.InstrumentSymbol, result.Timeframe, candidate);
                         _entries.Add(opened);
