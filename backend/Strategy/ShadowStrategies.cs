@@ -2,7 +2,7 @@ using RealtouchSmartTrade.Api.Models;
 
 namespace RealtouchSmartTrade.Api.Strategy;
 
-// Four additional strategies that run in SHADOW MODE only: they are evaluated and
+// Five additional strategies that run in SHADOW MODE only: they are evaluated and
 // recorded, never alerted and never entered into the paper ledger. Promotion to
 // qualified paper trading needs deterministic tests, out-of-sample backtest
 // results and a documented minimum quality (see STRATEGY.md) - none of which a new
@@ -12,7 +12,12 @@ public enum ShadowModel
     SessionLiquiditySweepMss,
     VolatilityContractionBreakoutRetest,
     ZoneMitigation,
-    FailedBreakoutReclaim
+    FailedBreakoutReclaim,
+    // Enters on a fresh continuation break in an already-confirmed trend, instead of
+    // waiting for a pullback into a zone (TrendContinuationPullback's job) - covers the
+    // real case of a trend that never gives a retracement. Heavily guarded against
+    // chasing an already-extended move; see MomentumContinuation below for the specifics.
+    MomentumContinuation
 }
 
 public record ShadowCandidate(
@@ -37,6 +42,7 @@ public static class ShadowStrategies
         var c = allCandles.Where(x => x.IsComplete && x.Quality == DataQuality.Ok).OrderBy(x => x.OpenTimeUtc).ToList();
         if (c.Count < 60) return Array.Empty<ShadowCandidate>();
         var atr = Indicators.Atr(c, 14);
+        var adx = Indicators.Adx(c, 14);
         var results = new List<ShadowCandidate>();
 
         foreach (var direction in new[] { SetupDirection.Long, SetupDirection.Short })
@@ -45,6 +51,7 @@ public static class ShadowStrategies
             Add(results, ContractionBreakout(c, atr, keyLevels, direction, minStopCostFloor));
             Add(results, ZoneMitigation(c, structure, obs, fvgs, atr, direction, minStopCostFloor));
             Add(results, FailedBreakout(c, atr, keyLevels, direction, minStopCostFloor));
+            Add(results, MomentumContinuation(c, structure, atr, adx, direction, minStopCostFloor));
         }
         return results;
     }
@@ -251,6 +258,67 @@ public static class ShadowStrategies
             });
         }
         return null;
+    }
+
+    // ---- 5. Momentum Continuation (buy/sell strength without waiting for a pullback) ----
+    // TrendContinuationPullback only fires on a retracement into a zone, so a trend that
+    // never gives a pullback gets no entry at all under the existing four models. This
+    // fires on a FRESH continuation break (a new structural extreme in the trend
+    // direction) instead. Heavily guarded against chasing an already-extended move -
+    // see the distance/climax checks below - since that's the main way an entry-on-
+    // strength model goes wrong.
+    internal static ShadowCandidate? MomentumContinuation(List<NormalizedCandle> c, StructureResult structure,
+        decimal?[] atr, decimal?[] adx, SetupDirection direction, decimal costFloor)
+    {
+        var isLong = direction == SetupDirection.Long;
+        var n = c.Count;
+        var last = c[^1];
+        if (atr[^1] is not { } a || a <= 0) return null;
+
+        // A. BOS confirmation: trend already confirmed in this direction (structure, not
+        // just the current candle's color), the break is a genuine new structural extreme
+        // beyond a previously confirmed swing, closed beyond it, and nothing has
+        // immediately invalidated it since.
+        var trendOk = isLong ? structure.FinalTrend == TrendState.Bullish : structure.FinalTrend == TrendState.Bearish;
+        if (!trendOk) return null;
+
+        var bos = structure.Events.LastOrDefault(e => e.Type == (isLong ? StructureEventType.BullishBos : StructureEventType.BearishBos));
+        if (bos is null) return null;
+        var bosIdx = c.FindLastIndex(x => x.CloseTimeUtc == bos.CandleTimeUtc);
+        if (bosIdx < 0 || n - 1 - bosIdx > FreshnessCandles) return null; // must be a fresh break, not stale
+
+        var breakCandle = c[bosIdx];
+        var closedBeyond = isLong ? breakCandle.Close > bos.BrokenPivot.Price : breakCandle.Close < bos.BrokenPivot.Price;
+        if (!closedBeyond) return null;
+
+        var opposing = isLong
+            ? structure.Events.Any(e => e.CandleTimeUtc > bos.CandleTimeUtc && e.Type is StructureEventType.BearishBos or StructureEventType.BearishChoch)
+            : structure.Events.Any(e => e.CandleTimeUtc > bos.CandleTimeUtc && e.Type is StructureEventType.BullishBos or StructureEventType.BullishChoch);
+        if (opposing) return null;
+
+        // B. Momentum exhaustion protection: refuse to chase a move that already ran too
+        // far past the break, and refuse a climax candle whose own range is a blow-off
+        // spike rather than healthy continuation.
+        var distanceBeyondBreak = Math.Abs(last.Close - bos.BrokenPivot.Price);
+        const decimal MaxChaseAtrMultiple = 2.5m; // [ENG] tune against backtest results
+        if (distanceBeyondBreak > MaxChaseAtrMultiple * a) return null;
+
+        var breakRange = breakCandle.High - breakCandle.Low;
+        const decimal MaxClimaxAtrMultiple = 3m; // [ENG] a breakout candle this oversized reads as exhaustion, not continuation
+        var climax = breakRange > MaxClimaxAtrMultiple * a;
+        if (climax) return null;
+
+        var trendStrong = adx[^1] is not { } lastAdx || lastAdx >= 20m;
+        var stop = isLong ? Math.Min(breakCandle.Low, bos.BrokenPivot.Price) : Math.Max(breakCandle.High, bos.BrokenPivot.Price);
+
+        return Build(ShadowModel.MomentumContinuation, direction, last, a, stop, costFloor, new[]
+        {
+            new Ev(true, 30, true, "Confirmed trend in this direction (structure)"),
+            new Ev(true, 25, true, "Fresh BOS beyond a previously confirmed swing, closed beyond it"),
+            new Ev(true, 20, true, "No opposing structure event since the break"),
+            new Ev(true, 15, distanceBeyondBreak <= MaxChaseAtrMultiple * a, "Not chasing - within 2.5x ATR of the break level"),
+            new Ev(false, 10, trendStrong, "ADX confirms real trend strength, not noise"),
+        });
     }
 
     // ---- shared: turn evidence into a scored candidate with a plan -----------------

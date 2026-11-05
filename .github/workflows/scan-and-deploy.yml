@@ -96,6 +96,9 @@ jobs:
           Marketaux__ApiKeys: ${{ secrets.MARKETAUX__APIKEYS }}
           Telegram__BotToken: ${{ secrets.TELEGRAM__BOTTOKEN }}
           Telegram__ChatId: ${{ secrets.TELEGRAM__CHATID }}
+          # Optional: beta/experimental-model trades post here instead, if set (same bot,
+          # added to a second group). Falls back to the main ChatId above when unset.
+          Telegram__BetaChatId: ${{ secrets.TELEGRAM__BETACHATID }}
           SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
           SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
           DIAGNOSTICS_OUTPUT_PATH: ${{ github.workspace }}/diagnostics.json

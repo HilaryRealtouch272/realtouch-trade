@@ -36,6 +36,7 @@ builder.Services.AddSingleton<StrategyDiagnosticsStore>();
 builder.Services.AddSingleton<SignalOrchestrator>();
 builder.Services.AddSingleton<SignalAlertService>();
 builder.Services.AddSingleton<SignalLogService>();
+builder.Services.AddSingleton<BetaSignalService>();
 builder.Services.AddSingleton<LatestSignalsStore>();
 // Always-on scanning independent of the dashboard being open - see its own
 // header comment for why this replaces per-request scanning entirely.
@@ -350,6 +351,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var diagnosticsStore = services.GetRequiredService<StrategyDiagnosticsStore>();
     var reconciler = services.GetRequiredService<TradeReconciler>();
     var shadowStore = services.GetRequiredService<ShadowCandidateStore>();
+    var betaSignals = services.GetRequiredService<BetaSignalService>();
     var env = services.GetRequiredService<IHostEnvironment>();
     var scanLogger = services.GetRequiredService<ILogger<Program>>();
 
@@ -442,6 +444,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var allResults = cryptoResults.Concat(fxResults).ToList();
     await alerts.CheckAndNotifyAsync(allResults);
     await signalLog.RecordAndTrackAsync(allResults);
+    await betaSignals.ProcessAsync(allResults);
 
     // Must match the live API's casing exactly (camelCase) - the frontend's
     // field mapping (applySignalResult in app.component.ts) is written
@@ -466,8 +469,12 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var logOutputPath = Environment.GetEnvironmentVariable("SIGNAL_LOG_OUTPUT_PATH")
         ?? Path.Combine(env.ContentRootPath, "signal-log.json");
     Directory.CreateDirectory(Path.GetDirectoryName(logOutputPath) is { Length: > 0 } logDir ? logDir : ".");
+    // Beta (shadow-model) entries are tracked entirely separately (see BetaSignalService)
+    // and only merged here, at output time, so the frontend ledger shows them tagged
+    // Grade="Beta" alongside the real signals without ever touching SignalLogService's
+    // own state or its one-open-trade-per-symbol+timeframe invariant.
     await File.WriteAllTextAsync(logOutputPath,
-        System.Text.Json.JsonSerializer.Serialize(signalLog.GetAll(), jsonOptions));
+        System.Text.Json.JsonSerializer.Serialize(signalLog.GetAll().Concat(betaSignals.GetAll()).ToList(), jsonOptions));
 
     // Same reason as the ledger file above: the static site has no live API, so the
     // diagnostics view reads this snapshot instead.

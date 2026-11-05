@@ -12,10 +12,13 @@ namespace RealtouchSmartTrade.Api.Providers;
 // current caller is the manual /api/telegram/test endpoint in Program.cs.
 public class TelegramNotifier(IHttpClientFactory httpClientFactory, IConfiguration config)
 {
-    public async Task<(bool Success, string? Error)> SendAsync(string text, CancellationToken ct = default)
+    // chatIdOverride lets a caller send to a DIFFERENT chat than the default (e.g. a
+    // separate group for beta/experimental signals) using the same bot token - the bot
+    // just needs to have been added to that chat already.
+    public async Task<(bool Success, string? Error)> SendAsync(string text, CancellationToken ct = default, string? chatIdOverride = null)
     {
         var token = config["Telegram:BotToken"];
-        var chatId = config["Telegram:ChatId"];
+        var chatId = chatIdOverride ?? config["Telegram:ChatId"];
         if (string.IsNullOrWhiteSpace(token) || string.IsNullOrWhiteSpace(chatId))
             return (false, "Telegram not configured (Telegram:BotToken / Telegram:ChatId).");
 
