@@ -90,6 +90,20 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
         lock (_lock) return _entries.ToList();
     }
 
+    // Same bands as the live confluence scorer (Strategy/ConfluenceScore.cs) - a beta
+    // entry's score means the same thing a real one's does, so it earns the same letter.
+    // Beta-ness itself is signalled by which ledger/dashboard section the entry lives in,
+    // not by the grade - these are now kept in a separate output entirely (see
+    // Program.cs's beta-log.json), not merged into the real signal-log.json.
+    private static string GradeForScore(int score) => score switch
+    {
+        >= 90 => "A+",
+        >= 85 => "A",
+        >= 75 => "B",
+        >= 65 => "Tracking",
+        _ => "No setup"
+    };
+
     private static QualificationLogEntry OpenEntry(string symbol, string timeframeLabel, ShadowCandidate c)
     {
         var tf = TimeframeIntervals.ParseLabel(timeframeLabel) ?? Timeframe.H1;
@@ -98,7 +112,7 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
         var now = DateTime.UtcNow;
         return new QualificationLogEntry(
             Id: Guid.NewGuid().ToString("N"), Symbol: symbol, Timeframe: timeframeLabel, Direction: c.Direction.ToString(),
-            SetupModel: c.Model.ToString(), Grade: "Beta", Score: c.Score, Entry: c.Entry, Stop: c.Stop, Tp1: c.Tp1, Tp2: c.Tp2, Tp3: c.Tp3,
+            SetupModel: c.Model.ToString(), Grade: GradeForScore(c.Score), Score: c.Score, Entry: c.Entry, Stop: c.Stop, Tp1: c.Tp1, Tp2: c.Tp2, Tp3: c.Tp3,
             RewardToRisk: 2m, QualifiedAtUtc: now, TrackingExpiryUtc: now + TimeframeConfig.Duration(tf) * 30,
             Status: "Open", Tp1HitAtUtc: null, Tp2HitAtUtc: null, ClosedAtUtc: null, RealizedR: null,
             AssetClass: meta?.AssetClass ?? "", FinalStop: c.Stop, RiskPercent: 1m, RiskAmount: 100m,
@@ -114,8 +128,8 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
         var directionIcon = e.Direction == "Long" ? "🟢" : "🔴";
         var text =
             $"🧪 *BETA* · {e.Symbol} · {e.Timeframe} · {directionIcon} *{e.Direction.ToUpperInvariant()}*\n" +
-            $"Model: {e.SetupModel} (shadow - unvalidated, see /STRATEGY.md)\n" +
-            $"Score {e.Score}\n\n" +
+            $"Model: {e.SetupModel} (experimental - not yet validated for live trading)\n" +
+            $"Grade {e.Grade} ({e.Score})\n\n" +
             $"🎯 Entry {TelegramSignalFormatter.FormatPrice(e.Entry)}\n" +
             $"🛑 Stop {TelegramSignalFormatter.FormatPrice(e.Stop)}\n" +
             $"🏁 TP1 {TelegramSignalFormatter.FormatPrice(e.Tp1)} · TP2 {TelegramSignalFormatter.FormatPrice(e.Tp2)} · TP3 {TelegramSignalFormatter.FormatPrice(e.Tp3)}\n\n" +

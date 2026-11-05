@@ -246,6 +246,9 @@ app.MapGet("/api/signals/fx", (LatestSignalsStore store, string? timeframe) =>
 app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalLog.GetAll()))
 .WithName("GetSignalLog");
 
+app.MapGet("/api/beta-log", (BetaSignalService betaSignals) => Results.Ok(betaSignals.GetAll()))
+.WithName("GetBetaLog");
+
 // Section 9: per-model diagnostics - every evaluated candidate this scan
 // (qualified AND rejected), so it's possible to tell "genuinely no
 // opportunity" apart from "an implementation fault", instead of only ever
@@ -469,12 +472,17 @@ async Task RunScanOnceAsync(IServiceProvider services)
     var logOutputPath = Environment.GetEnvironmentVariable("SIGNAL_LOG_OUTPUT_PATH")
         ?? Path.Combine(env.ContentRootPath, "signal-log.json");
     Directory.CreateDirectory(Path.GetDirectoryName(logOutputPath) is { Length: > 0 } logDir ? logDir : ".");
-    // Beta (shadow-model) entries are tracked entirely separately (see BetaSignalService)
-    // and only merged here, at output time, so the frontend ledger shows them tagged
-    // Grade="Beta" alongside the real signals without ever touching SignalLogService's
-    // own state or its one-open-trade-per-symbol+timeframe invariant.
     await File.WriteAllTextAsync(logOutputPath,
-        System.Text.Json.JsonSerializer.Serialize(signalLog.GetAll().Concat(betaSignals.GetAll()).ToList(), jsonOptions));
+        System.Text.Json.JsonSerializer.Serialize(signalLog.GetAll(), jsonOptions));
+
+    // Beta (shadow-model) entries get their own separate ledger output, kept entirely
+    // apart from the real signals above - a distinct dashboard section, not a merged row
+    // set. BetaSignalService's own state is untouched either way; this is just output.
+    var betaLogOutputPath = Environment.GetEnvironmentVariable("BETA_LOG_OUTPUT_PATH")
+        ?? Path.Combine(env.ContentRootPath, "beta-log.json");
+    Directory.CreateDirectory(Path.GetDirectoryName(betaLogOutputPath) is { Length: > 0 } betaLogDir ? betaLogDir : ".");
+    await File.WriteAllTextAsync(betaLogOutputPath,
+        System.Text.Json.JsonSerializer.Serialize(betaSignals.GetAll(), jsonOptions));
 
     // Same reason as the ledger file above: the static site has no live API, so the
     // diagnostics view reads this snapshot instead.
