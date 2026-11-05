@@ -65,9 +65,18 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
 
                 // 2. Open a beta trade for any fresh candidate that doesn't already have one
                 // open for the same (symbol, timeframe, model) - in EITHER direction (see Key).
+                // Held to the same two symbol-wide gates the real four models use: a live hard
+                // calendar veto blocks every candidate here outright, and a candidate whose
+                // direction conflicts with the Weekly/Daily HTF read is skipped too - these
+                // models' own checklists are lighter (single-timeframe), so this is what brings
+                // them up to the real system's risk floor rather than lowering it.
                 if (result.ShadowCandidates is not { Count: > 0 }) continue;
+                if (result.ShadowCalendarVeto == CalendarVetoState.HardVeto) continue;
                 foreach (var candidate in result.ShadowCandidates)
                 {
+                    if (result.ShadowHtf is { } htf && htf.TryGetValue(candidate.Direction, out var alignment) && alignment == HtfAlignment.Conflicting)
+                        continue;
+
                     var key = Key(result.InstrumentSymbol, result.Timeframe, candidate.Model);
                     bool alreadyOpen;
                     QualificationLogEntry opened;
