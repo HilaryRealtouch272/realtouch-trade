@@ -72,6 +72,11 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
                 // them up to the real system's risk floor rather than lowering it.
                 if (result.ShadowCandidates is not { Count: > 0 }) continue;
                 if (result.ShadowCalendarVeto == CalendarVetoState.HardVeto) continue;
+                // CAKE/USDT dropped from beta: low liquidity, worst backtest result of any
+                // symbol by far (-67R to -70R net over 180 days across models). Real CAKE/USDT
+                // signals on the live system are unaffected - this only stops NEW beta trades;
+                // anything already open on CAKE still gets tracked to a real close above.
+                if (result.InstrumentSymbol == "CAKE/USDT") continue;
                 foreach (var candidate in result.ShadowCandidates)
                 {
                     if (result.ShadowHtf is { } htf && htf.TryGetValue(candidate.Direction, out var alignment) && alignment == HtfAlignment.Conflicting)

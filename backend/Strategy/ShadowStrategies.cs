@@ -50,7 +50,10 @@ public static class ShadowStrategies
             Add(results, SessionSweep(c, tf, structure, atr, direction, minStopCostFloor));
             Add(results, ContractionBreakout(c, atr, keyLevels, direction, minStopCostFloor));
             Add(results, ZoneMitigation(c, structure, obs, fvgs, atr, direction, minStopCostFloor));
-            Add(results, FailedBreakout(c, atr, keyLevels, direction, minStopCostFloor));
+            // FailedBreakoutReclaim dropped: backtested consistently negative expectancy
+            // across every crypto pair (worst on CAKE at -0.34R to -0.36R, still negative
+            // on BTC/ETH). Method kept, just not invoked - easy to re-enable if revisited.
+            // Add(results, FailedBreakout(c, atr, keyLevels, direction, minStopCostFloor));
             Add(results, MomentumContinuation(c, structure, atr, adx, direction, minStopCostFloor));
         }
         return results;
@@ -321,6 +324,17 @@ public static class ShadowStrategies
         });
     }
 
+    // Owner decision: the shadow models get their OWN, wider minimum stop floor (0.75x
+    // ATR) than the real system's shared 0.5x - backtested across BTC/ETH/SOL/CAKE,
+    // 0.75x reduced fast noise-stop-outs (BTC flipped net-positive) without materially
+    // hurting the others. Deliberately a SEPARATE constant from
+    // EntryStopTargetCalculator.MinStopAtrMultiple, which the real four models still use
+    // unchanged - this never touches the real system's stops.
+    // SHADOW_MIN_STOP_ATR_MULTIPLE still overrides it for further one-off backtesting.
+    private const decimal DefaultShadowMinStopAtrMultiple = 0.75m;
+    private static readonly decimal ShadowMinStopAtrMultiple =
+        decimal.TryParse(Environment.GetEnvironmentVariable("SHADOW_MIN_STOP_ATR_MULTIPLE"), out var v) ? v : DefaultShadowMinStopAtrMultiple;
+
     // ---- shared: turn evidence into a scored candidate with a plan -----------------
     private static ShadowCandidate? Build(ShadowModel model, SetupDirection direction, NormalizedCandle last, decimal atr,
         decimal structuralStop, decimal costFloor, IReadOnlyList<Ev> evidence, bool structureFreshOk = true)
@@ -334,7 +348,7 @@ public static class ShadowStrategies
         var entry = last.Close;
         var buffer = 0.1m * atr;
         var stop = isLong ? structuralStop - buffer : structuralStop + buffer;
-        var minDistance = EntryStopTargetCalculator.MinimumStopDistance(atr, costFloor);
+        var minDistance = Math.Max(ShadowMinStopAtrMultiple * atr, costFloor);
         if (Math.Abs(entry - stop) < minDistance) stop = isLong ? entry - minDistance : entry + minDistance;
         var risk = Math.Abs(entry - stop);
         var correctSide = isLong ? stop < entry : stop > entry;
