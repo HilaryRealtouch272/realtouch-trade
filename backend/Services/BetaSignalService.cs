@@ -142,13 +142,11 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
         var directionIcon = e.Direction == "Long" ? "🟢" : "🔴";
         var text =
             $"🧪 *BETA* · {e.Symbol} · {e.Timeframe} · {directionIcon} *{e.Direction.ToUpperInvariant()}*\n" +
-            $"Model: {e.SetupModel} (experimental - not yet validated for live trading)\n" +
-            $"Grade {e.Grade} ({e.Score})\n\n" +
+            $"{e.SetupModel} · Grade {e.Grade} ({e.Score})\n\n" +
             $"🎯 Entry {TelegramSignalFormatter.FormatPrice(e.Entry)}\n" +
             $"🛑 Stop {TelegramSignalFormatter.FormatPrice(e.Stop)}\n" +
             $"🏁 TP1 {TelegramSignalFormatter.FormatPrice(e.Tp1)} · TP2 {TelegramSignalFormatter.FormatPrice(e.Tp2)} · TP3 {TelegramSignalFormatter.FormatPrice(e.Tp3)}\n\n" +
-            (c.Evidence.Count > 0 ? string.Join("\n", c.Evidence.Select(ev => $"• {ev}")) + "\n\n" : "") +
-            "⚠️ Experimental model, backtested but not yet promoted. Not a trade recommendation.";
+            (c.Evidence.Count > 0 ? string.Join("\n", c.Evidence.Select(ev => $"• {ev}")) : "");
         var (success, error) = await telegram.SendAsync(text, chatIdOverride: _betaChatId);
         if (!success) logger.LogWarning("Beta signal Telegram alert failed for {Symbol} {Timeframe}: {Error}", e.Symbol, e.Timeframe, error);
     }
