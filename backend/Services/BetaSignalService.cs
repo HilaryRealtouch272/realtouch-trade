@@ -166,8 +166,12 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
         finally { _sendGate.Release(); }
     }
 
+    // Owner decision: 15m beta trades are dashboard-only, same rule the real signals use
+    // for 15m - too frequent to alert on. Still fully opened, tracked and closed as normal
+    // (shows up in the Beta ledger tab); only the Telegram send is held.
     private async Task SendOpenAsync(QualificationLogEntry e, ShadowCandidate c)
     {
+        if (e.Timeframe == "15m") return;
         var directionIcon = e.Direction == "Long" ? "🟢" : "🔴";
         var text =
             $"🧪 *BETA* · {e.Symbol} · {e.Timeframe} · {directionIcon} *{e.Direction.ToUpperInvariant()}*\n" +
@@ -182,6 +186,7 @@ public class BetaSignalService(TelegramNotifier telegram, IHostEnvironment env, 
 
     private async Task SendOutcomeAsync(QualificationLogEntry e)
     {
+        if (e.Timeframe == "15m") return;
         var label = (e.NetRealizedR ?? e.RealizedR ?? 0m) >= 0 ? "WIN" : "LOSS";
         var text = $"🧪 *BETA OUTCOME* · {e.Symbol} · {e.Timeframe} · {e.SetupModel} → {label}\n" +
             $"Net {e.NetRealizedR ?? e.RealizedR:+0.00;-0.00}R · {e.FinalOutcome ?? e.Status}";
