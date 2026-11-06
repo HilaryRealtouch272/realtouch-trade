@@ -30,7 +30,7 @@ namespace RealtouchSmartTrade.Api.Services;
 // "prior results" for gated timeframes, and dozens of full OHLC candles
 // per instrument/timeframe on every ~15-minute run would bloat both for
 // no benefit; nothing downstream of that file ever needs raw candles.
-public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe, IReadOnlyList<StrategyEvaluation>? AllEvaluations = null, decimal? LivePrice = null, [property: JsonIgnore] IReadOnlyList<Models.NormalizedCandle>? Candles = null, [property: JsonIgnore] IReadOnlyList<Strategy.ShadowCandidate>? ShadowCandidates = null, [property: JsonIgnore] IReadOnlyDictionary<Strategy.SetupDirection, Strategy.HtfAlignment>? ShadowHtf = null, [property: JsonIgnore] CalendarVetoState? ShadowCalendarVeto = null);
+public record OrchestratorResult(bool Success, SignalResult? Signal, string? Reason, string InstrumentSymbol, string Timeframe, IReadOnlyList<StrategyEvaluation>? AllEvaluations = null, decimal? LivePrice = null, [property: JsonIgnore] IReadOnlyList<Models.NormalizedCandle>? Candles = null);
 
 // Wires the entire Strategy/ engine together into one real, live evaluation:
 // fetch candles -> structure/condition -> zones/sweeps/key levels -> HTF
@@ -201,18 +201,6 @@ public class SignalOrchestrator(
             var shadowCandidates = ShadowStrategies.Evaluate(mainCandles, displayTimeframe, structure, obs, fvgs, keyLevels, MinStopCostFloor(instrument.Symbol));
             shadowStore?.Record(instrument.Symbol, timeframeLabel, Now(), TimeframeConfig.Duration(displayTimeframe), shadowCandidates);
 
-            // Owner decision: the beta/shadow models should be held to the same HTF-alignment
-            // and calendar-veto gates the real four models use, not just their own lighter
-            // single-timeframe checklist. The real models only populate scanContext.Htf lazily
-            // for directions THEY happen to detect, so a shadow-only direction isn't
-            // guaranteed to be in there yet - fill in whatever's still missing here.
-            foreach (var dir in shadowCandidates.Select(c => c.Direction).Distinct())
-            {
-                if (scanContext.Htf.ContainsKey(dir)) continue;
-                var evidence = await BuildContextConditions(provider, instrument, providerSymbol, displayTimeframe, condition);
-                scanContext.Htf[dir] = TimeframeHierarchy.Evaluate(dir, evidence.Conditions);
-            }
-
             var scanNow = Now();
             var freshness = completedCandles.Count > 0 ? (scanNow - completedCandles[^1].CloseTimeUtc).TotalMinutes : (double?)null;
             diagnosticsStore.Record(instrument.Symbol, timeframeLabel, scanNow, condition, evaluations,
@@ -226,7 +214,7 @@ public class SignalOrchestrator(
                 var reason = best is null
                     ? $"No setup model's precondition is met (Market Condition: {condition})"
                     : $"No model qualified this scan - closest was {best.StrategyId} at {best.Score}/{best.Threshold} (Market Condition: {condition})";
-                return new OrchestratorResult(false, null, reason, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles, shadowCandidates, scanContext.Htf, calendarVeto.State);
+                return new OrchestratorResult(false, null, reason, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
             var candidate = primary.Candidate!;
@@ -238,13 +226,13 @@ public class SignalOrchestrator(
             {
                 return new OrchestratorResult(false, null,
                     $"{primary.StrategyId}: No valid entry/stop/target could be computed (score {primary.Score}/{primary.Threshold}) - no qualifying zone or an irrational stop distance",
-                    instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles, shadowCandidates, scanContext.Htf, calendarVeto.State);
+                    instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
             if (calendarVeto.State == CalendarVetoState.HardVeto)
             {
                 return new OrchestratorResult(false, null,
-                    $"Hard economic-calendar veto active: {calendarVeto.Reason}", instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles, shadowCandidates, scanContext.Htf, calendarVeto.State);
+                    $"Hard economic-calendar veto active: {calendarVeto.Reason}", instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
             var newsCatalyst = await GetNewsCatalyst(instrument.Symbol, candidate.Direction);
@@ -271,7 +259,7 @@ public class SignalOrchestrator(
                 calendarVeto, newsCatalyst,
                 scoringProfileId: primary.ScoringProfileId);
 
-            return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles, shadowCandidates, scanContext.Htf, calendarVeto.State);
+            return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
         }
         catch (Exception ex)
         {

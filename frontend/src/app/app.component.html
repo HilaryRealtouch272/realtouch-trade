@@ -186,7 +186,6 @@
     <div class="tracker-tabs">
       <button type="button" class="tracker-tab active" id="trackerTabStats">Performance</button>
       <button type="button" class="tracker-tab" id="trackerTabLedger">Ledger</button>
-      <button type="button" class="tracker-tab" id="trackerTabBeta">Beta</button>
       <button type="button" class="tracker-tab" id="trackerTabDiagnostics">Diagnostics</button>
     </div>
     <div id="trackerLedgerView" hidden>
@@ -218,18 +217,6 @@
             <th>Qualified</th><th>Closed</th><th>Status</th><th>Realized</th><th></th>
           </tr></thead>
           <tbody id="trackerBody"></tbody>
-        </table>
-      </div>
-    </div>
-    <div id="trackerBetaView" hidden>
-      <p class="tracker-disclaimer">Five experimental, unvalidated models (see STRATEGY.md's promotion gate) paper-trading live - kept entirely separate from the real ledger above. Backtested results were mixed to negative; treat everything here as a forward-test, not a trade recommendation.</p>
-      <div class="tracker-table-wrap">
-        <table class="tracker-table">
-          <thead><tr>
-            <th>Symbol</th><th>TF</th><th>Bias</th><th>Model</th><th>Grade</th><th>Entry</th><th>Stop</th><th>R:R</th>
-            <th>Qualified</th><th>Closed</th><th>Status</th><th>Realized</th>
-          </tr></thead>
-          <tbody id="betaBody"></tbody>
         </table>
       </div>
     </div>
