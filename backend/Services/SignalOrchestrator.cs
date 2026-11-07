@@ -235,29 +235,6 @@ public class SignalOrchestrator(
                     $"Hard economic-calendar veto active: {calendarVeto.Reason}", instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
             }
 
-            if (displayTimeframe == Timeframe.Daily)
-            {
-                var entryTimeframe = TimeframeHierarchy.EntryTimeframe(displayTimeframe);
-                IReadOnlyList<NormalizedCandle> entryCandles = Array.Empty<NormalizedCandle>();
-                try
-                {
-                    entryCandles = await provider.GetCandlesAsync(instrument.Symbol, providerSymbol, entryTimeframe);
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Daily entry confirmation unavailable for {Symbol}; keeping the setup pending", instrument.Symbol);
-                }
-                tradePlan = tradePlan with
-                {
-                    Entry = EntryStopTargetCalculator.ConfirmEntry(tradePlan.Entry, candidate.Direction, entryCandles,
-                        entryTimeframe, completedCandles[^1].CloseTimeUtc, Now())
-                };
-                var latestEntryCandle = entryCandles
-                    .Where(c => c.IsComplete && c.Quality == DataQuality.Ok && c.CloseTimeUtc <= Now())
-                    .OrderBy(c => c.CloseTimeUtc).LastOrDefault();
-                if (latestEntryCandle is not null) lastPrice = latestEntryCandle.Close;
-            }
-
             var newsCatalyst = await GetNewsCatalyst(instrument.Symbol, candidate.Direction);
 
             // LiquiditySweepReversal is a counter-trend reversal call by nature -

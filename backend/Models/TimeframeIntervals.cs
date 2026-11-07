@@ -41,8 +41,8 @@ public static class TimeframeIntervals
 
     // How often each FX/Metals timeframe is actually worth re-checking against
     // a quota-limited provider (Twelve Data) - matched to how fast that
-    // timeframe's own candle closes, except Daily which needs fresh 15m entry
-    // confirmation. Shared by SignalScanBackgroundService (always-on hosting) and
+    // timeframe's own candle closes, not to however often the caller happens
+    // to run. Shared by SignalScanBackgroundService (always-on hosting) and
     // Program.cs's one-shot GitHub Actions scan, which otherwise re-scanned
     // every timeframe on every 15-minute cron tick regardless of whether a
     // slower timeframe's candle could possibly have changed - 4 FX instruments
@@ -53,8 +53,7 @@ public static class TimeframeIntervals
         Timeframe.M15 => TimeSpan.FromMinutes(10),
         Timeframe.H1 => TimeSpan.FromMinutes(20),
         Timeframe.H4 => TimeSpan.FromMinutes(45),
-        // Daily setups use 15m entry confirmation, so they must check every fast scan.
-        Timeframe.Daily => TimeSpan.FromMinutes(10),
+        Timeframe.Daily => TimeSpan.FromHours(2),
         Timeframe.Weekly => TimeSpan.FromHours(6),
         _ => throw new ArgumentOutOfRangeException(nameof(tf))
     };

@@ -48,7 +48,7 @@ public class Backtester
             throw new ArgumentException("Backtests support the 15m, 1H, 4H and Daily setup timeframes.");
 
         var (start, end, replay, m15, h1) = await PrepareAsync(symbol, instrument, days, progress, ct);
-        var mainSpan = TimeConfigSpan(timeframe == Timeframe.Daily ? TimeframeHierarchy.EntryTimeframe(timeframe) : timeframe);
+        var mainSpan = TimeConfigSpan(timeframe);
 
         var root = Path.Combine(Path.GetTempPath(), "rst-backtest-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(root);
@@ -175,7 +175,7 @@ public class Backtester
     {
         var symbol = instrument.Symbol;
         var tfLabel = TimeframeIntervals.Label(tf);
-        var cooldown = TimeConfigSpan(tf) * SignalLogService.CooldownCandles;
+        var cooldown = step * SignalLogService.CooldownCandles;
         var closed = new List<QualificationLogEntry>();
         QualificationLogEntry? open = null;
         (string Direction, DateTime At)? lastClose = null;
