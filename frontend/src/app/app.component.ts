@@ -655,6 +655,41 @@ async function fetchTrackerEntries() {
   return response.json();
 }
 
+// Higher-timeframe setups confirmed on 15m, with their own ledger and Telegram group.
+async function fetchBetaEntries() {
+  const path = IS_STATIC_DEPLOYMENT ? `beta-log.json?_=${Date.now()}` : `${API_BASE}/api/beta-log`;
+  const response = await fetch(path, IS_STATIC_DEPLOYMENT ? { cache: "no-store" } : undefined);
+  if (!response.ok) throw new Error(`Beta ledger fetch ${response.status}`);
+  return response.json();
+}
+
+async function renderBetaLedger() {
+  const body = $("#betaBody");
+  if (!body) return;
+  let betaEntries = [];
+  try { betaEntries = await fetchBetaEntries(); }
+  catch (err) { console.error("Could not load beta ledger:", err); }
+  if (!betaEntries.length) {
+    body.innerHTML = `<tr><td colspan="12" class="tracker-empty">No beta signals logged yet.</td></tr>`;
+    return;
+  }
+  body.innerHTML = [...betaEntries].reverse().map(e => `
+    <tr>
+      <td>${e.symbol}</td>
+      <td>${e.timeframe}</td>
+      <td><span class="direction ${e.direction.toLowerCase()}">${e.direction.toUpperCase()}</span></td>
+      <td>${formatEnumName(e.setupModel)}</td>
+      <td>${e.grade} (${e.score})</td>
+      <td>${formatPrice(e.entry, 5)}</td>
+      <td>${formatPrice(e.stop, 5)}</td>
+      <td>${e.rewardToRisk.toFixed(1)}R</td>
+      <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
+      <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
+      <td class="${trackerStatusClass(e.status, e)}">${trackerStatusLabel(e.status, e)}${trackerProgressNote(e)}</td>
+      ${renderRealizedCell(e)}
+    </tr>`).join("");
+}
+
 // The Daily rollup: one row per UTC day and model, accumulated across every scan,
 // so "why were there no signals this week" has a per-day answer.
 function renderDailyRollup(daily) {
@@ -2063,13 +2098,17 @@ function initApp() {
   $("#closeTracker").addEventListener("click", closeSignalTracker);
   $("#trackerModal").addEventListener("click", event => { if (event.target === $("#trackerModal")) closeSignalTracker(); });
   function activateTrackerTab(activeId, activeViewId) {
-    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
+    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabBeta", "trackerBetaView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
       $(`#${tabId}`).classList.toggle("active", tabId === activeId);
       $(`#${viewId}`).hidden = viewId !== activeViewId;
     }
   }
   $("#trackerTabLedger").addEventListener("click", () => activateTrackerTab("trackerTabLedger", "trackerLedgerView"));
   $("#trackerTabStats").addEventListener("click", () => activateTrackerTab("trackerTabStats", "trackerStatsView"));
+  $("#trackerTabBeta").addEventListener("click", () => {
+    activateTrackerTab("trackerTabBeta", "trackerBetaView");
+    renderBetaLedger();
+  });
   $("#trackerTabDiagnostics").addEventListener("click", () => {
     activateTrackerTab("trackerTabDiagnostics", "trackerDiagnosticsView");
     renderDiagnostics();

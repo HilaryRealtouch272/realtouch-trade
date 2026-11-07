@@ -18,6 +18,7 @@ public class SignalScanBackgroundService(
     SignalAlertService alerts,
     SignalLogService signalLog,
     LatestSignalsStore store,
+    BetaConfirmationFlow beta,
     ILogger<SignalScanBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan CryptoInterval = TimeSpan.FromMinutes(5);
@@ -94,6 +95,7 @@ public class SignalScanBackgroundService(
         foreach (var result in results) store.Set(result);
         await alerts.CheckAndNotifyAsync(results);
         await signalLog.RecordAndTrackAsync(results);
+        await beta.ProcessAsync(results);
     }
 
     private async Task ScanFxAsync(Timeframe timeframe, CancellationToken ct)
@@ -110,5 +112,6 @@ public class SignalScanBackgroundService(
         }
         await alerts.CheckAndNotifyAsync(results);
         await signalLog.RecordAndTrackAsync(results);
+        await beta.ProcessAsync(results);
     }
 }

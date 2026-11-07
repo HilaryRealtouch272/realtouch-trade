@@ -36,6 +36,7 @@ builder.Services.AddSingleton<StrategyDiagnosticsStore>();
 builder.Services.AddSingleton<SignalOrchestrator>();
 builder.Services.AddSingleton<SignalAlertService>();
 builder.Services.AddSingleton<SignalLogService>();
+builder.Services.AddSingleton<BetaConfirmationFlow>();
 builder.Services.AddSingleton<LatestSignalsStore>();
 // Always-on scanning independent of the dashboard being open - see its own
 // header comment for why this replaces per-request scanning entirely.
@@ -244,6 +245,9 @@ app.MapGet("/api/signals/fx", (LatestSignalsStore store, string? timeframe) =>
 // this live endpoint has no such gate, so it's for local development only.
 app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalLog.GetAll()))
 .WithName("GetSignalLog");
+
+app.MapGet("/api/beta-log", (BetaConfirmationFlow beta) => Results.Ok(beta.GetAll()))
+.WithName("GetBetaLog");
 
 // Section 9: per-model diagnostics - every evaluated candidate this scan
 // (qualified AND rejected), so it's possible to tell "genuinely no
@@ -496,6 +500,20 @@ async Task RunScanOnceAsync(IServiceProvider services)
     catch (Exception ex)
     {
         scanLogger.LogWarning(ex, "Reconciliation failed");
+    }
+
+    // Real alerts, ledger, snapshots and reconciliation finish before the isolated beta pass.
+    try
+    {
+        var beta = services.GetRequiredService<BetaConfirmationFlow>();
+        await beta.ProcessAsync(allResults);
+        var betaPath = Environment.GetEnvironmentVariable("BETA_LOG_OUTPUT_PATH")
+            ?? Path.Combine(env.ContentRootPath, "beta-log.json");
+        await File.WriteAllTextAsync(betaPath, System.Text.Json.JsonSerializer.Serialize(beta.GetAll(), jsonOptions));
+    }
+    catch (Exception ex)
+    {
+        scanLogger.LogWarning(ex, "Beta output unavailable for this scan");
     }
 
     scanLogger.LogInformation("Scan complete: {Count} results written to {Path}", allResults.Count, outputPath);
