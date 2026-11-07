@@ -47,8 +47,7 @@ public class MarketHoursTests
     [Theory]
     [InlineData("EUR/USD")]
     [InlineData("GBP/USD")]
-    // GBP/JPY is in this carve-out too, but is separately paused on Telegram entirely right
-    // now (see the yen-pair tests below) - it's covered there, not here.
+    [InlineData("GBP/JPY")]
     public void TheCarvedOutPairsAllowFifteenMinuteSignalsOnTelegram(string symbol)
     {
         Assert.True(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon));
@@ -90,13 +89,12 @@ public class MarketHoursTests
 
     // Owner decision, temporary: these symbols are paused on Telegram entirely.
     [Theory]
-    [InlineData("GBP/JPY")]
     [InlineData("ETH/USDT")]
     public void PausedSymbolsAreHeldBackOnTelegramAtEveryTimeframeAndGrade(string symbol)
     {
         Assert.False(MarketHours.TelegramAllowed(symbol, "1H", "A+", AWeekdayNoon));
         Assert.False(MarketHours.TelegramAllowed(symbol, "Daily", "A+", AWeekdayNoon));
-        Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon)); // GBP/JPY's own 15m carve-out too
+        Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon));
     }
 
     // Owner decision, temporary: XAU/USD is held back from Telegram only during Lagos mornings
@@ -121,6 +119,8 @@ public class MarketHoursTests
     [Fact]
     public void OtherSymbolsAreUnaffectedByTheTelegramPause()
     {
+        Assert.True(MarketHours.TelegramAllowed("GBP/JPY", "Daily", "A+", AWeekdayNoon));
+        Assert.True(MarketHours.TelegramAllowed("GBP/JPY", "1H", "A", AWeekdayNoon));
         Assert.True(MarketHours.TelegramAllowed("GBP/USD", "1H", "A+", AWeekdayNoon));
         Assert.True(MarketHours.TelegramAllowed("EUR/USD", "15m", "B", AWeekdayNoon));
         Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "1H", "A+", AWeekdayNoon));

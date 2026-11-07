@@ -24,7 +24,7 @@ public static class MarketHours
     // Owner decision, temporary: these symbols are paused on Telegram entirely (every timeframe,
     // every grade) - still tracked and shown on the dashboard as normal. Remove a symbol from
     // this set to resume alerting it.
-    private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "GBP/JPY", "ETH/USDT" };
+    private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "ETH/USDT" };
 
     // Owner decision, temporary: XAU/USD is held back from Telegram only during Lagos mornings
     // (00:00-12:00 WAT, midnight to noon - i.e. 23:00 UTC the previous day through 10:59 UTC,

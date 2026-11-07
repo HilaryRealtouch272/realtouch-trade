@@ -2,10 +2,8 @@ using RealtouchSmartTrade.Api.Models;
 
 namespace RealtouchSmartTrade.Api.Strategy;
 
-// Section 16: where and when to enter. EntryTimeframe here is the SAME
-// timeframe the setup was detected on - true "context TF / entry TF" per
-// section 7's hierarchy table needs multi-timeframe candle fetching, which
-// isn't wired yet, so this is an explicit v1 simplification, not the full rule.
+// Section 16: where and when to enter. The planner starts with the analysis
+// timeframe; Daily setups receive separate 15m confirmation in the orchestrator.
 public record EntryPlan(
     decimal ZoneMin,
     decimal ZoneMax,
@@ -121,6 +119,35 @@ public static class EntryStopTargetCalculator
     }
 
     private readonly record struct ZoneChoice(decimal Min, decimal Max, DateTime OriginUtc, string Source);
+
+    // Confirm the existing analysis zone using the latest closed entry candle.
+    // Events before the Daily setup became available cannot open a trade retroactively.
+    public static EntryPlan ConfirmEntry(
+        EntryPlan entry, SetupDirection direction, IReadOnlyList<NormalizedCandle> candles,
+        Timeframe entryTimeframe, DateTime setupConfirmedAtUtc, DateTime nowUtc)
+    {
+        var pending = entry with { EntryTimeframe = entryTimeframe, Triggered = false, TriggerCandleTimeUtc = null };
+        var completed = candles
+            .Where(c => c.Timeframe == entryTimeframe && c.IsComplete && c.Quality == DataQuality.Ok && c.CloseTimeUtc <= nowUtc)
+            .OrderBy(c => c.OpenTimeUtc).ToList();
+        if (completed.Count < 60 || nowUtc >= entry.ExpiryUtc) return pending;
+
+        var latest = completed[^1];
+        if (latest.CloseTimeUtc < setupConfirmedAtUtc ||
+            nowUtc - latest.CloseTimeUtc > TimeframeConfig.Duration(entryTimeframe) * 2.5)
+            return pending;
+
+        var structure = StructureAnalyzer.Analyze(completed, entryTimeframe);
+        var isLong = direction == SetupDirection.Long;
+        var trigger = structure.Events.LastOrDefault(e => e.CandleTimeUtc >= setupConfirmedAtUtc &&
+            ((isLong && e.Type is StructureEventType.BullishBos or StructureEventType.BullishChoch) ||
+             (!isLong && e.Type is StructureEventType.BearishBos or StructureEventType.BearishChoch)));
+        return pending with
+        {
+            TriggerCandleTimeUtc = trigger?.CandleTimeUtc,
+            Triggered = trigger is not null && latest.Close >= entry.ZoneMin && latest.Close <= entry.ZoneMax
+        };
+    }
 
     // A zone is a realistic entry only if price does not have to travel more
     // than maxDistance to reach it. A Long needs price to come DOWN to the
