@@ -257,7 +257,8 @@ public class SignalOrchestrator(
                 displayTimeframe, candidate, condition, tradePlan, scoreResult, positionSize,
                 lifecycleState, keyLevels, lastPrice, Now(),
                 calendarVeto, newsCatalyst,
-                scoringProfileId: primary.ScoringProfileId);
+                scoringProfileId: primary.ScoringProfileId,
+                confirmationCandleUtc: tradePlan.Entry.Triggered ? completedCandles[^1].CloseTimeUtc : null);
 
             return new OrchestratorResult(true, signal, null, instrument.Symbol, timeframeLabel, evaluations, lastPrice, completedCandles);
         }

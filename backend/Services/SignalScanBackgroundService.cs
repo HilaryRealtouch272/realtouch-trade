@@ -19,6 +19,7 @@ public class SignalScanBackgroundService(
     SignalLogService signalLog,
     LatestSignalsStore store,
     BetaConfirmationFlow beta,
+    TelegramDeliveryOutbox delivery,
     ILogger<SignalScanBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan CryptoInterval = TimeSpan.FromMinutes(5);
@@ -95,6 +96,7 @@ public class SignalScanBackgroundService(
         foreach (var result in results) store.Set(result);
         await alerts.CheckAndNotifyAsync(results);
         await signalLog.RecordAndTrackAsync(results);
+        await delivery.FlushAsync();
         await beta.ProcessAsync(results);
     }
 
@@ -112,6 +114,7 @@ public class SignalScanBackgroundService(
         }
         await alerts.CheckAndNotifyAsync(results);
         await signalLog.RecordAndTrackAsync(results);
+        await delivery.FlushAsync();
         await beta.ProcessAsync(results);
     }
 }

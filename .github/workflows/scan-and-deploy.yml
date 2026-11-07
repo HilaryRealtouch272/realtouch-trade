@@ -102,6 +102,7 @@ jobs:
           SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
           SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
           BETA_LOG_OUTPUT_PATH: ${{ github.workspace }}/beta-log.json
+          SIGNAL_STATUS_OUTPUT_PATH: ${{ github.workspace }}/signal-status.json
           DIAGNOSTICS_OUTPUT_PATH: ${{ github.workspace }}/diagnostics.json
           RECONCILIATION_OUTPUT_PATH: ${{ github.workspace }}/reconciliation.json
           SHADOW_OUTPUT_PATH: ${{ github.workspace }}/shadow-candidates.json
@@ -167,6 +168,7 @@ jobs:
           cp signals.json frontend/dist/frontend/browser/signals.json
           cp signal-log.json frontend/dist/frontend/browser/signal-log.json
           cp beta-log.json frontend/dist/frontend/browser/beta-log.json || echo "Beta output unavailable this scan"
+          cp signal-status.json frontend/dist/frontend/browser/signal-status.json || echo "Signal status unavailable this scan"
           cp diagnostics.json frontend/dist/frontend/browser/diagnostics.json
           cp reconciliation.json frontend/dist/frontend/browser/reconciliation.json || echo "no reconciliation report this run"
           cp shadow-candidates.json frontend/dist/frontend/browser/shadow-candidates.json || echo "no shadow candidates this run"

@@ -44,7 +44,7 @@ public class BetaConfirmationFlowTests : IDisposable
         }
     }
 
-    private BetaConfirmationFlow Flow(string? chat = "beta-group")
+    private BetaConfirmationFlow Flow(string? chat = "beta-group", IFineCandleSource? fineSource = null)
     {
         var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
         {
@@ -52,7 +52,7 @@ public class BetaConfirmationFlowTests : IDisposable
             ["Telegram:ChatId"] = "real-group",
             ["Telegram:BetaChatId"] = chat
         }).Build();
-        return new BetaConfirmationFlow(_requests, config, new Env(_root), NullLoggerFactory.Instance, () => _now);
+        return new BetaConfirmationFlow(_requests, config, new Env(_root), NullLoggerFactory.Instance, () => _now, fineSource);
     }
 
     private List<NormalizedCandle> FineCandles() =>
@@ -166,6 +166,14 @@ public class BetaConfirmationFlowTests : IDisposable
     }
 
     [Fact]
+    public void BetaDoesNotIntroduceASeparateExpiryGateForAnOtherwiseQualifiedRealPlan()
+    {
+        var fine = FineCandles();
+        var source = Setup("Daily", fine).Signal! with { ExpiryUtc = _now.AddMinutes(-1) };
+        Assert.True(BetaEntryConfirmation.Confirm(source, _now.AddHours(-12), fine, _now).Triggered);
+    }
+
+    [Fact]
     public async Task OutcomeUpdatesUseOnlyTheBetaLedgerAndRetryAfterARestart()
     {
         var fine = FineCandles();
@@ -189,6 +197,138 @@ public class BetaConfirmationFlowTests : IDisposable
             Assert.StartsWith("🧪 *BETA · 15m confirmation*", m["text"]);
             Assert.Contains("Stopped", m["text"]);
         });
+    }
+
+    [Fact]
+    public async Task RealAndBetaKeepSeparateGroupsPositionsCooldownsAndDeliveryState()
+    {
+        var fine = FineCandles();
+        var source = Setup("Daily", fine);
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Telegram:BotToken"] = "test-token", ["Telegram:ChatId"] = "real-group"
+        }).Build();
+        var env = new Env(_root);
+        var delivery = new TelegramDeliveryOutbox(_requests, config, env, NullLogger.Instance);
+        var notifier = new RealtouchSmartTrade.Api.Providers.TelegramNotifier(delivery, config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, delivery);
+        var real = source with { Signal = source.Signal! with { Triggered = true } };
+        await alerts.CheckAndNotifyAsync(new[] { real });
+        await ledger.RecordAndTrackAsync(new[] { real, Prices(fine) });
+        await delivery.FlushAsync();
+        var realLedger = JsonSerializer.Serialize(ledger.GetAll());
+        var files = Directory.GetFiles(Path.Combine(_root, ".cache")).ToDictionary(p => p, File.ReadAllText);
+
+        _requests.FailuresRemaining = 1;
+        var beta = Flow();
+        await beta.ProcessAsync(new[] { source, Prices(fine) });
+
+        Assert.Equal(realLedger, JsonSerializer.Serialize(ledger.GetAll()));
+        foreach (var file in files) Assert.Equal(file.Value, File.ReadAllText(file.Key));
+        var mainEntry = Assert.Single(ledger.GetAll());
+        var betaEntry = Assert.Single(beta.GetAll());
+        Assert.Equal(mainEntry.SourceSetupId, betaEntry.SourceSetupId);
+        Assert.Equal(mainEntry.Stop, betaEntry.Stop);
+        Assert.Equal(mainEntry.Tp1, betaEntry.Tp1);
+        Assert.Equal(mainEntry.Tp2, betaEntry.Tp2);
+        Assert.Equal(mainEntry.Tp3, betaEntry.Tp3);
+        Assert.Equal(mainEntry.RiskAmount, betaEntry.RiskAmount);
+        Assert.Equal(mainEntry.RiskPercent, betaEntry.RiskPercent);
+        Assert.Equal(mainEntry.PositionSize, betaEntry.PositionSize);
+        Assert.Equal("Daily", mainEntry.EntryTimeframe);
+        Assert.Equal("15m", betaEntry.EntryTimeframe);
+        Assert.NotNull(betaEntry.ConfirmationCandleUtc);
+        Assert.Equal("Delivered", Assert.Single(alerts.GetStatuses()).DeliveryState);
+        Assert.Equal("Retrying", Assert.Single(beta.GetStatuses()).DeliveryState);
+        Assert.Equal(new[] { "real-group", "beta-group" }, _requests.Messages.Select(m => m["chat_id"]));
+    }
+
+    private sealed class FineSource(IReadOnlyList<NormalizedCandle> candles) : IFineCandleSource
+    {
+        public int Calls { get; private set; }
+        public Task<IReadOnlyList<NormalizedCandle>> GetOneMinuteAsync(string symbol, DateTime sinceUtc)
+        {
+            Calls++;
+            return Task.FromResult(candles);
+        }
+    }
+
+    [Fact]
+    public async Task BetaUsesTheSameFineCandleOutcomeTrackingAsReal()
+    {
+        var fine = FineCandles();
+        var entry = SignalLogService.CreateEntry(Setup("Daily", fine), _now.AddMinutes(-40));
+        DiskCache.Save(Path.Combine(_root, ".cache", "beta-15m", ".cache", "signal-log.json"), new[] { entry });
+        var minute = fine[^1] with
+        {
+            OpenTimeUtc = _now.AddMinutes(-3), CloseTimeUtc = _now.AddMinutes(-2),
+            Open = entry.Entry, Low = entry.Entry - 0.1m, High = entry.Tp1 + 0.1m, Close = entry.Tp1
+        };
+        fine[^1] = fine[^1] with { Low = entry.Stop - 1m };
+        var fineSource = new FineSource(new[] { minute });
+        var beta = Flow(fineSource: fineSource);
+        await beta.ProcessAsync(new[] { Prices(fine) });
+
+        Assert.Equal(1, fineSource.Calls);
+        Assert.Equal("Tp1Hit", Assert.Single(beta.GetAll()).Status);
+    }
+
+    [Fact]
+    public async Task RejectedHigherTimeframeSetupsCannotRemainEligibleInBeta()
+    {
+        var fine = FineCandles();
+        var source = Setup("Daily", fine);
+        var beta = Flow();
+        await beta.ProcessAsync(new[] { source });
+        await beta.ProcessAsync(new[] { source with { Success = false, Signal = null, Reason = "Hard calendar veto" }, Prices(fine) });
+
+        Assert.Empty(beta.GetAll());
+        Assert.Empty(_requests.Messages);
+        Assert.Contains("Hard calendar veto", Assert.Single(beta.GetStatuses()).Reason);
+    }
+
+    [Fact]
+    public void ComparisonsMatchThePlanAndKeepUnresolvedReturnsSeparate()
+    {
+        var fine = FineCandles();
+        var source = Setup("Daily", fine);
+        var real = SignalLogService.CreateEntry(source, _now) with
+        {
+            Status = "StoppedOut", ClosedAtUtc = _now, RealizedR = 1m, NetRealizedR = 0.8m
+        };
+        var betaSignal = BetaEntryConfirmation.Confirm(source.Signal!, _now.AddHours(-12), fine, _now);
+        var beta = SignalLogService.CreateEntry(source with { Signal = betaSignal }, _now);
+        using var report = JsonDocument.Parse(JsonSerializer.Serialize(
+            SignalComparison.Build(new[] { real, real with { SourceSetupId = null } }, new[] { beta })));
+        var row = Assert.Single(report.RootElement.EnumerateArray());
+        Assert.Equal(0.8m, row.GetProperty("real").GetProperty("netR").GetDecimal());
+        Assert.Equal(JsonValueKind.Null, row.GetProperty("beta").GetProperty("netR").ValueKind);
+        Assert.Equal(1, row.GetProperty("real").GetProperty("trades").GetInt32());
+        Assert.Equal(real.SourceSetupId, beta.SourceSetupId);
+        using var missingCosts = JsonDocument.Parse(JsonSerializer.Serialize(
+            SignalComparison.Build(new[] { real with { NetRealizedR = null } }, Array.Empty<QualificationLogEntry>())));
+        Assert.Equal(JsonValueKind.Null,
+            missingCosts.RootElement[0].GetProperty("real").GetProperty("netR").ValueKind);
+    }
+
+    [Fact]
+    public async Task ANewCalendarVetoBlocksEntryEvenWhenTheCachedSetupWasPreviouslyQualified()
+    {
+        var fine = FineCandles();
+        DiskCache.Save(Path.Combine(_root, ".cache", "calendar-cache.json"), new
+        {
+            Result = new CalendarResult(true, null, new[]
+            {
+                new EconomicEvent("CPI", "USD", "high", _now, null, null, null, "test", _now)
+            }),
+            FetchedAtUtc = _now
+        });
+        var beta = Flow();
+        await beta.ProcessAsync(new[] { Setup("Daily", fine), Prices(fine) });
+        Assert.Empty(beta.GetAll());
+        Assert.Empty(_requests.Messages);
+        Assert.Contains("Hard economic-calendar veto", Assert.Single(beta.GetStatuses()).Reason);
     }
 
     public void Dispose()

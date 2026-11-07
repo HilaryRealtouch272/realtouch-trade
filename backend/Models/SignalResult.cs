@@ -55,7 +55,10 @@ public record SignalResult(
     string? ScoringProfileId = null,
     // What the news looked like at signal time: counts, average sentiment and relevance,
     // newest/oldest article times and the headlines themselves.
-    NewsEvidence? NewsEvidence = null
+    NewsEvidence? NewsEvidence = null,
+    string? SourceSetupId = null,
+    DateTime? ConfirmationCandleUtc = null,
+    string? EntryConfirmationReason = null
 );
 
 public static class SignalResultBuilder
@@ -65,14 +68,15 @@ public static class SignalResultBuilder
         Timeframe analysisTimeframe, SetupCandidate candidate, MarketCondition condition,
         TradePlan tradePlan, ConfluenceScoreResult score, PositionSizeResult positionSize,
         SignalState status, IReadOnlyList<KeyLevel> keyLevels, decimal livePrice, DateTime nowUtc,
-        CalendarVetoResult? calendarVeto = null, NewsCatalystResult? newsCatalyst = null, string? scoreFloorNote = null, string? scoringProfileId = null)
+        CalendarVetoResult? calendarVeto = null, NewsCatalystResult? newsCatalyst = null, string? scoreFloorNote = null, string? scoringProfileId = null,
+        DateTime? confirmationCandleUtc = null)
     {
         var id = $"{symbol}:{TimeframeIntervals.Label(analysisTimeframe)}:{candidate.Model}:{nowUtc:yyyyMMddHHmmss}";
         var reasoning = string.Join(" ", candidate.Requirements
             .Where(r => r.Status != Strategy.RequirementStatus.NotEvaluated)
             .Select(r => $"{r.Description}: {r.Status}."));
 
-        return new SignalResult(
+        var result = new SignalResult(
             SignalId: id,
             StrategyVersion: strategyVersion,
             Symbol: symbol,
@@ -115,7 +119,9 @@ public static class SignalResultBuilder
             InvalidationConditions: $"Price closes beyond {Math.Round(tradePlan.Entry.InvalidationPrice, 5)} before trigger, or beyond stop {Math.Round(tradePlan.Stop.Price, 5)} after trigger. {tradePlan.Stop.Reason}.",
             ScoreFloorNote: scoreFloorNote,
             ScoringProfileId: scoringProfileId,
-            NewsEvidence: newsCatalyst?.Evidence
+            NewsEvidence: newsCatalyst?.Evidence,
+            ConfirmationCandleUtc: confirmationCandleUtc
         );
+        return result with { SourceSetupId = SignalIdentity.For(result) };
     }
 }

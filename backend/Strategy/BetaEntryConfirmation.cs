@@ -15,12 +15,15 @@ public static class BetaEntryConfirmation
             EntryTimeframe = "15m",
             Triggered = false,
             Status = SignalState.Watchlist,
-            DetectedAtUtc = nowUtc
+            DetectedAtUtc = nowUtc,
+            SourceSetupId = SignalIdentity.For(signal),
+            ConfirmationCandleUtc = null,
+            EntryConfirmationReason = "Waiting for fresh completed 15m candles"
         };
         var completed = candles
             .Where(c => c.Timeframe == Timeframe.M15 && c.IsComplete && c.Quality == DataQuality.Ok && c.CloseTimeUtc <= nowUtc)
             .OrderBy(c => c.OpenTimeUtc).ToList();
-        if (completed.Count < 60 || nowUtc >= signal.ExpiryUtc) return pending;
+        if (completed.Count < 60) return pending;
 
         var latest = completed[^1];
         pending = pending with { LivePrice = latest.Close };
@@ -34,6 +37,14 @@ public static class BetaEntryConfirmation
             ((isLong && e.Type is StructureEventType.BullishBos or StructureEventType.BullishChoch) ||
              (!isLong && e.Type is StructureEventType.BearishBos or StructureEventType.BearishChoch)));
         var triggered = trigger is not null && latest.Close >= signal.EntryZoneMin && latest.Close <= signal.EntryZoneMax;
-        return pending with { Triggered = triggered, Status = triggered ? SignalState.Triggered : SignalState.Watchlist };
+        return pending with
+        {
+            Triggered = triggered,
+            Status = triggered ? SignalState.Triggered : SignalState.Watchlist,
+            ConfirmationCandleUtc = triggered ? latest.CloseTimeUtc : null,
+            EntryConfirmationReason = triggered ? "15m entry confirmed" : trigger is null
+                ? "Waiting for matching 15m structure confirmation"
+                : "Waiting for a completed 15m candle to close inside the entry zone"
+        };
     }
 }

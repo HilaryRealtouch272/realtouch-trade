@@ -39,11 +39,15 @@ public static class MarketHours
     // above never does, 15m never does except the carve-out above (and never for grade A even
     // there), and forex only while the market is open.
     public static bool TelegramAllowed(string symbol, string timeframe, string? grade, DateTime utc)
+        => TelegramBlockReason(symbol, timeframe, grade, utc) is null;
+
+    public static string? TelegramBlockReason(string symbol, string timeframe, string? grade, DateTime utc)
     {
-        if (TelegramPaused.Contains(symbol)) return false;
-        if (IsPausedGoldMorning(symbol, utc)) return false;
-        if (timeframe == "15m" && (!FifteenMinuteAlertsAllowed.Contains(symbol) || IsWithheldFifteenMinuteGrade(grade))) return false;
+        if (TelegramPaused.Contains(symbol)) return "Telegram alerts are paused for this symbol";
+        if (IsPausedGoldMorning(symbol, utc)) return "Gold Telegram alerts pause before noon Lagos time";
+        if (timeframe == "15m" && !FifteenMinuteAlertsAllowed.Contains(symbol)) return "This 15m timeframe is dashboard-only";
+        if (timeframe == "15m" && IsWithheldFifteenMinuteGrade(grade)) return "Grade A alerts on 15m are dashboard-only";
         var isFx = SetupCatalog.Instruments.Any(i => i.Symbol == symbol && i.Source == DataSource.TwelveData);
-        return !(isFx && FxClosed(utc));
+        return isFx && FxClosed(utc) ? "FX Telegram alerts pause while the market is closed" : null;
     }
 }

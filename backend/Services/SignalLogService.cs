@@ -89,7 +89,10 @@ public record QualificationLogEntry(
     // the record so a future partial-fill rule cannot silently merge them.
     int? TargetsTouched = null,
     // The news evidence (times, relevance, sentiment, headlines) at the moment of entry.
-    NewsEvidence? News = null
+    NewsEvidence? News = null,
+    string? SourceSetupId = null,
+    string? EntryTimeframe = null,
+    DateTime? ConfirmationCandleUtc = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -205,7 +208,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             lock (_lock) { alreadySent = _lastOutcomeSent.TryGetValue(entry.Id, out var prev) && prev == signature; }
             if (alreadySent) continue;
 
-            var (success, error) = await telegram.SendAsync(FormatOutcomeMessage(entry));
+            var (success, error) = await telegram.SendAsync(FormatOutcomeMessage(entry),
+                notificationId: $"outcome:{entry.Id}:{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(signature)))}");
             if (success)
             {
                 lock (_lock)
@@ -279,7 +283,10 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
             ScoringProfileId: signal.ScoringProfileId,
             Session: TradingSessions.Describe(qualifiedAt),
             CalendarState: FirstWord(signal.EconomicCalendarState), NewsState: FirstWord(signal.NewsState),
-            News: signal.NewsEvidence);
+            News: signal.NewsEvidence,
+            SourceSetupId: SignalIdentity.For(signal),
+            EntryTimeframe: signal.EntryTimeframe,
+            ConfirmationCandleUtc: signal.ConfirmationCandleUtc);
 
         return entry;
     }

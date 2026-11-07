@@ -32,10 +32,19 @@ builder.Services.AddSingleton<AlphaVantageNewsProvider>();
 builder.Services.AddSingleton<GdeltNewsProvider>();
 builder.Services.AddSingleton<INewsProvider, CompositeNewsProvider>();
 builder.Services.AddSingleton<TelegramNotifier>();
+builder.Services.AddSingleton<TelegramDeliveryOutbox>(sp => new(
+    sp.GetRequiredService<IHttpClientFactory>(), sp.GetRequiredService<IConfiguration>(),
+    sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<TelegramDeliveryOutbox>>()));
 builder.Services.AddSingleton<StrategyDiagnosticsStore>();
 builder.Services.AddSingleton<SignalOrchestrator>();
-builder.Services.AddSingleton<SignalAlertService>();
-builder.Services.AddSingleton<SignalLogService>();
+builder.Services.AddSingleton<SignalLogService>(sp => new(
+    new TelegramNotifier(sp.GetRequiredService<TelegramDeliveryOutbox>(), sp.GetRequiredService<IConfiguration>()),
+    sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<SignalLogService>>(),
+    sp.GetRequiredService<IFineCandleSource>()));
+builder.Services.AddSingleton<SignalAlertService>(sp => new(
+    new TelegramNotifier(sp.GetRequiredService<TelegramDeliveryOutbox>(), sp.GetRequiredService<IConfiguration>()),
+    sp.GetRequiredService<SignalLogService>(), sp.GetRequiredService<IHostEnvironment>(),
+    sp.GetRequiredService<ILogger<SignalAlertService>>(), sp.GetRequiredService<TelegramDeliveryOutbox>()));
 builder.Services.AddSingleton<BetaConfirmationFlow>();
 builder.Services.AddSingleton<LatestSignalsStore>();
 // Always-on scanning independent of the dashboard being open - see its own
@@ -249,6 +258,9 @@ app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalL
 app.MapGet("/api/beta-log", (BetaConfirmationFlow beta) => Results.Ok(beta.GetAll()))
 .WithName("GetBetaLog");
 
+app.MapGet("/api/signal-status", (SignalAlertService alerts, SignalLogService ledger,
+    TelegramDeliveryOutbox delivery, BetaConfirmationFlow beta) => Results.Ok(SignalStatusReport.Build(alerts, ledger, delivery, beta)));
+
 // Section 9: per-model diagnostics - every evaluated candidate this scan
 // (qualified AND rejected), so it's possible to tell "genuinely no
 // opportunity" apart from "an implementation fault", instead of only ever
@@ -396,21 +408,11 @@ async Task RunScanOnceAsync(IServiceProvider services)
     // hours away.
     var priorSnapshotPath = Environment.GetEnvironmentVariable("SIGNALS_OUTPUT_PATH")
         ?? Path.Combine(env.ContentRootPath, "signals.json");
+    var cachedSnapshotPath = Path.Combine(env.ContentRootPath, ".cache", "prior-signals.json");
     var priorResults = new Dictionary<(string Symbol, string Timeframe), OrchestratorResult>();
     try
     {
-        if (File.Exists(priorSnapshotPath))
-        {
-            var priorDoc = System.Text.Json.JsonDocument.Parse(await File.ReadAllTextAsync(priorSnapshotPath));
-            var priorJson = System.Text.Json.JsonSerializer.Serialize(priorDoc.RootElement.GetProperty("results"));
-            var priorList = System.Text.Json.JsonSerializer.Deserialize<List<OrchestratorResult>>(priorJson,
-                new System.Text.Json.JsonSerializerOptions
-                {
-                    PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-                    Converters = { new JsonStringEnumConverter() }
-                }) ?? new();
-            foreach (var r in priorList) priorResults[(r.InstrumentSymbol, r.Timeframe)] = r;
-        }
+        priorResults = ScanSnapshotCache.Load(priorSnapshotPath, cachedSnapshotPath);
     }
     catch (Exception ex)
     {
@@ -418,6 +420,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     }
 
     var fxResults = new List<OrchestratorResult>();
+    var freshFxResults = new List<OrchestratorResult>();
     var fxInstruments = SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData).ToList();
     foreach (var tf in TimeframeIntervals.All)
     {
@@ -437,15 +440,21 @@ async Task RunScanOnceAsync(IServiceProvider services)
         {
             if (!first) await Task.Delay(TimeSpan.FromSeconds(3));
             first = false;
-            fxResults.Add(await orchestrator.Evaluate(instrument, tf));
+            var result = await orchestrator.Evaluate(instrument, tf);
+            fxResults.Add(result);
+            freshFxResults.Add(result);
         }
         schedule[label] = now;
     }
     DiskCache.Save(schedulePath, schedule);
 
     var allResults = cryptoResults.Concat(fxResults).ToList();
-    await alerts.CheckAndNotifyAsync(allResults);
-    await signalLog.RecordAndTrackAsync(allResults);
+    var freshResults = cryptoResults.Concat(freshFxResults).ToList();
+    // Carried snapshots are for display. Only fresh prices may open or settle trades.
+    await alerts.CheckAndNotifyAsync(freshResults);
+    await signalLog.RecordAndTrackAsync(freshResults);
+    var delivery = services.GetRequiredService<TelegramDeliveryOutbox>();
+    await delivery.FlushAsync();
 
     // Must match the live API's casing exactly (camelCase) - the frontend's
     // field mapping (applySignalResult in app.component.ts) is written
@@ -462,6 +471,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     Directory.CreateDirectory(Path.GetDirectoryName(outputPath) is { Length: > 0 } dir ? dir : ".");
     await File.WriteAllTextAsync(outputPath,
         System.Text.Json.JsonSerializer.Serialize(new { generatedAtUtc = DateTime.UtcNow, results = allResults }, jsonOptions));
+    await File.WriteAllTextAsync(cachedSnapshotPath, await File.ReadAllTextAsync(outputPath));
 
     // A separate file, not linked anywhere in the built site's markup/nav -
     // the frontend only fetches it after its own passphrase gate (see
@@ -506,10 +516,14 @@ async Task RunScanOnceAsync(IServiceProvider services)
     try
     {
         var beta = services.GetRequiredService<BetaConfirmationFlow>();
-        await beta.ProcessAsync(allResults);
+        await beta.ProcessAsync(freshResults);
         var betaPath = Environment.GetEnvironmentVariable("BETA_LOG_OUTPUT_PATH")
             ?? Path.Combine(env.ContentRootPath, "beta-log.json");
         await File.WriteAllTextAsync(betaPath, System.Text.Json.JsonSerializer.Serialize(beta.GetAll(), jsonOptions));
+        var statusPath = Environment.GetEnvironmentVariable("SIGNAL_STATUS_OUTPUT_PATH")
+            ?? Path.Combine(env.ContentRootPath, "signal-status.json");
+        await File.WriteAllTextAsync(statusPath,
+            System.Text.Json.JsonSerializer.Serialize(SignalStatusReport.Build(alerts, signalLog, delivery, beta), jsonOptions));
     }
     catch (Exception ex)
     {

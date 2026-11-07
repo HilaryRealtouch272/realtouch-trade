@@ -690,6 +690,58 @@ async function renderBetaLedger() {
     </tr>`).join("");
 }
 
+function escapeSignalText(value) {
+  return String(value ?? "").replace(/[&<>"']/g, character => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[character]);
+}
+
+async function renderSignalStatus() {
+  const body = $("#trackerStatusBody");
+  if (!body) return;
+  body.innerHTML = '<p class="tracker-empty">Loading signal status…</p>';
+  try {
+    const path = IS_STATIC_DEPLOYMENT ? `signal-status.json?_=${Date.now()}` : `${API_BASE}/api/signal-status`;
+    const response = await fetch(path, { cache: "no-store" });
+    if (!response.ok) throw new Error(`Signal status fetch ${response.status}`);
+    const report = await response.json();
+    const safe = escapeSignalText;
+    const time = value => value ? safe(formatInUserTimezone(value)) : "—";
+    const flowTable = (label, rows, delivery) => `
+      <h3>${label}</h3>
+      <p>${delivery?.configured ? "Telegram configured" : "Telegram is not configured"} ·
+        ${Number(delivery?.queued || 0)} queued · ${Number(delivery?.retrying || 0)} retrying ·
+        ${Number(delivery?.delivered || 0)} confirmed deliveries</p>
+      <div class="tracker-table-wrap"><table class="tracker-table">
+        <thead><tr><th>Symbol</th><th>Setup TF</th><th>Entry TF</th><th>Entry check</th><th>Alert check</th>
+          <th>Delivery</th><th>Reason</th><th>Last checked</th><th>Entry candle</th></tr></thead>
+        <tbody>${(rows || []).map(s => `<tr>
+          <td>${safe(s.symbol)}</td><td>${safe(s.timeframe)}</td><td>${safe(s.entryTimeframe)}</td>
+          <td>${safe(s.entryState)}</td><td>${safe(s.alertState)}</td><td>${safe(s.deliveryState || "—")}</td>
+          <td>${safe(s.reason)}</td><td>${time(s.observedAtUtc)}</td><td>${time(s.confirmationCandleUtc)}</td>
+        </tr>`).join("") || '<tr><td colspan="9">No checks recorded yet.</td></tr>'}</tbody>
+      </table></div>`;
+    const comparisons = report.comparison || [];
+    const side = s => !s?.trades ? "No entry" :
+      `${Number(s.trades)} trades · ${Number(s.resolved)} resolved · ${s.netR == null ? "R pending" : Number(s.netR).toFixed(2) + "R net"}<br>First entry ${time(s.firstEntryUtc)}`;
+    body.innerHTML = `<p>Latest scan ${time(report.generatedAtUtc)}</p>` +
+      flowTable("Real flow", report.real, report.realDelivery) +
+      flowTable("Beta · 15m entry", report.beta, report.betaDelivery) +
+      `<h3>Real versus beta · matching setups</h3>
+       <p>Each row groups trades from the same plan. Net R includes resolved trades only.</p>
+       <div class="tracker-table-wrap"><table class="tracker-table">
+         <thead><tr><th>Symbol</th><th>Setup TF</th><th>Strategy</th><th>Setup ID</th><th>Real</th><th>Beta</th></tr></thead>
+         <tbody>${comparisons.map(c => `<tr><td>${safe(c.symbol)}</td><td>${safe(c.timeframe)}</td>
+           <td>${safe(formatEnumName(c.setupModel))}</td><td>${safe(c.sourceSetupId)}</td>
+           <td>${side(c.real)}</td><td>${side(c.beta)}</td></tr>`).join("") ||
+           '<tr><td colspan="6">New trades will appear here as matching setup IDs are recorded.</td></tr>'}</tbody>
+       </table></div>`;
+  } catch (err) {
+    console.error("Could not load signal status:", err);
+    body.innerHTML = '<p class="tracker-empty">Signal status is unavailable. Try again after the next scan.</p>';
+  }
+}
+
 // The Daily rollup: one row per UTC day and model, accumulated across every scan,
 // so "why were there no signals this week" has a per-day answer.
 function renderDailyRollup(daily) {
@@ -2098,7 +2150,7 @@ function initApp() {
   $("#closeTracker").addEventListener("click", closeSignalTracker);
   $("#trackerModal").addEventListener("click", event => { if (event.target === $("#trackerModal")) closeSignalTracker(); });
   function activateTrackerTab(activeId, activeViewId) {
-    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabBeta", "trackerBetaView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
+    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabBeta", "trackerBetaView"], ["trackerTabStatus", "trackerStatusView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
       $(`#${tabId}`).classList.toggle("active", tabId === activeId);
       $(`#${viewId}`).hidden = viewId !== activeViewId;
     }
@@ -2112,6 +2164,10 @@ function initApp() {
   $("#trackerTabDiagnostics").addEventListener("click", () => {
     activateTrackerTab("trackerTabDiagnostics", "trackerDiagnosticsView");
     renderDiagnostics();
+  });
+  $("#trackerTabStatus").addEventListener("click", () => {
+    activateTrackerTab("trackerTabStatus", "trackerStatusView");
+    renderSignalStatus();
   });
   $("#trackerStatusFilter").addEventListener("change", renderTrackerRows);
   $("#trackerSearch").addEventListener("input", renderTrackerRows);

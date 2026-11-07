@@ -12,7 +12,7 @@ namespace RealtouchSmartTrade.Api.Providers;
 // current caller is the manual /api/telegram/test endpoint in Program.cs.
 public class TelegramNotifier(IHttpClientFactory httpClientFactory, IConfiguration config)
 {
-    public async Task<(bool Success, string? Error)> SendAsync(string text, CancellationToken ct = default)
+    public async Task<(bool Success, string? Error)> SendAsync(string text, CancellationToken ct = default, string? notificationId = null)
     {
         var token = config["Telegram:BotToken"];
         var chatId = config["Telegram:ChatId"];
@@ -23,12 +23,15 @@ public class TelegramNotifier(IHttpClientFactory httpClientFactory, IConfigurati
         {
             var client = httpClientFactory.CreateClient();
             var url = $"https://api.telegram.org/bot{token}/sendMessage";
-            var response = await client.PostAsync(url, new FormUrlEncodedContent(new Dictionary<string, string>
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            if (notificationId is not null) request.Headers.Add("X-Signal-Notification", notificationId);
+            request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
                 ["chat_id"] = chatId,
                 ["text"] = text,
                 ["parse_mode"] = "Markdown"
-            }), ct);
+            });
+            using var response = await client.SendAsync(request, ct);
 
             var body = await response.Content.ReadAsStringAsync(ct);
             if (!response.IsSuccessStatusCode)
