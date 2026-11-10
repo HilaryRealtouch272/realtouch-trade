@@ -187,6 +187,7 @@
       <button type="button" class="tracker-tab active" id="trackerTabStats">Performance</button>
       <button type="button" class="tracker-tab" id="trackerTabLedger">Ledger</button>
       <button type="button" class="tracker-tab" id="trackerTabBeta">Beta · 15m entry</button>
+      <button type="button" class="tracker-tab" id="trackerTabVtb">VTB</button>
       <button type="button" class="tracker-tab" id="trackerTabStatus">Signal status</button>
       <button type="button" class="tracker-tab" id="trackerTabDiagnostics">Diagnostics</button>
     </div>
@@ -231,6 +232,18 @@
             <th>Qualified</th><th>Closed</th><th>Status</th><th>Realized</th>
           </tr></thead>
           <tbody id="betaBody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="trackerVtbView" hidden>
+      <p class="tracker-disclaimer">Validated Trend Breakout: a daily 200-day-trend + channel-breakout module, paper-traded for BTC/USDT, ETH/USDT and XAU/USD (WTI excluded - no data source). Fully separate from the real ledger and beta - own state, own Telegram group.</p>
+      <div class="tracker-table-wrap">
+        <table class="tracker-table">
+          <thead><tr>
+            <th>Symbol</th><th>Bias</th><th>Entry</th><th>Stop</th><th>Target</th><th>Risk×</th>
+            <th>Qualified</th><th>Closed</th><th>Status</th><th>Realized</th>
+          </tr></thead>
+          <tbody id="vtbBody"></tbody>
         </table>
       </div>
     </div>

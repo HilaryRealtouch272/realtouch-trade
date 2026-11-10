@@ -263,6 +263,9 @@ app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalL
 app.MapGet("/api/beta-log", (BetaConfirmationFlow beta) => Results.Ok(beta.GetAll()))
 .WithName("GetBetaLog");
 
+app.MapGet("/api/vtb-log", (VtbSignalService vtb) => Results.Ok(vtb.GetAll()))
+.WithName("GetVtbLog");
+
 app.MapGet("/api/signal-status", (SignalAlertService alerts, SignalLogService ledger,
     TelegramDeliveryOutbox delivery, BetaConfirmationFlow beta) => Results.Ok(SignalStatusReport.Build(alerts, ledger, delivery, beta)));
 

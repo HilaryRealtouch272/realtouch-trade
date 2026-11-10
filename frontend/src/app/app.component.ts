@@ -690,6 +690,51 @@ async function renderBetaLedger() {
     </tr>`).join("");
 }
 
+// Validated Trend Breakout: own ledger, own entry/stop/target shape (single fixed stop and
+// target, no TP1/TP2/TP3 partials like the real/beta ledgers), own Telegram group.
+async function fetchVtbEntries() {
+  const path = IS_STATIC_DEPLOYMENT ? `vtb-log.json?_=${Date.now()}` : `${API_BASE}/api/vtb-log`;
+  const response = await fetch(path, IS_STATIC_DEPLOYMENT ? { cache: "no-store" } : undefined);
+  if (!response.ok) throw new Error(`VTB ledger fetch ${response.status}`);
+  return response.json();
+}
+
+function vtbStatusClass(e) {
+  if (e.status !== "Closed" || e.r == null) return "";
+  return e.r > EPS_R ? "positive" : e.r < -EPS_R ? "negative" : "";
+}
+
+function vtbStatusLabel(e) {
+  if (e.status !== "Closed") return "Open";
+  const label = e.exitReason === "Stop" ? "Stopped out" : e.exitReason === "Target" ? "Target hit" : "Time exit";
+  return `${label} (${e.r > EPS_R ? "win" : e.r < -EPS_R ? "loss" : "flat"})`;
+}
+
+async function renderVtbLedger() {
+  const body = $("#vtbBody");
+  if (!body) return;
+  let vtbEntries = [];
+  try { vtbEntries = await fetchVtbEntries(); }
+  catch (err) { console.error("Could not load VTB ledger:", err); }
+  if (!vtbEntries.length) {
+    body.innerHTML = `<tr><td colspan="10" class="tracker-empty">No VTB trades logged yet.</td></tr>`;
+    return;
+  }
+  body.innerHTML = [...vtbEntries].reverse().map(e => `
+    <tr>
+      <td>${e.symbol}</td>
+      <td><span class="direction ${e.side.toLowerCase()}">${e.side.toUpperCase()}</span></td>
+      <td>${formatPrice(e.entryRef, 5)}</td>
+      <td>${formatPrice(e.stop, 5)}</td>
+      <td>${formatPrice(e.target, 5)}</td>
+      <td>${e.riskMultiplier.toFixed(2)}x</td>
+      <td>${formatInUserTimezone(e.entryTimeUtc)}</td>
+      <td>${e.status === "Closed" && e.exitTimeUtc ? formatInUserTimezone(e.exitTimeUtc) : "—"}</td>
+      <td class="${vtbStatusClass(e)}">${vtbStatusLabel(e)}</td>
+      <td class="${vtbStatusClass(e)}">${e.r != null ? `${e.r > 0 ? "+" : ""}${e.r.toFixed(2)}R` : "—"}</td>
+    </tr>`).join("");
+}
+
 function escapeSignalText(value) {
   return String(value ?? "").replace(/[&<>"']/g, character => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
@@ -2150,7 +2195,7 @@ function initApp() {
   $("#closeTracker").addEventListener("click", closeSignalTracker);
   $("#trackerModal").addEventListener("click", event => { if (event.target === $("#trackerModal")) closeSignalTracker(); });
   function activateTrackerTab(activeId, activeViewId) {
-    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabBeta", "trackerBetaView"], ["trackerTabStatus", "trackerStatusView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
+    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabBeta", "trackerBetaView"], ["trackerTabVtb", "trackerVtbView"], ["trackerTabStatus", "trackerStatusView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
       $(`#${tabId}`).classList.toggle("active", tabId === activeId);
       $(`#${viewId}`).hidden = viewId !== activeViewId;
     }
@@ -2160,6 +2205,10 @@ function initApp() {
   $("#trackerTabBeta").addEventListener("click", () => {
     activateTrackerTab("trackerTabBeta", "trackerBetaView");
     renderBetaLedger();
+  });
+  $("#trackerTabVtb").addEventListener("click", () => {
+    activateTrackerTab("trackerTabVtb", "trackerVtbView");
+    renderVtbLedger();
   });
   $("#trackerTabDiagnostics").addEventListener("click", () => {
     activateTrackerTab("trackerTabDiagnostics", "trackerDiagnosticsView");
