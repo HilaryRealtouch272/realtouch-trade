@@ -98,7 +98,13 @@ public class SignalAlertService(
                 }
 
                 Persist();
-                var (success, error) = await telegram.SendAsync(TelegramSignalFormatter.Format(signal, true, gradeChange),
+                // Each timeframe qualifies independently, so an H1+ alert can read as a fresh
+                // idea when it's really the same setup already open on a shorter one - flag it.
+                var relatedOpen = result.Timeframe != "15m"
+                    ? signalLog.GetOpenEntriesOnShorterTimeframes(result.InstrumentSymbol, signal.SetupModel.ToString(), signal.Direction.ToString(), result.Timeframe)
+                        .Select(e => e.Timeframe).Distinct().ToList()
+                    : null;
+                var (success, error) = await telegram.SendAsync(TelegramSignalFormatter.Format(signal, true, gradeChange, relatedOpen),
                     notificationId: current.NotificationId);
                 if (success)
                 {

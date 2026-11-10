@@ -499,6 +499,24 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         }
     }
 
+    // Each timeframe qualifies completely independently right now - nothing links a 1H
+    // signal to the same symbol/model/direction already running on 15m. This is purely a
+    // cross-reference lookup for the Telegram message (see SignalAlertService), so the
+    // owner can see whether an H1+ alert is really a fresh idea or the same setup that's
+    // already open one timeframe down - never used for gating/qualification.
+    public IReadOnlyList<QualificationLogEntry> GetOpenEntriesOnShorterTimeframes(string symbol, string setupModel, string direction, string timeframe)
+    {
+        var currentTf = TimeframeIntervals.ParseLabel(timeframe);
+        if (currentTf is null) return Array.Empty<QualificationLogEntry>();
+        lock (_lock)
+        {
+            return _entries.Where(e => e.Symbol == symbol && e.SetupModel == setupModel && e.Direction == direction
+                && _openKeyToEntryId.TryGetValue(Key(e.Symbol, e.Timeframe), out var openId) && openId == e.Id
+                && TimeframeIntervals.ParseLabel(e.Timeframe) is { } tf && tf > currentTf)
+                .ToList();
+        }
+    }
+
     // Real, deliberate user actions on real money-relevant records - deletion
     // is permanent (no undo), which is exactly why the frontend gates both
     // behind an explicit confirmation dialog before ever calling these.

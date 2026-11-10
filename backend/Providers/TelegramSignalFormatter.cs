@@ -22,7 +22,12 @@ public static class TelegramSignalFormatter
         return Math.Round(v, decimals).ToString($"F{decimals}");
     }
 
-    public static string Format(SignalResult s, bool qualified, string? gradeChange = null)
+    // relatedOpenTimeframes: non-empty only when the SAME symbol/model/direction is already
+    // open on a shorter timeframe (see SignalLogService.GetOpenEntriesOnShorterTimeframes) -
+    // each timeframe qualifies independently, so a 1H+ alert can otherwise read as a fresh
+    // idea when it's really the same setup already running one timeframe down. Omitted
+    // entirely when there's no match - never says "none found".
+    public static string Format(SignalResult s, bool qualified, string? gradeChange = null, IReadOnlyList<string>? relatedOpenTimeframes = null)
     {
         var Fmt = FormatPrice;
         var directionIcon = s.Direction.ToString() == "Long" ? "🟢" : "🔴";
@@ -56,6 +61,9 @@ public static class TelegramSignalFormatter
                 ? "\n\n⚠️ Economic calendar could not be checked. Check high-impact news yourself before entering."
                 : "") +
             (s.ScoreFloorNote is null ? "" : $"\n\n⚠️ {s.ScoreFloorNote}") +
+            (relatedOpenTimeframes is { Count: > 0 }
+                ? $"\n\n📎 Same setup already open on {string.Join(", ", relatedOpenTimeframes)}"
+                : "") +
             (qualified ? "" : "\n\n⚠️ Not a trade recommendation.");
     }
 
