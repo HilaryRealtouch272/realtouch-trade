@@ -6,8 +6,7 @@ using RealtouchSmartTrade.Api.Strategy;
 namespace RealtouchSmartTrade.Api.Services;
 
 // Validated Trend Breakout (VTB) - a daily SMA200-trend + Donchian-channel-breakout module,
-// paper-traded for BTC/USDT, ETH/USDT and XAU/USD (WTI excluded: no data source in this
-// system - neither Coinbase nor Twelve Data carries it).
+// paper-traded for BTC/USDT, ETH/USDT, XAU/USD and WTI/USD.
 //
 // COMPLETELY ISOLATED from the real four-model system and from beta: own deep-history fetch,
 // own cache files, own position/risk state, own Telegram sends via a direct (non-queued)
@@ -17,13 +16,24 @@ namespace RealtouchSmartTrade.Api.Services;
 // Fetches its own market data directly; never touches OrchestratorResult at all.
 public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger<VtbSignalService> logger)
 {
-    private record MarketConfig(string Symbol, DataSource Source, string FeedSymbol, int ChannelN, decimal RewardToRisk);
+    // VTB-local data source marker - deliberately NOT the shared Models.DataSource enum (that
+    // one drives the real orchestrator's routing); VTB's data fetch is entirely its own code
+    // path and has no reason to share a type with it.
+    private enum VtbDataSource { Coinbase, TwelveData, Yahoo }
+
+    private record MarketConfig(string Symbol, VtbDataSource Source, string FeedSymbol, int ChannelN, decimal RewardToRisk, decimal MarketRiskMultiplier = 1.0m);
 
     private static readonly MarketConfig[] Markets =
     {
-        new("BTC/USDT", DataSource.Coinbase, "BTC-USD", 20, 2.0m),
-        new("ETH/USDT", DataSource.Coinbase, "ETH-USD", 55, 2.0m),
-        new("XAU/USD", DataSource.TwelveData, "XAU/USD", 55, 1.5m),
+        new("BTC/USDT", VtbDataSource.Coinbase, "BTC-USD", 20, 2.0m),
+        new("ETH/USDT", VtbDataSource.Coinbase, "ETH-USD", 55, 2.0m),
+        new("XAU/USD", VtbDataSource.TwelveData, "XAU/USD", 55, 1.5m),
+        // WTI: no real edge found on 2023-26 data per the dev brief (+0.13R, not
+        // distinguishable from zero) - sized at 0.25x per the brief's own recommendation
+        // rather than excluded outright, same spirit as shorts being sized down rather
+        // than dropped. Yahoo Finance (CL=F) rather than Dukascopy: plain HTTP+JSON, no
+        // Node/subprocess dependency - matches how the gold fetch below already works.
+        new("WTI/USD", VtbDataSource.Yahoo, "CL=F", 55, 1.5m, MarketRiskMultiplier: 0.25m),
     };
 
     public const decimal DefaultEquity = 10_000m;
@@ -126,7 +136,9 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             }
 
             var isShort = open.Side == VtbSide.Short;
-            var riskMultiplier = isShort ? ShortRiskMultiplier : 1.0m;
+            // Compounds: a half-size short on WTI (0.25x market multiplier) sizes at 0.125x
+            // overall, per the brief's position-sizing formula (risk_pct x side_mult x market_mult).
+            var riskMultiplier = (isShort ? ShortRiskMultiplier : 1.0m) * market.MarketRiskMultiplier;
 
             // Crypto combined-risk cap: BTC + ETH open risk (in R) must not exceed 1.5R.
             if (market.Symbol is "BTC/USDT" or "ETH/USDT")
@@ -160,10 +172,13 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         if (cacheAll.TryGetValue(market.Symbol, out var cached) && DateTime.UtcNow - cached.FetchedAtUtc < TimeSpan.FromHours(20))
             return cached.Candles;
 
-        List<NormalizedCandle> candles = market.Source == DataSource.Coinbase
-            ? await CoinbaseHistory.FetchAsync(httpClients.CreateClient(), market.Symbol, market.FeedSymbol, Timeframe.Daily, 86400,
-                DateTime.UtcNow.AddDays(-620), DateTime.UtcNow, CancellationToken.None)
-            : await FetchTwelveDataDailyAsync(market.FeedSymbol);
+        List<NormalizedCandle> candles = market.Source switch
+        {
+            VtbDataSource.Coinbase => await CoinbaseHistory.FetchAsync(httpClients.CreateClient(), market.Symbol, market.FeedSymbol, Timeframe.Daily, 86400,
+                DateTime.UtcNow.AddDays(-620), DateTime.UtcNow, CancellationToken.None),
+            VtbDataSource.Yahoo => await FetchYahooDailyAsync(market.FeedSymbol),
+            _ => await FetchTwelveDataDailyAsync(market.FeedSymbol),
+        };
 
         cacheAll[market.Symbol] = new HistoryCacheEntry(DateTime.UtcNow, candles);
         DiskCache.Save(_historyCachePath, cacheAll);
@@ -193,6 +208,46 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             list.Add(new NormalizedCandle("XAU/USD", providerSymbol, "TwelveData", Timeframe.Daily, open, open.AddDays(1),
                 decimal.Parse(v.GetProperty("open").GetString()!), decimal.Parse(v.GetProperty("high").GetString()!),
                 decimal.Parse(v.GetProperty("low").GetString()!), decimal.Parse(v.GetProperty("close").GetString()!),
+                null, true, DateTime.UtcNow, DataQuality.Ok));
+        }
+        list.Sort((a, b) => a.OpenTimeUtc.CompareTo(b.OpenTimeUtc));
+        return list;
+    }
+
+    // WTI history: no Coinbase/Twelve Data coverage for crude oil, so this hits Yahoo
+    // Finance's public chart endpoint directly - a plain unauthenticated JSON fetch, no
+    // API key. Parallel arrays (timestamp / open / high / low / close) indexed together;
+    // Yahoo returns null in any of the OHLC arrays for a few non-trading/partial bars, so
+    // those indices are skipped rather than producing a zero-range candle.
+    private async Task<List<NormalizedCandle>> FetchYahooDailyAsync(string tickerSymbol)
+    {
+        var client = httpClients.CreateClient();
+        var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(tickerSymbol)}?interval=1d&range=5y";
+        var response = await client.GetAsync(url);
+        var text = await response.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(text);
+        var result = doc.RootElement.GetProperty("chart").GetProperty("result");
+        if (result.ValueKind != System.Text.Json.JsonValueKind.Array || result.GetArrayLength() == 0)
+            throw new InvalidOperationException($"VTB: Yahoo WTI fetch failed: {text[..Math.Min(200, text.Length)]}");
+
+        var root = result[0];
+        var timestamps = root.GetProperty("timestamp");
+        var quote = root.GetProperty("indicators").GetProperty("quote")[0];
+        var opens = quote.GetProperty("open");
+        var highs = quote.GetProperty("high");
+        var lows = quote.GetProperty("low");
+        var closes = quote.GetProperty("close");
+
+        var list = new List<NormalizedCandle>();
+        for (var i = 0; i < timestamps.GetArrayLength(); i++)
+        {
+            if (opens[i].ValueKind == System.Text.Json.JsonValueKind.Null || highs[i].ValueKind == System.Text.Json.JsonValueKind.Null ||
+                lows[i].ValueKind == System.Text.Json.JsonValueKind.Null || closes[i].ValueKind == System.Text.Json.JsonValueKind.Null)
+                continue;
+            var open = DateTimeOffset.FromUnixTimeSeconds(timestamps[i].GetInt64()).UtcDateTime;
+            list.Add(new NormalizedCandle("WTI/USD", tickerSymbol, "Yahoo", Timeframe.Daily, open, open.AddDays(1),
+                Convert.ToDecimal(opens[i].GetDouble()), Convert.ToDecimal(highs[i].GetDouble()),
+                Convert.ToDecimal(lows[i].GetDouble()), Convert.ToDecimal(closes[i].GetDouble()),
                 null, true, DateTime.UtcNow, DataQuality.Ok));
         }
         list.Sort((a, b) => a.OpenTimeUtc.CompareTo(b.OpenTimeUtc));
