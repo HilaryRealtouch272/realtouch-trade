@@ -46,6 +46,11 @@ builder.Services.AddSingleton<SignalAlertService>(sp => new(
     sp.GetRequiredService<SignalLogService>(), sp.GetRequiredService<IHostEnvironment>(),
     sp.GetRequiredService<ILogger<SignalAlertService>>(), sp.GetRequiredService<TelegramDeliveryOutbox>()));
 builder.Services.AddSingleton<BetaConfirmationFlow>();
+// Validated Trend Breakout: its own daily SMA200+channel-breakout module, fully isolated
+// from the real engine and from beta - own data fetch, own state, own Telegram sends (plain
+// IHttpClientFactory, never the real/beta TelegramDeliveryOutbox). See VtbSignalService's
+// own header comment for the full isolation list.
+builder.Services.AddSingleton<VtbSignalService>();
 builder.Services.AddSingleton<LatestSignalsStore>();
 // Always-on scanning independent of the dashboard being open - see its own
 // header comment for why this replaces per-request scanning entirely.
@@ -528,6 +533,21 @@ async Task RunScanOnceAsync(IServiceProvider services)
     catch (Exception ex)
     {
         scanLogger.LogWarning(ex, "Beta output unavailable for this scan");
+    }
+
+    // Validated Trend Breakout: fully independent of the real scan results above - fetches
+    // its own daily history for BTC/USDT, ETH/USDT, XAU/USD and evaluates on its own.
+    try
+    {
+        var vtb = services.GetRequiredService<VtbSignalService>();
+        await vtb.ProcessAsync();
+        var vtbPath = Environment.GetEnvironmentVariable("VTB_LOG_OUTPUT_PATH")
+            ?? Path.Combine(env.ContentRootPath, "vtb-log.json");
+        await File.WriteAllTextAsync(vtbPath, System.Text.Json.JsonSerializer.Serialize(vtb.GetAll(), jsonOptions));
+    }
+    catch (Exception ex)
+    {
+        scanLogger.LogWarning(ex, "VTB output unavailable for this scan");
     }
 
     scanLogger.LogInformation("Scan complete: {Count} results written to {Path}", allResults.Count, outputPath);
