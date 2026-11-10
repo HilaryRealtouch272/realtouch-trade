@@ -104,7 +104,9 @@ public class SignalScanBackgroundService(
     {
         var results = new List<OrchestratorResult>();
         var first = true;
-        foreach (var instrument in SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData))
+        // "Fx" here really means "everything not on Coinbase" - Twelve Data's FX/Metals plus
+        // WTI's Yahoo feed, all paced the same way since none of them are rate-limit-free.
+        foreach (var instrument in SetupCatalog.Instruments.Where(i => i.Source is DataSource.TwelveData or DataSource.Yahoo))
         {
             if (!first) await Task.Delay(TimeSpan.FromSeconds(3), ct);
             first = false;

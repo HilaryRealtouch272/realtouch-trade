@@ -26,6 +26,7 @@ public class MarketauxNewsProvider(IHttpClientFactory httpClientFactory, IConfig
         ["GBP/JPY"] = "pound yen Bank of England Bank of Japan",
         ["NZD/JPY"] = "new zealand dollar yen",
         ["XAU/USD"] = "gold price",
+        ["WTI/USD"] = "crude oil OPEC",
     };
 
     public async Task<NewsResult> GetNewsAsync(string canonicalSymbol, CancellationToken ct = default)

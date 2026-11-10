@@ -1,6 +1,6 @@
 namespace RealtouchSmartTrade.Api.Models;
 
-public enum DataSource { Bybit, TwelveData, Coinbase }
+public enum DataSource { Bybit, TwelveData, Coinbase, Yahoo }
 
 // One tradeable instrument, independent of timeframe. SetupCatalog expands
 // each of these across all five required timeframes (Weekly/Daily/4H/1H/15m)
@@ -66,8 +66,11 @@ public static class SetupCatalog
         // set (see MarketDataService.KnownUnavailableSymbols and DATA_SOURCES.md).
         // Re-enable once upgraded, or once a correct Brent symbol is confirmed.
         // new InstrumentDefinition("silver", "XAG/USD", "Silver Spot", "Metals", "Ag", 2, DataSource.TwelveData, "XAG/USD", "", new[] { "USD" }),
-        // new InstrumentDefinition("wti", "WTI/USD", "Crude Oil WTI Spot", "Energy", "WTI", 2, DataSource.TwelveData, "WTI/USD", "", new[] { "USD" }),
         // new InstrumentDefinition("brent", "BRENT/USD", "Brent Crude Spot", "Energy", "BR", 2, DataSource.TwelveData, "BRENT/USD", "", new[] { "USD" }),
+        // WTI: Twelve Data's free plan doesn't carry it (Grow/Venture plan required,
+        // confirmed via a real error response - see MarketDataService.KnownUnavailableSymbols),
+        // so this runs on Yahoo Finance's free, keyless chart API instead (ticker "CL=F").
+        new InstrumentDefinition("wti", "WTI/USD", "Crude Oil WTI Spot", "Energy", "WTI", 2, DataSource.Yahoo, "CL=F", "", new[] { "USD" }),
     };
 
     private static string TimeframeSuffix(Timeframe tf) => tf switch

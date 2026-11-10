@@ -47,7 +47,11 @@ public static class MarketHours
         if (IsPausedGoldMorning(symbol, utc)) return "Gold Telegram alerts pause before noon Lagos time";
         if (timeframe == "15m" && !FifteenMinuteAlertsAllowed.Contains(symbol)) return "This 15m timeframe is dashboard-only";
         if (timeframe == "15m" && IsWithheldFifteenMinuteGrade(grade)) return "Grade A alerts on 15m are dashboard-only";
-        var isFx = SetupCatalog.Instruments.Any(i => i.Symbol == symbol && i.Source == DataSource.TwelveData);
-        return isFx && FxClosed(utc) ? "FX Telegram alerts pause while the market is closed" : null;
+        // WTI (Yahoo-sourced) reuses the same Friday-22:00/Sunday-22:00 UTC closed window as an
+        // approximation of its real CME Globex session - not exact (Globex has its own brief
+        // daily settlement halt and slightly different weekend open), but close enough that a
+        // paper-trade Telegram alert never fires while the real market is plainly shut.
+        var sessionGated = SetupCatalog.Instruments.Any(i => i.Symbol == symbol && i.Source is DataSource.TwelveData or DataSource.Yahoo);
+        return sessionGated && FxClosed(utc) ? "FX Telegram alerts pause while the market is closed" : null;
     }
 }

@@ -25,6 +25,7 @@ public class GdeltNewsProvider(IHttpClientFactory httpClientFactory) : INewsProv
         ["GBP/JPY"] = "(\"Bank of England\" OR \"Bank of Japan\" OR \"British pound\")",
         ["NZD/JPY"] = "(\"Reserve Bank of New Zealand\" OR \"Bank of Japan\")",
         ["XAU/USD"] = "(\"gold price\" OR \"safe haven\")",
+        ["WTI/USD"] = "(\"crude oil\" OR \"OPEC\" OR \"oil price\")",
     };
 
     public async Task<NewsResult> GetNewsAsync(string canonicalSymbol, CancellationToken ct = default)

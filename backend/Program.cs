@@ -23,6 +23,7 @@ builder.Services.AddSingleton<BybitMarketDataProvider>(); // kept for the v1 /ap
 builder.Services.AddSingleton<IMarketDataProvider>(sp => sp.GetRequiredService<BybitMarketDataProvider>());
 builder.Services.AddSingleton<IMarketDataProvider, TwelveDataMarketDataProvider>();
 builder.Services.AddSingleton<IMarketDataProvider, CoinbaseMarketDataProvider>();
+builder.Services.AddSingleton<IMarketDataProvider, YahooMarketDataProvider>();
 builder.Services.AddSingleton<IFineCandleSource, FineCandleSource>();
 builder.Services.AddSingleton<TradeReconciler>();
 builder.Services.AddSingleton<ShadowCandidateStore>();
@@ -242,7 +243,7 @@ app.MapGet("/api/signals/crypto", (LatestSignalsStore store, string? timeframe) 
 app.MapGet("/api/signals/fx", (LatestSignalsStore store, string? timeframe) =>
 {
     var timeframes = ResolveTimeframes(timeframe);
-    var results = SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData)
+    var results = SetupCatalog.Instruments.Where(i => i.Source is DataSource.TwelveData or DataSource.Yahoo)
         .SelectMany(instrument => timeframes.Select(tf => (instrument, tf)))
         .Select(x =>
         {

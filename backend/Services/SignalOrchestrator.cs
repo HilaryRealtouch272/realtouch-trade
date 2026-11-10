@@ -138,6 +138,7 @@ public class SignalOrchestrator(
         DataSource.Bybit => providers.First(p => p.Name == "Bybit"),
         DataSource.TwelveData => providers.First(p => p.Name == "Twelve Data"),
         DataSource.Coinbase => providers.First(p => p.Name == "Coinbase"),
+        DataSource.Yahoo => providers.First(p => p.Name == "Yahoo"),
         _ => throw new ArgumentOutOfRangeException(nameof(source))
     };
 
@@ -247,7 +248,7 @@ public class SignalOrchestrator(
                 ? RiskSizing.DefaultRiskPercent(effectiveGrade) / 2
                 : 0m;
             var positionSize = RiskSizing.Compute(PlaceholderAccountBalance, requestedRiskPercent, effectiveGrade,
-                tradePlan.Entry.PreferredEntry, tradePlan.Stop.Price, isFx: instrument.Source == DataSource.TwelveData);
+                tradePlan.Entry.PreferredEntry, tradePlan.Stop.Price, isFx: instrument.Source is DataSource.TwelveData or DataSource.Yahoo);
 
             var scoreResult = new ConfluenceScoreResult(primary.Score, primary.Grade, primary.ConfluenceFamilies);
             var lifecycleState = SignalLifecycle.InitialState(primary.Score);
