@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using RealtouchSmartTrade.Api.Models;
 
@@ -21,7 +22,7 @@ public class YahooMarketDataProvider(IHttpClientFactory httpClientFactory) : IMa
     {
         Timeframe.M15 => ("15m", "60d"),
         Timeframe.H1 => ("60m", "730d"),
-        Timeframe.H4 => ("60m", "730d"), // aggregated 4x below - Yahoo has no native 4h interval
+        Timeframe.H4 => ("60m", "730d"), // same raw request as H1 below - shared via _rawCache, not fetched twice
         Timeframe.Daily => ("1d", "5y"),
         Timeframe.Weekly => ("1wk", "10y"),
         _ => throw new ArgumentOutOfRangeException(nameof(tf))
@@ -31,7 +32,7 @@ public class YahooMarketDataProvider(IHttpClientFactory httpClientFactory) : IMa
         string canonicalSymbol, string providerSymbol, Timeframe timeframe, CancellationToken ct = default)
     {
         var (interval, range) = ParamsFor(timeframe);
-        var raw = await FetchRaw(providerSymbol, interval, range, ct);
+        var raw = await FetchRawCached(providerSymbol, interval, range, ct);
         if (raw.Count == 0)
             throw new InvalidOperationException($"Yahoo: no candle data returned for {providerSymbol}");
 
@@ -46,12 +47,41 @@ public class YahooMarketDataProvider(IHttpClientFactory httpClientFactory) : IMa
 
     private readonly record struct RawCandle(DateTime OpenTimeUtc, decimal Open, decimal High, decimal Low, decimal Close);
 
+    // H1 and H4 request the exact same "60m" series from Yahoo (H4 just aggregates it 4x) -
+    // without this, every scan fired that request twice. A short TTL is enough to dedupe that
+    // within one scan pass (both --scan-once and the always-on loop evaluate every due
+    // timeframe within milliseconds of each other) while still refreshing on the next cycle.
+    private static readonly TimeSpan RawCacheTtl = TimeSpan.FromMinutes(2);
+    private readonly ConcurrentDictionary<string, (List<RawCandle> Data, DateTime FetchedAtUtc)> _rawCache = new();
+
+    private async Task<List<RawCandle>> FetchRawCached(string tickerSymbol, string interval, string range, CancellationToken ct)
+    {
+        var key = $"{tickerSymbol}|{interval}|{range}";
+        if (_rawCache.TryGetValue(key, out var cached) && DateTime.UtcNow - cached.FetchedAtUtc < RawCacheTtl)
+            return cached.Data;
+
+        var raw = await FetchRaw(tickerSymbol, interval, range, ct);
+        _rawCache[key] = (raw, DateTime.UtcNow);
+        return raw;
+    }
+
     private async Task<List<RawCandle>> FetchRaw(string tickerSymbol, string interval, string range, CancellationToken ct)
     {
         var client = httpClientFactory.CreateClient();
         var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(tickerSymbol)}?interval={interval}&range={range}";
-        var response = await client.GetAsync(url, ct);
-        var text = await response.Content.ReadAsStringAsync(ct);
+
+        // One retry after a short pause on a 429 - Yahoo's free endpoint throttles bursts of
+        // requests (several timeframes fetched within seconds of each other), and a brief
+        // pause commonly clears that without needing a second data source.
+        HttpResponseMessage response;
+        string text;
+        for (var attempt = 1; ; attempt++)
+        {
+            response = await client.GetAsync(url, ct);
+            text = await response.Content.ReadAsStringAsync(ct);
+            if (response.StatusCode != System.Net.HttpStatusCode.TooManyRequests || attempt >= 2) break;
+            await Task.Delay(TimeSpan.FromSeconds(5), ct);
+        }
         if (!response.IsSuccessStatusCode)
             throw new InvalidOperationException($"Yahoo {(int)response.StatusCode}: {Truncate(text, 150)}");
 
