@@ -15,11 +15,16 @@ public static class MarketHours
     // 15m is dashboard-only everywhere, except this explicit carve-out - an owner decision, not a
     // general rule. Add further symbols here only on the same kind of explicit instruction.
     private static readonly HashSet<string> FifteenMinuteAlertsAllowed =
-        new(StringComparer.OrdinalIgnoreCase) { "EUR/USD", "GBP/USD", "GBP/JPY" };
+        new(StringComparer.OrdinalIgnoreCase) { "EUR/USD", "GBP/USD", "GBP/JPY", "BTC/USDT" };
 
-    // Within that carve-out, grade A specifically is still withheld on 15m (owner decision) -
-    // B and A+ still alert there. This has no effect on any other timeframe.
-    private static bool IsWithheldFifteenMinuteGrade(string? grade) => string.Equals(grade, "A", StringComparison.OrdinalIgnoreCase);
+    // Within that carve-out, grade A is withheld on 15m by default (only B and A+ alert there) -
+    // except for symbols in this set, where grade A is explicitly allowed too (owner decision).
+    // This has no effect on any other timeframe.
+    private static readonly HashSet<string> FifteenMinuteGradeAAllowed =
+        new(StringComparer.OrdinalIgnoreCase) { "BTC/USDT" };
+
+    private static bool IsWithheldFifteenMinuteGrade(string symbol, string? grade) =>
+        string.Equals(grade, "A", StringComparison.OrdinalIgnoreCase) && !FifteenMinuteGradeAAllowed.Contains(symbol);
 
     // Owner decision, temporary: these symbols are paused on Telegram entirely (every timeframe,
     // every grade) - still tracked and shown on the dashboard as normal. Remove a symbol from
@@ -46,7 +51,7 @@ public static class MarketHours
         if (TelegramPaused.Contains(symbol)) return "Telegram alerts are paused for this symbol";
         if (IsPausedGoldMorning(symbol, utc)) return "Gold Telegram alerts pause before noon Lagos time";
         if (timeframe == "15m" && !FifteenMinuteAlertsAllowed.Contains(symbol)) return "This 15m timeframe is dashboard-only";
-        if (timeframe == "15m" && IsWithheldFifteenMinuteGrade(grade)) return "Grade A alerts on 15m are dashboard-only";
+        if (timeframe == "15m" && IsWithheldFifteenMinuteGrade(symbol, grade)) return "Grade A alerts on 15m are dashboard-only";
         // WTI (Yahoo-sourced) reuses the same Friday-22:00/Sunday-22:00 UTC closed window as an
         // approximation of its real CME Globex session - not exact (Globex has its own brief
         // daily settlement halt and slightly different weekend open), but close enough that a

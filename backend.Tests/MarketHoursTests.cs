@@ -36,18 +36,21 @@ public class MarketHoursTests
     [InlineData("Daily", true)]
     public void OutcomeUpdatesForFifteenMinuteTradesAreNotSent(string timeframe, bool send)
     {
-        var entry = new QualificationLogEntry("x", "BTC/USDT", timeframe, "Long", "TrendContinuationPullback", "A", 86, 1m, 0.9m, 1.1m, 1.2m, 1.4m, 2m, DateTime.UtcNow, DateTime.UtcNow, "Tp1Hit", null, null, null, null);
+        // SOL/USDT, not BTC/USDT: BTC is carved out of the 15m gate (including grade A), so
+        // this symbol keeps testing the general "15m is dashboard-only" rule unaffected by that.
+        var entry = new QualificationLogEntry("x", "SOL/USDT", timeframe, "Long", "TrendContinuationPullback", "A", 86, 1m, 0.9m, 1.1m, 1.2m, 1.4m, 2m, DateTime.UtcNow, DateTime.UtcNow, "Tp1Hit", null, null, null, null);
         Assert.Equal(send, SignalLogService.ShouldSendOutcome(entry, new DateTime(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc)));
     }
 
-    // Owner decision: EUR/USD, GBP/USD and GBP/JPY are the explicit carve-out from "15m is
-    // dashboard-only" - everything else still never alerts on 15m, at any grade.
+    // Owner decision: EUR/USD, GBP/USD, GBP/JPY and BTC/USDT are the explicit carve-out from
+    // "15m is dashboard-only" - everything else still never alerts on 15m, at any grade.
     private static readonly DateTime AWeekdayNoon = new(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc);
 
     [Theory]
     [InlineData("EUR/USD")]
     [InlineData("GBP/USD")]
     [InlineData("GBP/JPY")]
+    [InlineData("BTC/USDT")]
     public void TheCarvedOutPairsAllowFifteenMinuteSignalsOnTelegram(string symbol)
     {
         Assert.True(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon));
@@ -57,7 +60,7 @@ public class MarketHoursTests
     [Fact]
     public void EverySymbolOutsideTheCarveOutStillNeverAlertsOnFifteenMinutes()
     {
-        Assert.False(MarketHours.TelegramAllowed("BTC/USDT", "15m", "A+", AWeekdayNoon));
+        Assert.False(MarketHours.TelegramAllowed("SOL/USDT", "15m", "A+", AWeekdayNoon));
         Assert.False(MarketHours.TelegramAllowed("XAU/USD", "15m", "A+", AWeekdayNoon));
     }
 
@@ -70,6 +73,15 @@ public class MarketHoursTests
         // Owner decision: no grade-A 15m alerts, even for the pairs that otherwise alert on 15m.
         Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "A", AWeekdayNoon));
         Assert.False(MarketHours.TelegramAllowed(symbol, "15m", "a", AWeekdayNoon)); // case-insensitive
+    }
+
+    [Fact]
+    public void BtcIsExplicitlyAllowedGradeAOnFifteenMinutesUnlikeTheOtherCarvedOutPairs()
+    {
+        // Owner decision: BTC/USDT's 15m carve-out allows grade A as well as B/A+, unlike
+        // EUR/USD, GBP/USD and GBP/JPY above where grade A stays withheld on 15m.
+        Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "15m", "A", AWeekdayNoon));
+        Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "15m", "a", AWeekdayNoon)); // case-insensitive
     }
 
     [Fact]
