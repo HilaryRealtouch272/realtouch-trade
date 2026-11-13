@@ -430,7 +430,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
 
     var fxResults = new List<OrchestratorResult>();
     var freshFxResults = new List<OrchestratorResult>();
-    var fxInstruments = SetupCatalog.Instruments.Where(i => i.Source == DataSource.TwelveData).ToList();
+    var fxInstruments = SetupCatalog.Instruments.Where(i => i.Source is DataSource.TwelveData or DataSource.Yahoo).ToList();
     foreach (var tf in TimeframeIntervals.All)
     {
         var label = TimeframeIntervals.Label(tf);
@@ -540,7 +540,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
     }
 
     // Validated Trend Breakout: fully independent of the real scan results above - fetches
-    // its own daily history for BTC/USDT, ETH/USDT, XAU/USD and evaluates on its own.
+    // its own daily history for BTC/USDT, ETH/USDT, XAU/USD, WTI/USD and evaluates on its own.
     try
     {
         var vtb = services.GetRequiredService<VtbSignalService>();

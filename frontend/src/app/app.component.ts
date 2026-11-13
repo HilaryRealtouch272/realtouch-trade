@@ -29,11 +29,13 @@ const instruments = [
   { baseId: "gbpjpy", symbol: "GBP/JPY", name: "British Pound / Yen", group: "FX", icon: "¥", decimals: 2, tv: "OANDA:GBPJPY" },
   { baseId: "gold", symbol: "XAU/USD", name: "Gold Spot", group: "Metals", icon: "Au", decimals: 1, tv: "OANDA:XAUUSD" },
   // Confirmed unavailable on the free Twelve Data plan/symbol set (see
-  // backend/Services/MarketDataService.cs and DATA_SOURCES.md) - the backend
-  // never serves data for these ids, so they're shown as "Coming soon"
-  // placeholders rather than hidden, instead of being silently dropped.
+  // backend/Services/MarketDataService.cs and DATA_SOURCES.md), and no
+  // alternative free source is wired up yet - shown as a "Coming soon"
+  // placeholder rather than hidden, instead of being silently dropped.
   { baseId: "silver", symbol: "XAG/USD", name: "Silver Spot", group: "Metals", icon: "Ag", decimals: 2, tv: "OANDA:XAGUSD", comingSoon: true },
-  { baseId: "wti", symbol: "WTI/USD", name: "Crude Oil WTI Spot", group: "Energy", icon: "WTI", decimals: 2, tv: "TVC:USOIL", comingSoon: true },
+  // WTI is live - Yahoo Finance now feeds it (Twelve Data's free plan never carried crude oil;
+  // see backend/Providers/YahooMarketDataProvider.cs). Only XAG/BRENT remain coming-soon placeholders.
+  { baseId: "wti", symbol: "WTI/USD", name: "Crude Oil WTI Spot", group: "Energy", icon: "WTI", decimals: 2, tv: "TVC:USOIL" },
   { baseId: "brent", symbol: "BRENT/USD", name: "Brent Crude Spot", group: "Energy", icon: "BR", decimals: 2, tv: "TVC:UKOIL", comingSoon: true },
 ];
 
