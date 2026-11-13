@@ -63,19 +63,23 @@ public class SignalAlertService(
                     continue;
                 }
                 var signal = result.Signal!;
-                // Owner decision: once a trade is open for this symbol+timeframe, Telegram stays
-                // silent for it entirely - no new alert, no grade-change re-alert (the gradeChange
-                // logic below, for a same-direction re-evaluation of an already-open trade) - until
-                // the ledger closes it. Previously only an OPPOSITE-direction signal was blocked,
-                // so a same-direction signal with a different grade/model still re-alerted on an
-                // already-open position.
                 var openDirection = signalLog.GetOpenDirection(result.InstrumentSymbol, result.Timeframe);
-                if (openDirection is not null)
+                if (openDirection is not null && openDirection != signal.Direction.ToString())
                 {
-                    var reason = openDirection == signal.Direction.ToString()
-                        ? "A trade is already open in this flow - no further alerts until it closes"
-                        : "A trade in the opposite direction is already open in this flow";
-                    Record(result, "Open trade", reason);
+                    Record(result, "Open trade", "A trade in the opposite direction is already open in this flow");
+                    continue;
+                }
+                // Owner decision: a same-direction re-alert is suppressed only once the open
+                // position is open on BOTH the ledger AND Telegram - not the ledger alone. A grade
+                // that's blocked on Telegram (e.g. 15m dashboard-only) still opens on the ledger as
+                // normal, but was never actually announced; a later, unblocked grade for the same
+                // still-open position must still get its first real Telegram announcement, not be
+                // silently swallowed just because something already opened on the ledger.
+                bool alreadyAnnounced;
+                lock (_lock) alreadyAnnounced = openDirection is not null && _lastAlerted.ContainsKey(key);
+                if (alreadyAnnounced)
+                {
+                    Record(result, "Open trade", "A trade is already open in this flow - no further alerts until it closes");
                     continue;
                 }
                 if (signalLog.IsInCooldown(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString()))

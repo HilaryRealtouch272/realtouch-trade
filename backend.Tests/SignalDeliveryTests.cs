@@ -123,15 +123,15 @@ public class SignalDeliveryTests : IDisposable
         Assert.Equal(1, http.Calls);
     }
 
-    private static OrchestratorResult Triggered(string grade, SetupModelType model = SetupModelType.TrendContinuationPullback)
+    private static OrchestratorResult Triggered(string grade, SetupModelType model = SetupModelType.TrendContinuationPullback, string timeframe = "1H")
     {
         var now = DateTime.UtcNow;
-        var signal = new SignalResult("id", "v1", "BTC/USDT", "crypto", "Coinbase", "1H", "1H",
+        var signal = new SignalResult("id", "v1", "BTC/USDT", "crypto", "Coinbase", timeframe, timeframe,
             SetupDirection.Long, MarketCondition.TrendingBullish, model,
             SignalState.Triggered, 80, grade, now, now.AddDays(2), 100m, 99m, 101m, 100m, true,
             95m, 105m, 110m, 115m, 2m, 0.5m, 50m, 10m, Array.Empty<KeyLevel>(),
             Array.Empty<ConfluenceFamilyScore>(), "", "Unchecked", "NoVeto", "", "", "", "Stop at 95");
-        return new(true, signal, null, "BTC/USDT", "1H");
+        return new(true, signal, null, "BTC/USDT", timeframe);
     }
 
     [Fact]
@@ -155,6 +155,31 @@ public class SignalDeliveryTests : IDisposable
 
         Assert.Equal(1, http.Calls); // no second Telegram call
         Assert.Equal("Open trade", Assert.Single(alerts.GetStatuses()).AlertState);
+    }
+
+    [Fact]
+    public async Task AnUnblockedGradeStillGetsItsFirstRealAlertEvenWhenABlockedGradeAlreadyOpenedTheSamePositionOnTheLedger()
+    {
+        // Owner decision: dedup only applies once a position is open on BOTH the ledger AND
+        // Telegram - not the ledger alone. BTC/USDT's 15m carve-out withholds grade A+ from
+        // Telegram (dashboard-only) but that grade still opens on the ledger as normal; a later
+        // grade B for the same still-open position IS allowed on 15m and must still get its
+        // first real Telegram announcement, not be silently swallowed as "already open".
+        var http = new Http();
+        var config = Config();
+        var env = new Env(_root);
+        var notifier = new TelegramNotifier(http, config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance);
+
+        await alerts.CheckAndNotifyAsync(new[] { Triggered("A+", timeframe: "15m") });
+        Assert.Equal("Blocked", Assert.Single(alerts.GetStatuses()).AlertState);
+        await ledger.RecordAndTrackAsync(new[] { Triggered("A+", timeframe: "15m") });
+        Assert.Equal(0, http.Calls);
+
+        await alerts.CheckAndNotifyAsync(new[] { Triggered("B", timeframe: "15m") });
+
+        Assert.Equal(1, http.Calls); // the first real alert for this still-open position
     }
 
     [Fact]
