@@ -63,10 +63,19 @@ public class SignalAlertService(
                     continue;
                 }
                 var signal = result.Signal!;
+                // Owner decision: once a trade is open for this symbol+timeframe, Telegram stays
+                // silent for it entirely - no new alert, no grade-change re-alert (the gradeChange
+                // logic below, for a same-direction re-evaluation of an already-open trade) - until
+                // the ledger closes it. Previously only an OPPOSITE-direction signal was blocked,
+                // so a same-direction signal with a different grade/model still re-alerted on an
+                // already-open position.
                 var openDirection = signalLog.GetOpenDirection(result.InstrumentSymbol, result.Timeframe);
-                if (openDirection is not null && openDirection != signal.Direction.ToString())
+                if (openDirection is not null)
                 {
-                    Record(result, "Open trade", "A trade in the opposite direction is already open in this flow");
+                    var reason = openDirection == signal.Direction.ToString()
+                        ? "A trade is already open in this flow - no further alerts until it closes"
+                        : "A trade in the opposite direction is already open in this flow";
+                    Record(result, "Open trade", reason);
                     continue;
                 }
                 if (signalLog.IsInCooldown(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString()))

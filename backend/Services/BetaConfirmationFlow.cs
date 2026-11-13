@@ -116,9 +116,12 @@ public class BetaConfirmationFlow
                     LivePrice: signal.LivePrice, Candles: fine.Candles));
             }
             // Price-only copies settle existing beta trades without opening native 15m trades.
+            // Alert BEFORE recording into the ledger (same order the real flow uses) - otherwise
+            // a freshly-confirming entry would already read back as "open" by the time the alert
+            // check runs, and SignalAlertService now blocks any alert for an already-open trade.
             var prices = fineResults.Values.Select(r => r with { Success = false, Signal = null, AllEvaluations = null });
-            await _ledger.RecordAndTrackAsync(confirmed.Concat(prices));
             await _alerts.CheckAndNotifyAsync(confirmed.Concat(waiting).Concat(rejected));
+            await _ledger.RecordAndTrackAsync(confirmed.Concat(prices));
             await _outbox.FlushAsync();
         }
         catch (Exception ex)
