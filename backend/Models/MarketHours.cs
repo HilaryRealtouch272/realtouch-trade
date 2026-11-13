@@ -17,14 +17,17 @@ public static class MarketHours
     private static readonly HashSet<string> FifteenMinuteAlertsAllowed =
         new(StringComparer.OrdinalIgnoreCase) { "EUR/USD", "GBP/USD", "GBP/JPY", "BTC/USDT" };
 
-    // Within that carve-out, grade A is withheld on 15m by default (only B and A+ alert there) -
-    // except for symbols in this set, where grade A is explicitly allowed too (owner decision).
-    // This has no effect on any other timeframe.
-    private static readonly HashSet<string> FifteenMinuteGradeAAllowed =
+    // Within that carve-out, exactly one grade is withheld on 15m per symbol (owner decision) -
+    // EUR/USD, GBP/USD and GBP/JPY withhold grade A (B and A+ alert); BTC/USDT instead withholds
+    // grade A+ (A and B alert - owner wants only A/B on BTC's 15m, not A+). This has no effect on
+    // any other timeframe.
+    private static readonly HashSet<string> FifteenMinuteGradeAPlusWithheld =
         new(StringComparer.OrdinalIgnoreCase) { "BTC/USDT" };
 
     private static bool IsWithheldFifteenMinuteGrade(string symbol, string? grade) =>
-        string.Equals(grade, "A", StringComparison.OrdinalIgnoreCase) && !FifteenMinuteGradeAAllowed.Contains(symbol);
+        FifteenMinuteGradeAPlusWithheld.Contains(symbol)
+            ? string.Equals(grade, "A+", StringComparison.OrdinalIgnoreCase)
+            : string.Equals(grade, "A", StringComparison.OrdinalIgnoreCase);
 
     // Owner decision, temporary: these symbols are paused on Telegram entirely (every timeframe,
     // every grade) - still tracked and shown on the dashboard as normal. Remove a symbol from
@@ -41,8 +44,8 @@ public static class MarketHours
         string.Equals(symbol, "XAU/USD", StringComparison.OrdinalIgnoreCase) && (utc.Hour + 1) % 24 < 12;
 
     // Whether a result may go to Telegram now: paused symbols never do, the gold-morning hold
-    // above never does, 15m never does except the carve-out above (and never for grade A even
-    // there), and forex only while the market is open.
+    // above never does, 15m never does except the carve-out above (and one grade is still
+    // withheld per symbol even there), and forex only while the market is open.
     public static bool TelegramAllowed(string symbol, string timeframe, string? grade, DateTime utc)
         => TelegramBlockReason(symbol, timeframe, grade, utc) is null;
 
@@ -51,7 +54,7 @@ public static class MarketHours
         if (TelegramPaused.Contains(symbol)) return "Telegram alerts are paused for this symbol";
         if (IsPausedGoldMorning(symbol, utc)) return "Gold Telegram alerts pause before noon Lagos time";
         if (timeframe == "15m" && !FifteenMinuteAlertsAllowed.Contains(symbol)) return "This 15m timeframe is dashboard-only";
-        if (timeframe == "15m" && IsWithheldFifteenMinuteGrade(symbol, grade)) return "Grade A alerts on 15m are dashboard-only";
+        if (timeframe == "15m" && IsWithheldFifteenMinuteGrade(symbol, grade)) return "This grade is withheld on 15m for this symbol - dashboard-only";
         // WTI (Yahoo-sourced) reuses the same Friday-22:00/Sunday-22:00 UTC closed window as an
         // approximation of its real CME Globex session - not exact (Globex has its own brief
         // daily settlement halt and slightly different weekend open), but close enough that a

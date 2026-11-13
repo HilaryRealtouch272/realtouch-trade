@@ -50,8 +50,7 @@ public class MarketHoursTests
     [InlineData("EUR/USD")]
     [InlineData("GBP/USD")]
     [InlineData("GBP/JPY")]
-    [InlineData("BTC/USDT")]
-    public void TheCarvedOutPairsAllowFifteenMinuteSignalsOnTelegram(string symbol)
+    public void TheCarvedOutFxPairsAllowFifteenMinuteSignalsOnTelegram(string symbol)
     {
         Assert.True(MarketHours.TelegramAllowed(symbol, "15m", "B", AWeekdayNoon));
         Assert.True(MarketHours.TelegramAllowed(symbol, "15m", "A+", AWeekdayNoon));
@@ -76,12 +75,15 @@ public class MarketHoursTests
     }
 
     [Fact]
-    public void BtcIsExplicitlyAllowedGradeAOnFifteenMinutesUnlikeTheOtherCarvedOutPairs()
+    public void BtcWithholdsGradeAPlusOnFifteenMinutesInsteadOfGradeA()
     {
-        // Owner decision: BTC/USDT's 15m carve-out allows grade A as well as B/A+, unlike
-        // EUR/USD, GBP/USD and GBP/JPY above where grade A stays withheld on 15m.
+        // Owner decision: BTC/USDT's 15m carve-out is the inverse of the FX pairs above -
+        // A and B alert, A+ is withheld (owner wants only A/B on BTC's 15m, not A+).
         Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "15m", "A", AWeekdayNoon));
         Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "15m", "a", AWeekdayNoon)); // case-insensitive
+        Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "15m", "B", AWeekdayNoon));
+        Assert.False(MarketHours.TelegramAllowed("BTC/USDT", "15m", "A+", AWeekdayNoon));
+        Assert.False(MarketHours.TelegramAllowed("BTC/USDT", "15m", "a+", AWeekdayNoon)); // case-insensitive
     }
 
     [Fact]
