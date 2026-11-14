@@ -8,11 +8,11 @@ namespace RealtouchSmartTrade.Api.Services;
 // Validated Trend Breakout (VTB) - a daily SMA200-trend + Donchian-channel-breakout module,
 // paper-traded for BTC/USDT, ETH/USDT, XAU/USD and WTI/USD.
 //
-// COMPLETELY ISOLATED from the real four-model system and from beta: own deep-history fetch,
+// COMPLETELY ISOLATED from the real four-model system: own deep-history fetch,
 // own cache files, own position/risk state, own Telegram sends via a direct (non-queued)
 // TelegramNotifier built from the raw IHttpClientFactory - never the shared
-// TelegramDeliveryOutbox real/beta route through. Reads nothing from and writes nothing to
-// SignalOrchestrator, SignalLogService, SignalAlertService or BetaConfirmationFlow's state.
+// TelegramDeliveryOutbox the real flow routes through. Reads nothing from and writes nothing
+// to SignalOrchestrator, SignalLogService or SignalAlertService's state.
 // Fetches its own market data directly; never touches OrchestratorResult at all.
 public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger<VtbSignalService> logger)
 {
@@ -51,10 +51,9 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     private readonly VtbRiskState _risk =
         DiskCache.Load<VtbRiskState>(Path.Combine(env.ContentRootPath, ".cache", "vtb-risk-state.json")) ?? new();
     private readonly object _lock = new();
-    // Same pattern as BetaConfirmationFlow: route to a different chat by building a small
-    // in-memory config that overrides Telegram:ChatId, rather than a per-call parameter
-    // (TelegramNotifier.SendAsync no longer takes one). Falls back to the real chat if a
-    // dedicated VtbChatId isn't configured.
+    // Routes to a different chat by building a small in-memory config that overrides
+    // Telegram:ChatId, rather than a per-call parameter (TelegramNotifier.SendAsync no longer
+    // takes one). Falls back to the real chat if a dedicated VtbChatId isn't configured.
     private readonly IConfiguration _vtbTelegramConfig = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
     {
         ["Telegram:BotToken"] = config["Telegram:BotToken"],
@@ -254,7 +253,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         return list;
     }
 
-    // ---- Telegram: direct send, independent of the real/beta TelegramDeliveryOutbox ----
+    // ---- Telegram: direct send, independent of the real flow's TelegramDeliveryOutbox ----
     private async Task SendOpenAsync(VtbLogEntry e, MarketConfig market)
     {
         var telegram = new TelegramNotifier(httpClients, _vtbTelegramConfig);

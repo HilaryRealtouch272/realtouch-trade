@@ -63,8 +63,6 @@ jobs:
         run: |
           mkdir -p backend/.cache
           cp -v state/cache/*.json backend/.cache/ 2>/dev/null || echo "No prior state to restore - first run."
-          mkdir -p backend/.cache/beta-15m/.cache
-          cp -v state/beta-15m-cache/*.json backend/.cache/beta-15m/.cache/ 2>/dev/null || echo "No prior beta 15m state."
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -98,13 +96,11 @@ jobs:
           Marketaux__ApiKeys: ${{ secrets.MARKETAUX__APIKEYS }}
           Telegram__BotToken: ${{ secrets.TELEGRAM__BOTTOKEN }}
           Telegram__ChatId: ${{ secrets.TELEGRAM__CHATID }}
-          Telegram__BetaChatId: ${{ secrets.TELEGRAM__BETACHATID }}
           # Optional: Validated Trend Breakout alerts post here instead, if set. Falls back to
           # the main ChatId when unset.
           Telegram__VtbChatId: ${{ secrets.TELEGRAM__VTBCHATID }}
           SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
           SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
-          BETA_LOG_OUTPUT_PATH: ${{ github.workspace }}/beta-log.json
           VTB_LOG_OUTPUT_PATH: ${{ github.workspace }}/vtb-log.json
           SIGNAL_STATUS_OUTPUT_PATH: ${{ github.workspace }}/signal-status.json
           DIAGNOSTICS_OUTPUT_PATH: ${{ github.workspace }}/diagnostics.json
@@ -130,8 +126,6 @@ jobs:
           for attempt in 1 2 3 4 5; do
             mkdir -p cache
             cp -v ../backend/.cache/*.json cache/ 2>/dev/null || true
-            mkdir -p beta-15m-cache
-            cp -v ../backend/.cache/beta-15m/.cache/*.json beta-15m-cache/ 2>/dev/null || true
             git add -A
             if git diff --cached --quiet; then
               echo "No state changes to persist."
@@ -171,7 +165,6 @@ jobs:
         run: |
           cp signals.json frontend/dist/frontend/browser/signals.json
           cp signal-log.json frontend/dist/frontend/browser/signal-log.json
-          cp beta-log.json frontend/dist/frontend/browser/beta-log.json || echo "Beta output unavailable this scan"
           cp vtb-log.json frontend/dist/frontend/browser/vtb-log.json || echo "VTB output unavailable this scan"
           cp signal-status.json frontend/dist/frontend/browser/signal-status.json || echo "Signal status unavailable this scan"
           cp diagnostics.json frontend/dist/frontend/browser/diagnostics.json

@@ -186,7 +186,6 @@
     <div class="tracker-tabs">
       <button type="button" class="tracker-tab active" id="trackerTabStats">Performance</button>
       <button type="button" class="tracker-tab" id="trackerTabLedger">Ledger</button>
-      <button type="button" class="tracker-tab" id="trackerTabBeta">Beta · 15m entry</button>
       <button type="button" class="tracker-tab" id="trackerTabVtb">VTB</button>
       <button type="button" class="tracker-tab" id="trackerTabStatus">Signal status</button>
       <button type="button" class="tracker-tab" id="trackerTabDiagnostics">Diagnostics</button>
@@ -223,20 +222,8 @@
         </table>
       </div>
     </div>
-    <div id="trackerBetaView" hidden>
-      <p class="tracker-disclaimer">Beta paper trades use the real scanner’s qualified Weekly, Daily, 4H and 1H setups, with fresh 15m entry confirmation. They have their own ledger, outcomes and Telegram group.</p>
-      <div class="tracker-table-wrap">
-        <table class="tracker-table">
-          <thead><tr>
-            <th>Symbol</th><th>TF</th><th>Bias</th><th>Model</th><th>Grade</th><th>Entry</th><th>Stop</th><th>R:R</th>
-            <th>Qualified</th><th>Closed</th><th>Status</th><th>Realized</th>
-          </tr></thead>
-          <tbody id="betaBody"></tbody>
-        </table>
-      </div>
-    </div>
     <div id="trackerVtbView" hidden>
-      <p class="tracker-disclaimer">Validated Trend Breakout: a daily 200-day-trend + channel-breakout module, paper-traded for BTC/USDT, ETH/USDT and XAU/USD (WTI excluded - no data source). Fully separate from the real ledger and beta - own state, own Telegram group.</p>
+      <p class="tracker-disclaimer">Validated Trend Breakout: a daily 200-day-trend + channel-breakout module, paper-traded for BTC/USDT, ETH/USDT, XAU/USD and WTI/USD. Fully separate from the real ledger - own state, own Telegram group.</p>
       <div class="tracker-table-wrap">
         <table class="tracker-table">
           <thead><tr>
@@ -252,7 +239,7 @@
       <div class="tracker-table-wrap" id="trackerStatsBody"></div>
     </div>
     <div id="trackerStatusView" hidden>
-      <p class="tracker-disclaimer">Real and beta use separate ledgers, positions and Telegram queues. Delivery confirms Telegram accepted the message. Comparisons start with new trades that carry a shared setup ID.</p>
+      <p class="tracker-disclaimer">Delivery confirms Telegram accepted the message.</p>
       <div id="trackerStatusBody"></div>
     </div>
     <div id="trackerDiagnosticsView" hidden>

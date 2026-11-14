@@ -657,43 +657,8 @@ async function fetchTrackerEntries() {
   return response.json();
 }
 
-// Higher-timeframe setups confirmed on 15m, with their own ledger and Telegram group.
-async function fetchBetaEntries() {
-  const path = IS_STATIC_DEPLOYMENT ? `beta-log.json?_=${Date.now()}` : `${API_BASE}/api/beta-log`;
-  const response = await fetch(path, IS_STATIC_DEPLOYMENT ? { cache: "no-store" } : undefined);
-  if (!response.ok) throw new Error(`Beta ledger fetch ${response.status}`);
-  return response.json();
-}
-
-async function renderBetaLedger() {
-  const body = $("#betaBody");
-  if (!body) return;
-  let betaEntries = [];
-  try { betaEntries = await fetchBetaEntries(); }
-  catch (err) { console.error("Could not load beta ledger:", err); }
-  if (!betaEntries.length) {
-    body.innerHTML = `<tr><td colspan="12" class="tracker-empty">No beta signals logged yet.</td></tr>`;
-    return;
-  }
-  body.innerHTML = [...betaEntries].reverse().map(e => `
-    <tr>
-      <td>${e.symbol}</td>
-      <td>${e.timeframe}</td>
-      <td><span class="direction ${e.direction.toLowerCase()}">${e.direction.toUpperCase()}</span></td>
-      <td>${formatEnumName(e.setupModel)}</td>
-      <td>${e.grade} (${e.score})</td>
-      <td>${formatPrice(e.entry, 5)}</td>
-      <td>${formatPrice(e.stop, 5)}</td>
-      <td>${e.rewardToRisk.toFixed(1)}R</td>
-      <td>${formatInUserTimezone(e.qualifiedAtUtc)}</td>
-      <td>${RESOLVED_STATUSES.includes(e.status) && e.closedAtUtc ? formatInUserTimezone(e.closedAtUtc) : "—"}</td>
-      <td class="${trackerStatusClass(e.status, e)}">${trackerStatusLabel(e.status, e)}${trackerProgressNote(e)}</td>
-      ${renderRealizedCell(e)}
-    </tr>`).join("");
-}
-
 // Validated Trend Breakout: own ledger, own entry/stop/target shape (single fixed stop and
-// target, no TP1/TP2/TP3 partials like the real/beta ledgers), own Telegram group.
+// target, no TP1/TP2/TP3 partials like the real ledger), own Telegram group.
 async function fetchVtbEntries() {
   const path = IS_STATIC_DEPLOYMENT ? `vtb-log.json?_=${Date.now()}` : `${API_BASE}/api/vtb-log`;
   const response = await fetch(path, IS_STATIC_DEPLOYMENT ? { cache: "no-store" } : undefined);
@@ -768,21 +733,8 @@ async function renderSignalStatus() {
           <td>${safe(s.reason)}</td><td>${time(s.observedAtUtc)}</td><td>${time(s.confirmationCandleUtc)}</td>
         </tr>`).join("") || '<tr><td colspan="9">No checks recorded yet.</td></tr>'}</tbody>
       </table></div>`;
-    const comparisons = report.comparison || [];
-    const side = s => !s?.trades ? "No entry" :
-      `${Number(s.trades)} trades · ${Number(s.resolved)} resolved · ${s.netR == null ? "R pending" : Number(s.netR).toFixed(2) + "R net"}<br>First entry ${time(s.firstEntryUtc)}`;
     body.innerHTML = `<p>Latest scan ${time(report.generatedAtUtc)}</p>` +
-      flowTable("Real flow", report.real, report.realDelivery) +
-      flowTable("Beta · 15m entry", report.beta, report.betaDelivery) +
-      `<h3>Real versus beta · matching setups</h3>
-       <p>Each row groups trades from the same plan. Net R includes resolved trades only.</p>
-       <div class="tracker-table-wrap"><table class="tracker-table">
-         <thead><tr><th>Symbol</th><th>Setup TF</th><th>Strategy</th><th>Setup ID</th><th>Real</th><th>Beta</th></tr></thead>
-         <tbody>${comparisons.map(c => `<tr><td>${safe(c.symbol)}</td><td>${safe(c.timeframe)}</td>
-           <td>${safe(formatEnumName(c.setupModel))}</td><td>${safe(c.sourceSetupId)}</td>
-           <td>${side(c.real)}</td><td>${side(c.beta)}</td></tr>`).join("") ||
-           '<tr><td colspan="6">New trades will appear here as matching setup IDs are recorded.</td></tr>'}</tbody>
-       </table></div>`;
+      flowTable("Real flow", report.real, report.realDelivery);
   } catch (err) {
     console.error("Could not load signal status:", err);
     body.innerHTML = '<p class="tracker-empty">Signal status is unavailable. Try again after the next scan.</p>';
@@ -2197,17 +2149,13 @@ function initApp() {
   $("#closeTracker").addEventListener("click", closeSignalTracker);
   $("#trackerModal").addEventListener("click", event => { if (event.target === $("#trackerModal")) closeSignalTracker(); });
   function activateTrackerTab(activeId, activeViewId) {
-    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabBeta", "trackerBetaView"], ["trackerTabVtb", "trackerVtbView"], ["trackerTabStatus", "trackerStatusView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
+    for (const [tabId, viewId] of [["trackerTabStats", "trackerStatsView"], ["trackerTabLedger", "trackerLedgerView"], ["trackerTabVtb", "trackerVtbView"], ["trackerTabStatus", "trackerStatusView"], ["trackerTabDiagnostics", "trackerDiagnosticsView"]]) {
       $(`#${tabId}`).classList.toggle("active", tabId === activeId);
       $(`#${viewId}`).hidden = viewId !== activeViewId;
     }
   }
   $("#trackerTabLedger").addEventListener("click", () => activateTrackerTab("trackerTabLedger", "trackerLedgerView"));
   $("#trackerTabStats").addEventListener("click", () => activateTrackerTab("trackerTabStats", "trackerStatsView"));
-  $("#trackerTabBeta").addEventListener("click", () => {
-    activateTrackerTab("trackerTabBeta", "trackerBetaView");
-    renderBetaLedger();
-  });
   $("#trackerTabVtb").addEventListener("click", () => {
     activateTrackerTab("trackerTabVtb", "trackerVtbView");
     renderVtbLedger();

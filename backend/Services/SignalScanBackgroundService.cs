@@ -18,7 +18,6 @@ public class SignalScanBackgroundService(
     SignalAlertService alerts,
     SignalLogService signalLog,
     LatestSignalsStore store,
-    BetaConfirmationFlow beta,
     TelegramDeliveryOutbox delivery,
     ILogger<SignalScanBackgroundService> logger) : BackgroundService
 {
@@ -97,7 +96,6 @@ public class SignalScanBackgroundService(
         await alerts.CheckAndNotifyAsync(results);
         await signalLog.RecordAndTrackAsync(results);
         await delivery.FlushAsync();
-        await beta.ProcessAsync(results);
     }
 
     private async Task ScanFxAsync(Timeframe timeframe, CancellationToken ct)
@@ -117,6 +115,5 @@ public class SignalScanBackgroundService(
         await alerts.CheckAndNotifyAsync(results);
         await signalLog.RecordAndTrackAsync(results);
         await delivery.FlushAsync();
-        await beta.ProcessAsync(results);
     }
 }

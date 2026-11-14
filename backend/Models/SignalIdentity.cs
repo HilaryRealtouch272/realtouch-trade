@@ -4,7 +4,7 @@ using System.Text;
 
 namespace RealtouchSmartTrade.Api.Models;
 
-// The plan's identity is shared by real and beta even when their entry times differ.
+// A stable identity for a trade plan, independent of when it was actually entered.
 public static class SignalIdentity
 {
     public static string For(SignalResult signal)

@@ -22,46 +22,12 @@ public record SignalFlowStatus(
     }
 }
 
-public static class SignalComparison
-{
-    public static object Build(IEnumerable<QualificationLogEntry> real, IEnumerable<QualificationLogEntry> beta)
-    {
-        var realRows = real.Where(e => e.SourceSetupId is not null).ToList();
-        var betaRows = beta.Where(e => e.SourceSetupId is not null).ToList();
-        return realRows.Concat(betaRows).GroupBy(e => e.SourceSetupId)
-            .OrderByDescending(g => g.Max(e => e.QualifiedAtUtc)).Take(50).Select(g =>
-            {
-                var entry = g.First();
-                return new
-                {
-                    sourceSetupId = g.Key, entry.Symbol, entry.Timeframe, entry.SetupModel,
-                    real = Summarize(realRows.Where(e => e.SourceSetupId == g.Key).ToList()),
-                    beta = Summarize(betaRows.Where(e => e.SourceSetupId == g.Key).ToList())
-                };
-            }).ToList();
-    }
-
-    private static object Summarize(List<QualificationLogEntry> rows)
-    {
-        var closed = rows.Where(e => !TradeSimulator.IsOpen(e.Status)).ToList();
-        return new
-        {
-            trades = rows.Count, resolved = closed.Count,
-            firstEntryUtc = rows.OrderBy(e => e.QualifiedAtUtc).FirstOrDefault()?.QualifiedAtUtc,
-            netR = closed.Count == 0 || closed.Any(e => e.NetRealizedR is null)
-                ? (decimal?)null : closed.Sum(e => e.NetRealizedR!.Value)
-        };
-    }
-}
-
 public static class SignalStatusReport
 {
-    public static object Build(SignalAlertService alerts, SignalLogService ledger,
-        TelegramDeliveryOutbox delivery, BetaConfirmationFlow beta) => new
+    public static object Build(SignalAlertService alerts, TelegramDeliveryOutbox delivery) => new
     {
         generatedAtUtc = DateTime.UtcNow,
-        real = alerts.GetStatuses(), beta = beta.GetStatuses(),
-        realDelivery = delivery.Summarize(), betaDelivery = beta.GetDeliverySummary(),
-        comparison = SignalComparison.Build(ledger.GetAll(), beta.GetAll())
+        real = alerts.GetStatuses(),
+        realDelivery = delivery.Summarize()
     };
 }

@@ -46,10 +46,9 @@ builder.Services.AddSingleton<SignalAlertService>(sp => new(
     new TelegramNotifier(sp.GetRequiredService<TelegramDeliveryOutbox>(), sp.GetRequiredService<IConfiguration>()),
     sp.GetRequiredService<SignalLogService>(), sp.GetRequiredService<IHostEnvironment>(),
     sp.GetRequiredService<ILogger<SignalAlertService>>(), sp.GetRequiredService<TelegramDeliveryOutbox>()));
-builder.Services.AddSingleton<BetaConfirmationFlow>();
 // Validated Trend Breakout: its own daily SMA200+channel-breakout module, fully isolated
-// from the real engine and from beta - own data fetch, own state, own Telegram sends (plain
-// IHttpClientFactory, never the real/beta TelegramDeliveryOutbox). See VtbSignalService's
+// from the real engine - own data fetch, own state, own Telegram sends (plain
+// IHttpClientFactory, never the real TelegramDeliveryOutbox). See VtbSignalService's
 // own header comment for the full isolation list.
 builder.Services.AddSingleton<VtbSignalService>();
 builder.Services.AddSingleton<LatestSignalsStore>();
@@ -261,14 +260,11 @@ app.MapGet("/api/signals/fx", (LatestSignalsStore store, string? timeframe) =>
 app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalLog.GetAll()))
 .WithName("GetSignalLog");
 
-app.MapGet("/api/beta-log", (BetaConfirmationFlow beta) => Results.Ok(beta.GetAll()))
-.WithName("GetBetaLog");
-
 app.MapGet("/api/vtb-log", (VtbSignalService vtb) => Results.Ok(vtb.GetAll()))
 .WithName("GetVtbLog");
 
-app.MapGet("/api/signal-status", (SignalAlertService alerts, SignalLogService ledger,
-    TelegramDeliveryOutbox delivery, BetaConfirmationFlow beta) => Results.Ok(SignalStatusReport.Build(alerts, ledger, delivery, beta)));
+app.MapGet("/api/signal-status", (SignalAlertService alerts, TelegramDeliveryOutbox delivery) =>
+    Results.Ok(SignalStatusReport.Build(alerts, delivery)));
 
 // Section 9: per-model diagnostics - every evaluated candidate this scan
 // (qualified AND rejected), so it's possible to tell "genuinely no
@@ -521,22 +517,16 @@ async Task RunScanOnceAsync(IServiceProvider services)
         scanLogger.LogWarning(ex, "Reconciliation failed");
     }
 
-    // Real alerts, ledger, snapshots and reconciliation finish before the isolated beta pass.
     try
     {
-        var beta = services.GetRequiredService<BetaConfirmationFlow>();
-        await beta.ProcessAsync(freshResults);
-        var betaPath = Environment.GetEnvironmentVariable("BETA_LOG_OUTPUT_PATH")
-            ?? Path.Combine(env.ContentRootPath, "beta-log.json");
-        await File.WriteAllTextAsync(betaPath, System.Text.Json.JsonSerializer.Serialize(beta.GetAll(), jsonOptions));
         var statusPath = Environment.GetEnvironmentVariable("SIGNAL_STATUS_OUTPUT_PATH")
             ?? Path.Combine(env.ContentRootPath, "signal-status.json");
         await File.WriteAllTextAsync(statusPath,
-            System.Text.Json.JsonSerializer.Serialize(SignalStatusReport.Build(alerts, signalLog, delivery, beta), jsonOptions));
+            System.Text.Json.JsonSerializer.Serialize(SignalStatusReport.Build(alerts, delivery), jsonOptions));
     }
     catch (Exception ex)
     {
-        scanLogger.LogWarning(ex, "Beta output unavailable for this scan");
+        scanLogger.LogWarning(ex, "Signal status snapshot unavailable for this scan");
     }
 
     // Validated Trend Breakout: fully independent of the real scan results above - fetches

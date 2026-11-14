@@ -3,7 +3,9 @@ using RealtouchSmartTrade.Api.Providers;
 
 namespace RealtouchSmartTrade.Api.Services;
 
-// Real and beta share delivery rules, with their own ledger, root and service instance.
+// `beta` is unused now that the beta flow has been removed, but kept on the constructor
+// (always false) since SignalFlowStatus.From and TelegramDeliveryOutbox still take it, and
+// tests construct this directly - not worth a wider signature churn for a default-false flag.
 public class SignalAlertService(
     TelegramNotifier telegram, SignalLogService signalLog, IHostEnvironment env, ILogger<SignalAlertService> logger,
     TelegramDeliveryOutbox? delivery = null, bool beta = false)
