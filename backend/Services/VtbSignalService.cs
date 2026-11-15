@@ -1,3 +1,4 @@
+using System.Globalization;
 using RealtouchSmartTrade.Api.Backtesting;
 using RealtouchSmartTrade.Api.Models;
 using RealtouchSmartTrade.Api.Providers;
@@ -9,9 +10,9 @@ namespace RealtouchSmartTrade.Api.Services;
 // paper-traded for BTC/USDT, ETH/USDT, XAU/USD and WTI/USD.
 //
 // COMPLETELY ISOLATED from the real four-model system: own deep-history fetch,
-// own cache files, own position/risk state, own Telegram sends via a direct (non-queued)
-// TelegramNotifier built from the raw IHttpClientFactory - never the shared
-// TelegramDeliveryOutbox the real flow routes through. Reads nothing from and writes nothing
+// own cache files, own position/risk state, and its own Telegram delivery queue.
+// The real flow's TelegramDeliveryOutbox instance and state are never shared.
+// Reads nothing from and writes nothing
 // to SignalOrchestrator, SignalLogService or SignalAlertService's state.
 // Fetches its own market data directly; never touches OrchestratorResult at all.
 public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger<VtbSignalService> logger)
@@ -51,6 +52,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     private readonly VtbRiskState _risk =
         DiskCache.Load<VtbRiskState>(Path.Combine(env.ContentRootPath, ".cache", "vtb-risk-state.json")) ?? new();
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _processGate = new(1, 1);
+    private TelegramDeliveryOutbox? _delivery;
+    private TelegramDeliveryOutbox Delivery => _delivery ??= new TelegramDeliveryOutbox(
+        httpClients, _vtbTelegramConfig, env, logger, stateFileName: "vtb-telegram-delivery.json");
     // Routes to a different chat by building a small in-memory config that overrides
     // Telegram:ChatId, rather than a per-call parameter (TelegramNotifier.SendAsync no longer
     // takes one). Falls back to the real chat if a dedicated VtbChatId isn't configured.
@@ -71,55 +76,68 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
 
     public record VtbLogEntry(
         string Id, string Symbol, string Side, DateTime EntryTimeUtc, decimal EntryRef, decimal Stop, decimal Target, decimal Risk,
-        string Status, DateTime? ExitTimeUtc, decimal? Exit, string? ExitReason, decimal? R, decimal RiskMultiplier);
+        string Status, DateTime? ExitTimeUtc, decimal? Exit, string? ExitReason, decimal? R, decimal RiskMultiplier,
+        bool OpenAlertPending = false, bool OutcomeAlertPending = false);
 
     public IReadOnlyList<VtbLogEntry> GetAll() { lock (_lock) return _entries.ToList(); }
 
     public async Task ProcessAsync()
     {
+        await _processGate.WaitAsync();
         try
         {
             foreach (var market in Markets)
             {
-                IReadOnlyList<NormalizedCandle> daily;
-                try { daily = await GetDailyHistoryAsync(market); }
-                catch (Exception ex) { logger.LogWarning(ex, "VTB: could not fetch daily history for {Symbol}", market.Symbol); continue; }
-                if (daily.Count < 220) continue; // not enough history for SMA200 + channel yet
-
-                var (closed, open) = VtbRules.Replay(daily, market.ChannelN, market.RewardToRisk);
-                await ReconcileAsync(market, closed, open);
+                try
+                {
+                    var daily = await GetDailyHistoryAsync(market);
+                    var now = DateTime.UtcNow;
+                    SettleOpenPositions(market, daily, now);
+                    var complete = daily.Where(c => c.IsComplete && c.CloseTimeUtc <= now).ToList();
+                    if (complete.Count < 220) continue;
+                    var (_, open) = VtbRules.Replay(complete, market.ChannelN, market.RewardToRisk);
+                    ReconcileOpen(market, open);
+                    SettleOpenPositions(market, daily, now);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogWarning(ex, "VTB: could not process {Symbol}", market.Symbol);
+                }
             }
+            await SendPendingAlertsAsync();
+            await Delivery.FlushAsync();
         }
         catch (Exception ex) { logger.LogError(ex, "VTB processing failed unexpectedly"); }
+        finally { _processGate.Release(); }
     }
 
-    // Diffs the freshly-replayed (deterministic) result against the persisted ledger: any
-    // closed trade not already logged gets logged + alerted; a currently-open position not
-    // already logged (by entry time) gets logged + alerted, subject to the risk guards below.
-    private async Task ReconcileAsync(MarketConfig market, IReadOnlyList<VtbClosedTrade> closed, VtbPosition? open)
+    private void SettleOpenPositions(MarketConfig market, IReadOnlyList<NormalizedCandle> daily, DateTime now)
     {
-        foreach (var trade in closed)
+        lock (_lock)
         {
-            VtbLogEntry? updated = null;
-            lock (_lock)
+            for (var idx = 0; idx < _entries.Count; idx++)
             {
-                var idx = _entries.FindIndex(e => e.Symbol == market.Symbol && e.EntryTimeUtc == trade.EntryTimeUtc && e.Status == "Open");
-                if (idx < 0) continue; // this closed trade was never logged as opened (e.g. before VTB existed) - skip, don't fabricate
                 var e = _entries[idx];
-                var moneyR = trade.R * e.RiskMultiplier; // money-based R per spec §5 (half-size short = 0.5R on its own stop)
-                updated = e with { Status = "Closed", ExitTimeUtc = trade.ExitTimeUtc, Exit = trade.Exit, ExitReason = trade.Reason.ToString(), R = moneyR };
-                _entries[idx] = updated;
+                if (e.Symbol != market.Symbol || e.Status != "Open") continue;
+                var position = new VtbPosition(Enum.Parse<VtbSide>(e.Side), e.EntryTimeUtc, e.EntryRef, e.Risk, e.Stop, e.Target);
+                var trade = VtbRules.Settle(position, daily, now);
+                if (trade is null) continue;
+                var moneyR = trade.R * e.RiskMultiplier;
+                _entries[idx] = e with { Status = "Closed", ExitTimeUtc = trade.ExitTimeUtc, Exit = trade.Exit,
+                    ExitReason = trade.Reason.ToString(), R = moneyR, OutcomeAlertPending = true };
                 _risk.CumulativeR += moneyR;
                 if (_risk.CumulativeR > _risk.PeakEquityR) _risk.PeakEquityR = _risk.CumulativeR;
                 if (_risk.PeakEquityR - _risk.CumulativeR < DrawdownGuardR) _risk.DrawdownGuardTripped = false;
                 Persist();
             }
-            if (updated is not null) await SendOutcomeAsync(updated);
         }
+    }
 
+    private void ReconcileOpen(MarketConfig market, VtbPosition? open)
+    {
         if (open is null) return;
         bool alreadyLogged;
-        lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && e.EntryTimeUtc == open.EntryTimeUtc);
+        lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && (e.EntryTimeUtc == open.EntryTimeUtc || e.Status == "Open"));
         if (alreadyLogged) return;
 
         VtbLogEntry opened;
@@ -151,11 +169,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             }
 
             opened = new VtbLogEntry(Guid.NewGuid().ToString("N"), market.Symbol, open.Side.ToString(), open.EntryTimeUtc,
-                open.EntryRef, open.Stop, open.Target, open.Risk, "Open", null, null, null, null, riskMultiplier);
+                open.EntryRef, open.Stop, open.Target, open.Risk, "Open", null, null, null, null, riskMultiplier, OpenAlertPending: true);
             _entries.Add(opened);
             Persist();
         }
-        await SendOpenAsync(opened, market);
     }
 
     private void Persist()
@@ -164,36 +181,42 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         DiskCache.Save(_riskStatePath, _risk);
     }
 
-    // ---- data: deep daily history, cached once a day (VTB only ever evaluates the daily close) ----
+    // Refresh the deep indicator history once per UTC day and its recent tail every scan.
+    // Developing bars settle saved positions but never confirm new daily entries.
     private async Task<IReadOnlyList<NormalizedCandle>> GetDailyHistoryAsync(MarketConfig market)
     {
+        var now = DateTime.UtcNow;
         var cacheAll = DiskCache.Load<Dictionary<string, HistoryCacheEntry>>(_historyCachePath) ?? new();
-        if (cacheAll.TryGetValue(market.Symbol, out var cached) && DateTime.UtcNow - cached.FetchedAtUtc < TimeSpan.FromHours(20))
-            return cached.Candles;
-
+        cacheAll.TryGetValue(market.Symbol, out var cached);
+        var warm = cached is not null && cached.FetchedAtUtc.Date == now.Date;
+        var from = warm ? now.Date.AddDays(-30) : now.Date.AddDays(-620);
         List<NormalizedCandle> candles = market.Source switch
         {
-            VtbDataSource.Coinbase => await CoinbaseHistory.FetchAsync(httpClients.CreateClient(), market.Symbol, market.FeedSymbol, Timeframe.Daily, 86400,
-                DateTime.UtcNow.AddDays(-620), DateTime.UtcNow, CancellationToken.None),
-            VtbDataSource.Yahoo => await FetchYahooDailyAsync(market.FeedSymbol),
-            _ => await FetchTwelveDataDailyAsync(market.FeedSymbol),
+            VtbDataSource.Coinbase => await CoinbaseHistory.FetchAsync(httpClients.CreateClient(), market.Symbol,
+                market.FeedSymbol, Timeframe.Daily, 86400, from, now.Date.AddDays(1), CancellationToken.None),
+            VtbDataSource.Yahoo => await FetchYahooDailyAsync(market.FeedSymbol, warm ? "1mo" : "5y"),
+            _ => await FetchTwelveDataDailyAsync(market.FeedSymbol, warm ? 30 : 800),
         };
-
-        cacheAll[market.Symbol] = new HistoryCacheEntry(DateTime.UtcNow, candles);
+        if (candles.Count == 0) throw new InvalidOperationException("VTB: empty daily history for " + market.Symbol);
+        var merged = (warm ? cached!.Candles.Concat(candles) : candles)
+            .GroupBy(c => c.OpenTimeUtc).Select(g => g.Last())
+            .OrderBy(c => c.OpenTimeUtc)
+            .Select(c => c with { IsComplete = c.CloseTimeUtc <= now }).ToList();
+        cacheAll[market.Symbol] = new HistoryCacheEntry(warm ? cached!.FetchedAtUtc : now, merged);
         DiskCache.Save(_historyCachePath, cacheAll);
-        return candles;
+        return merged;
     }
 
     // Deep gold history: the shared TwelveDataMarketDataProvider is hardcoded to the last 120
     // bars (fine for the real system's needs, not enough for a 200-day SMA) - this is a
-    // separate, VTB-only fetch requesting real depth. Uses the first configured key only (no
-    // rotation): called at most once a day thanks to the cache above, so quota pressure is low.
-    private async Task<List<NormalizedCandle>> FetchTwelveDataDailyAsync(string providerSymbol)
+    // separate, VTB-only fetch requesting real depth once per day and 30 recent bars per scan.
+    // Uses the first configured key only.
+    private async Task<List<NormalizedCandle>> FetchTwelveDataDailyAsync(string providerSymbol, int outputSize)
     {
         var keys = ApiKeys.Get(config, "TwelveData");
         if (keys.Count == 0) throw new InvalidOperationException("VTB: Twelve Data API key not configured.");
         var client = httpClients.CreateClient();
-        var url = $"https://api.twelvedata.com/time_series?symbol={Uri.EscapeDataString(providerSymbol)}&interval=1day&outputsize=800&timezone=UTC&apikey={keys[0]}";
+        var url = $"https://api.twelvedata.com/time_series?symbol={Uri.EscapeDataString(providerSymbol)}&interval=1day&outputsize={outputSize}&timezone=UTC&apikey={keys[0]}";
         var response = await client.GetAsync(url);
         var text = await response.Content.ReadAsStringAsync();
         using var doc = System.Text.Json.JsonDocument.Parse(text);
@@ -203,10 +226,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         var list = new List<NormalizedCandle>();
         foreach (var v in values.EnumerateArray())
         {
-            var open = DateTime.Parse(v.GetProperty("datetime").GetString()!).ToUniversalTime();
+            var open = DateTime.Parse(v.GetProperty("datetime").GetString()!, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
             list.Add(new NormalizedCandle("XAU/USD", providerSymbol, "TwelveData", Timeframe.Daily, open, open.AddDays(1),
-                decimal.Parse(v.GetProperty("open").GetString()!), decimal.Parse(v.GetProperty("high").GetString()!),
-                decimal.Parse(v.GetProperty("low").GetString()!), decimal.Parse(v.GetProperty("close").GetString()!),
+                decimal.Parse(v.GetProperty("open").GetString()!, CultureInfo.InvariantCulture), decimal.Parse(v.GetProperty("high").GetString()!, CultureInfo.InvariantCulture),
+                decimal.Parse(v.GetProperty("low").GetString()!, CultureInfo.InvariantCulture), decimal.Parse(v.GetProperty("close").GetString()!, CultureInfo.InvariantCulture),
                 null, true, DateTime.UtcNow, DataQuality.Ok));
         }
         list.Sort((a, b) => a.OpenTimeUtc.CompareTo(b.OpenTimeUtc));
@@ -218,10 +241,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     // API key. Parallel arrays (timestamp / open / high / low / close) indexed together;
     // Yahoo returns null in any of the OHLC arrays for a few non-trading/partial bars, so
     // those indices are skipped rather than producing a zero-range candle.
-    private async Task<List<NormalizedCandle>> FetchYahooDailyAsync(string tickerSymbol)
+    private async Task<List<NormalizedCandle>> FetchYahooDailyAsync(string tickerSymbol, string range)
     {
         var client = httpClients.CreateClient();
-        var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(tickerSymbol)}?interval=1d&range=5y";
+        var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(tickerSymbol)}?interval=1d&range={range}";
         var response = await client.GetAsync(url);
         var text = await response.Content.ReadAsStringAsync();
         using var doc = System.Text.Json.JsonDocument.Parse(text);
@@ -253,10 +276,31 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         return list;
     }
 
-    // ---- Telegram: direct send, independent of the real flow's TelegramDeliveryOutbox ----
-    private async Task SendOpenAsync(VtbLogEntry e, MarketConfig market)
+    private async Task SendPendingAlertsAsync()
     {
-        var telegram = new TelegramNotifier(httpClients, _vtbTelegramConfig);
+        List<VtbLogEntry> pending;
+        lock (_lock) pending = _entries.Where(e => e.OpenAlertPending || e.OutcomeAlertPending).ToList();
+        foreach (var entry in pending)
+        {
+            var openQueued = entry.OpenAlertPending && await SendOpenAsync(entry, Markets.Single(m => m.Symbol == entry.Symbol));
+            var outcomeQueued = entry.OutcomeAlertPending && await SendOutcomeAsync(entry);
+            lock (_lock)
+            {
+                var index = _entries.FindIndex(e => e.Id == entry.Id);
+                _entries[index] = _entries[index] with
+                {
+                    OpenAlertPending = entry.OpenAlertPending && !openQueued,
+                    OutcomeAlertPending = entry.OutcomeAlertPending && !outcomeQueued
+                };
+                Persist();
+            }
+        }
+    }
+
+    // ---- Telegram: VTB-only durable queue, independent of the real flow ----
+    private async Task<bool> SendOpenAsync(VtbLogEntry e, MarketConfig market)
+    {
+        var telegram = new TelegramNotifier(Delivery, _vtbTelegramConfig);
         var icon = e.Side == "Long" ? "🟢" : "🔴";
         var text = $"📈 *VTB* · {e.Symbol} · {icon} *{e.Side.ToUpperInvariant()}*\n" +
             $"Channel {market.ChannelN}d · R:R 1:{market.RewardToRisk}\n\n" +
@@ -264,16 +308,18 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             $"⏱ Time exit in {VtbRules.TimeExitDays} days\n" +
             (e.RiskMultiplier < 1m ? $"\n⚠️ Short - sized at {e.RiskMultiplier:0.0}x risk" : "") +
             "\n\nPaper trade - backtested rules, not a live order.";
-        var (success, error) = await telegram.SendAsync(text);
+        var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":open");
         if (!success) logger.LogWarning("VTB open Telegram alert failed for {Symbol}: {Error}", e.Symbol, error);
+        return success;
     }
 
-    private async Task SendOutcomeAsync(VtbLogEntry e)
+    private async Task<bool> SendOutcomeAsync(VtbLogEntry e)
     {
-        var telegram = new TelegramNotifier(httpClients, _vtbTelegramConfig);
+        var telegram = new TelegramNotifier(Delivery, _vtbTelegramConfig);
         var label = (e.R ?? 0m) >= 0 ? "WIN" : "LOSS";
         var text = $"📈 *VTB OUTCOME* · {e.Symbol} · {e.Side} → {label}\nNet {e.R:+0.00;-0.00}R · {e.ExitReason}";
-        var (success, error) = await telegram.SendAsync(text);
+        var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":outcome");
         if (!success) logger.LogWarning("VTB outcome Telegram alert failed for {Symbol}: {Error}", e.Symbol, error);
+        return success;
     }
 }

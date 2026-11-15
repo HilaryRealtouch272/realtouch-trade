@@ -19,13 +19,18 @@ public class SignalScanBackgroundService(
     SignalLogService signalLog,
     LatestSignalsStore store,
     TelegramDeliveryOutbox delivery,
+    VtbSignalService vtb,
     ILogger<SignalScanBackgroundService> logger) : BackgroundService
 {
     private static readonly TimeSpan CryptoInterval = TimeSpan.FromMinutes(5);
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var loops = new List<Task> { RunLoop("Crypto", CryptoInterval, TimeSpan.Zero, ct => ScanCryptoAsync(ct), stoppingToken) };
+        var loops = new List<Task>
+        {
+            RunLoop("Crypto", CryptoInterval, TimeSpan.Zero, ct => ScanCryptoAsync(ct), stoppingToken),
+            RunLoop("VTB", CryptoInterval, TimeSpan.FromSeconds(10), _ => vtb.ProcessAsync(), stoppingToken)
+        };
 
         // Stagger each FX timeframe's first run so all 20 (4 instruments x 5
         // timeframes) evaluations don't all fire in the same burst at startup.

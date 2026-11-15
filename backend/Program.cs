@@ -47,8 +47,8 @@ builder.Services.AddSingleton<SignalAlertService>(sp => new(
     sp.GetRequiredService<SignalLogService>(), sp.GetRequiredService<IHostEnvironment>(),
     sp.GetRequiredService<ILogger<SignalAlertService>>(), sp.GetRequiredService<TelegramDeliveryOutbox>()));
 // Validated Trend Breakout: its own daily SMA200+channel-breakout module, fully isolated
-// from the real engine - own data fetch, own state, own Telegram sends (plain
-// IHttpClientFactory, never the real TelegramDeliveryOutbox). See VtbSignalService's
+// from the real engine - own data fetch, own state, own Telegram delivery queue.
+// It never shares the real TelegramDeliveryOutbox instance. See VtbSignalService's
 // own header comment for the full isolation list.
 builder.Services.AddSingleton<VtbSignalService>();
 builder.Services.AddSingleton<LatestSignalsStore>();

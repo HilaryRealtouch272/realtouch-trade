@@ -65,6 +65,30 @@ public static class VtbRules
         return null;
     }
 
+    // Saved positions keep their original levels even if the rolling signal history changes.
+    // A forming daily bar can fill a stop/target, while a time exit requires its close.
+    public static VtbClosedTrade? Settle(VtbPosition position, IReadOnlyList<NormalizedCandle> daily, DateTime asOfUtc)
+    {
+        foreach (var bar in daily.OrderBy(c => c.OpenTimeUtc))
+        {
+            if (bar.OpenTimeUtc <= position.EntryTimeUtc || bar.OpenTimeUtc > asOfUtc) continue;
+            var isLong = position.Side == VtbSide.Long;
+            var hitStop = isLong ? bar.Low <= position.Stop : bar.High >= position.Stop;
+            var hitTarget = isLong ? bar.High >= position.Target : bar.Low <= position.Target;
+            var timeExit = bar.OpenTimeUtc >= position.EntryTimeUtc.AddDays(TimeExitDays)
+                && bar.IsComplete && bar.CloseTimeUtc <= asOfUtc;
+            if (!hitStop && !hitTarget && !timeExit) continue;
+
+            var reason = hitStop ? VtbExitReason.Stop : hitTarget ? VtbExitReason.Target : VtbExitReason.Time;
+            var exit = reason == VtbExitReason.Stop ? position.Stop : reason == VtbExitReason.Target ? position.Target : bar.Close;
+            if (hitStop && (isLong ? bar.Open < position.Stop : bar.Open > position.Stop)) exit = bar.Open;
+            var r = (isLong ? 1m : -1m) * (exit - position.EntryRef) / position.Risk;
+            return new VtbClosedTrade(position.Side, position.EntryTimeUtc, position.EntryRef, position.Stop,
+                position.Target, position.Risk, bar.CloseTimeUtc <= asOfUtc ? bar.CloseTimeUtc : asOfUtc, exit, reason, r);
+        }
+        return null;
+    }
+
     // Walks the full closed-bar history deterministically and returns every closed trade plus
     // whatever's left open at the end - same shape as the verified Python replay(). Pure
     // function of the candle history: callers diff the result against persisted state rather
@@ -81,27 +105,10 @@ public static class VtbRules
             var bar = daily[i];
             if (pos is not null && bar.OpenTimeUtc > pos.EntryTimeUtc)
             {
-                var isLong = pos.Side == VtbSide.Long;
-                var hitStop = isLong ? bar.Low <= pos.Stop : bar.High >= pos.Stop;
-                var hitTarget = isLong ? bar.High >= pos.Target : bar.Low <= pos.Target;
-                var timeExit = bar.OpenTimeUtc >= pos.EntryTimeUtc.AddDays(TimeExitDays);
-
-                if (hitStop || hitTarget)
+                var outcome = Settle(pos, new[] { bar }, bar.CloseTimeUtc);
+                if (outcome is not null)
                 {
-                    var reason = hitStop ? VtbExitReason.Stop : VtbExitReason.Target; // tie -> stop (conservative, matches reference)
-                    var px = reason == VtbExitReason.Stop ? pos.Stop : pos.Target;
-                    var gapped = reason == VtbExitReason.Stop && (isLong ? bar.Open < pos.Stop : bar.Open > pos.Stop);
-                    if (gapped) px = bar.Open;
-                    var sgn = isLong ? 1m : -1m;
-                    var r = sgn * (px - pos.EntryRef) / pos.Risk;
-                    closed.Add(new VtbClosedTrade(pos.Side, pos.EntryTimeUtc, pos.EntryRef, pos.Stop, pos.Target, pos.Risk, bar.CloseTimeUtc, px, reason, r));
-                    pos = null; // falls through below - a signal on this SAME bar may open a new trade
-                }
-                else if (timeExit)
-                {
-                    var sgn = isLong ? 1m : -1m;
-                    var r = sgn * (bar.Close - pos.EntryRef) / pos.Risk;
-                    closed.Add(new VtbClosedTrade(pos.Side, pos.EntryTimeUtc, pos.EntryRef, pos.Stop, pos.Target, pos.Risk, bar.CloseTimeUtc, bar.Close, VtbExitReason.Time, r));
+                    closed.Add(outcome);
                     pos = null;
                 }
                 else continue; // still open, no new entry possible today

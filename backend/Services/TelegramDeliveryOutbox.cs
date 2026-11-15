@@ -31,13 +31,14 @@ public sealed class TelegramDeliveryOutbox : IHttpClientFactory
     private DateTime _lastSendUtc = DateTime.MinValue;
 
     public TelegramDeliveryOutbox(
-        IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger logger, bool beta = false)
+        IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger logger, bool beta = false,
+        string stateFileName = "telegram-delivery.json")
     {
         _http = httpClients;
         _config = config;
         _logger = logger;
         _beta = beta;
-        _path = Path.Combine(env.ContentRootPath, ".cache", "telegram-delivery.json");
+        _path = Path.Combine(env.ContentRootPath, ".cache", stateFileName);
         _state = DiskCache.Load<State>(_path) ?? new();
         if (beta && !File.Exists(_path))
         {
