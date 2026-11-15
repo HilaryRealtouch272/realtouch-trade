@@ -15,7 +15,8 @@ namespace RealtouchSmartTrade.Api.Services;
 // Reads nothing from and writes nothing
 // to SignalOrchestrator, SignalLogService or SignalAlertService's state.
 // Fetches its own market data directly; never touches OrchestratorResult at all.
-public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger<VtbSignalService> logger)
+public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger<VtbSignalService> logger,
+    Func<DateTime>? clock = null)
 {
     // VTB-local data source marker - deliberately NOT the shared Models.DataSource enum (that
     // one drives the real orchestrator's routing); VTB's data fetch is entirely its own code
@@ -53,9 +54,11 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         DiskCache.Load<VtbRiskState>(Path.Combine(env.ContentRootPath, ".cache", "vtb-risk-state.json")) ?? new();
     private readonly object _lock = new();
     private readonly SemaphoreSlim _processGate = new(1, 1);
+    private DateTime UtcNow => clock?.Invoke() ?? DateTime.UtcNow;
     private TelegramDeliveryOutbox? _delivery;
     private TelegramDeliveryOutbox Delivery => _delivery ??= new TelegramDeliveryOutbox(
-        httpClients, _vtbTelegramConfig, env, logger, stateFileName: "vtb-telegram-delivery.json");
+        httpClients, _vtbTelegramConfig, env, logger, stateFileName: "vtb-telegram-delivery.json",
+        canDeliver: id => !id.EndsWith(":open", StringComparison.Ordinal) || NewEntriesAllowed(UtcNow));
     // Routes to a different chat by building a small in-memory config that overrides
     // Telegram:ChatId, rather than a per-call parameter (TelegramNotifier.SendAsync no longer
     // takes one). Falls back to the real chat if a dedicated VtbChatId isn't configured.
@@ -81,17 +84,22 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
 
     public IReadOnlyList<VtbLogEntry> GetAll() { lock (_lock) return _entries.ToList(); }
 
+    // Lagos is UTC+1 throughout the year. Sunday scans continue settling existing trades.
+    internal static bool NewEntriesAllowed(DateTime utc) => utc.AddHours(1).DayOfWeek != DayOfWeek.Sunday;
+
     public async Task ProcessAsync()
     {
         await _processGate.WaitAsync();
         try
         {
+            if (!NewEntriesAllowed(UtcNow))
+                logger.LogInformation("VTB Sunday pause (Lagos): tracking existing positions and outcomes");
             foreach (var market in Markets)
             {
                 try
                 {
                     var daily = await GetDailyHistoryAsync(market);
-                    var now = DateTime.UtcNow;
+                    var now = UtcNow;
                     SettleOpenPositions(market, daily, now);
                     var complete = daily.Where(c => c.IsComplete && c.CloseTimeUtc <= now).ToList();
                     if (complete.Count < 220) continue;
@@ -124,18 +132,19 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                 if (trade is null) continue;
                 var moneyR = trade.R * e.RiskMultiplier;
                 _entries[idx] = e with { Status = "Closed", ExitTimeUtc = trade.ExitTimeUtc, Exit = trade.Exit,
-                    ExitReason = trade.Reason.ToString(), R = moneyR, OutcomeAlertPending = true };
+                    ExitReason = trade.Reason.ToString(), R = moneyR, OpenAlertPending = false, OutcomeAlertPending = true };
                 _risk.CumulativeR += moneyR;
                 if (_risk.CumulativeR > _risk.PeakEquityR) _risk.PeakEquityR = _risk.CumulativeR;
                 if (_risk.PeakEquityR - _risk.CumulativeR < DrawdownGuardR) _risk.DrawdownGuardTripped = false;
                 Persist();
+                Delivery.CancelPending(e.Id + ":open");
             }
         }
     }
 
     private void ReconcileOpen(MarketConfig market, VtbPosition? open)
     {
-        if (open is null) return;
+        if (open is null || !NewEntriesAllowed(UtcNow)) return;
         bool alreadyLogged;
         lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && (e.EntryTimeUtc == open.EntryTimeUtc || e.Status == "Open"));
         if (alreadyLogged) return;
@@ -185,7 +194,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     // Developing bars settle saved positions but never confirm new daily entries.
     private async Task<IReadOnlyList<NormalizedCandle>> GetDailyHistoryAsync(MarketConfig market)
     {
-        var now = DateTime.UtcNow;
+        var now = UtcNow;
         var cacheAll = DiskCache.Load<Dictionary<string, HistoryCacheEntry>>(_historyCachePath) ?? new();
         cacheAll.TryGetValue(market.Symbol, out var cached);
         var warm = cached is not null && cached.FetchedAtUtc.Date == now.Date;
@@ -282,7 +291,8 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         lock (_lock) pending = _entries.Where(e => e.OpenAlertPending || e.OutcomeAlertPending).ToList();
         foreach (var entry in pending)
         {
-            var openQueued = entry.OpenAlertPending && await SendOpenAsync(entry, Markets.Single(m => m.Symbol == entry.Symbol));
+            var openQueued = entry.OpenAlertPending && NewEntriesAllowed(UtcNow)
+                && await SendOpenAsync(entry, Markets.Single(m => m.Symbol == entry.Symbol));
             var outcomeQueued = entry.OutcomeAlertPending && await SendOutcomeAsync(entry);
             lock (_lock)
             {

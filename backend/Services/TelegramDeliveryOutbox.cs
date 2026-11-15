@@ -25,6 +25,7 @@ public sealed class TelegramDeliveryOutbox : IHttpClientFactory
     private readonly ILogger _logger;
     private readonly bool _beta;
     private readonly string _path;
+    private readonly Func<string, bool>? _canDeliver;
     private readonly State _state;
     private readonly object _lock = new();
     private readonly SemaphoreSlim _flushGate = new(1, 1);
@@ -32,13 +33,14 @@ public sealed class TelegramDeliveryOutbox : IHttpClientFactory
 
     public TelegramDeliveryOutbox(
         IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger logger, bool beta = false,
-        string stateFileName = "telegram-delivery.json")
+        string stateFileName = "telegram-delivery.json", Func<string, bool>? canDeliver = null)
     {
         _http = httpClients;
         _config = config;
         _logger = logger;
         _beta = beta;
         _path = Path.Combine(env.ContentRootPath, ".cache", stateFileName);
+        _canDeliver = canDeliver;
         _state = DiskCache.Load<State>(_path) ?? new();
         if (beta && !File.Exists(_path))
         {
@@ -53,6 +55,18 @@ public sealed class TelegramDeliveryOutbox : IHttpClientFactory
     public TelegramDeliveryReceipt? Get(string? id)
     {
         lock (_lock) return id is not null ? _state.Receipts.GetValueOrDefault(id) : null;
+    }
+
+    public void CancelPending(string id)
+    {
+        lock (_lock)
+        {
+            if (!_state.Pending.Remove(id)) return;
+            var previous = _state.Receipts.GetValueOrDefault(id)
+                ?? new TelegramDeliveryReceipt(id, "Queued", DateTime.UtcNow);
+            _state.Receipts[id] = previous with { Status = "Cancelled", LastError = null };
+            Persist();
+        }
     }
 
     public object Summarize()
@@ -87,6 +101,7 @@ public sealed class TelegramDeliveryOutbox : IHttpClientFactory
             var deadline = DateTime.UtcNow.AddSeconds(45);
             foreach (var message in pending)
             {
+                if (_canDeliver?.Invoke(message.Key) == false) continue;
                 if (DateTime.UtcNow >= deadline) break;
                 try
                 {
