@@ -58,7 +58,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     private TelegramDeliveryOutbox? _delivery;
     private TelegramDeliveryOutbox Delivery => _delivery ??= new TelegramDeliveryOutbox(
         httpClients, _vtbTelegramConfig, env, logger, stateFileName: "vtb-telegram-delivery.json",
-        canDeliver: id => !id.EndsWith(":open", StringComparison.Ordinal) || NewEntriesAllowed(UtcNow));
+        canDeliver: id => !id.EndsWith(":open", StringComparison.Ordinal) || MarketHours.NewEntriesAllowed(UtcNow));
     // Routes to a different chat by building a small in-memory config that overrides
     // Telegram:ChatId, rather than a per-call parameter (TelegramNotifier.SendAsync no longer
     // takes one). Falls back to the real chat if a dedicated VtbChatId isn't configured.
@@ -84,15 +84,12 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
 
     public IReadOnlyList<VtbLogEntry> GetAll() { lock (_lock) return _entries.ToList(); }
 
-    // Lagos is UTC+1 throughout the year. Sunday scans continue settling existing trades.
-    internal static bool NewEntriesAllowed(DateTime utc) => utc.AddHours(1).DayOfWeek != DayOfWeek.Sunday;
-
     public async Task ProcessAsync()
     {
         await _processGate.WaitAsync();
         try
         {
-            if (!NewEntriesAllowed(UtcNow))
+            if (!MarketHours.NewEntriesAllowed(UtcNow))
                 logger.LogInformation("VTB Sunday pause (Lagos): tracking existing positions and outcomes");
             foreach (var market in Markets)
             {
@@ -144,7 +141,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
 
     private void ReconcileOpen(MarketConfig market, VtbPosition? open)
     {
-        if (open is null || !NewEntriesAllowed(UtcNow)) return;
+        if (open is null || !MarketHours.NewEntriesAllowed(UtcNow)) return;
         bool alreadyLogged;
         lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && (e.EntryTimeUtc == open.EntryTimeUtc || e.Status == "Open"));
         if (alreadyLogged) return;
@@ -291,7 +288,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         lock (_lock) pending = _entries.Where(e => e.OpenAlertPending || e.OutcomeAlertPending).ToList();
         foreach (var entry in pending)
         {
-            var openQueued = entry.OpenAlertPending && NewEntriesAllowed(UtcNow)
+            var openQueued = entry.OpenAlertPending && MarketHours.NewEntriesAllowed(UtcNow)
                 && await SendOpenAsync(entry, Markets.Single(m => m.Symbol == entry.Symbol));
             var outcomeQueued = entry.OutcomeAlertPending && await SendOutcomeAsync(entry);
             lock (_lock)

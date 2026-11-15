@@ -16,6 +16,7 @@ namespace RealtouchSmartTrade.Tests;
 // in isolation.
 public class SignalLogServiceOpenDirectionTests : IDisposable
 {
+    private static readonly DateTime Now = new(2026, 11, 16, 12, 0, 0, DateTimeKind.Utc);
     private readonly string _tempRoot = Path.Combine(Path.GetTempPath(), "rst-test-" + Guid.NewGuid().ToString("N"));
 
     private class FakeHostEnvironment : IHostEnvironment
@@ -29,7 +30,7 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
     private SignalLogService NewService() => new(
         new TelegramNotifier(new NoOpHttpClientFactory(), new ConfigurationBuilder().Build()),
         new FakeHostEnvironment { ContentRootPath = _tempRoot },
-        NullLogger<SignalLogService>.Instance);
+        NullLogger<SignalLogService>.Instance, clock: () => Now);
 
     private class NoOpHttpClientFactory : IHttpClientFactory
     {
@@ -44,7 +45,7 @@ public class SignalLogServiceOpenDirectionTests : IDisposable
             DataProvider: "Twelve Data", AnalysisTimeframe: timeframe, EntryTimeframe: timeframe,
             Direction: isLong ? SetupDirection.Long : SetupDirection.Short, Condition: MarketCondition.TrendingBullish,
             SetupModel: SetupModelType.TrendContinuationPullback, Status: SignalState.Triggered,
-            SetupQualityScore: 76, Grade: "B", DetectedAtUtc: DateTime.UtcNow, ExpiryUtc: DateTime.UtcNow.AddDays(1),
+            SetupQualityScore: 76, Grade: "B", DetectedAtUtc: Now, ExpiryUtc: Now.AddDays(1),
             LivePrice: 100m, EntryZoneMin: 99m, EntryZoneMax: 101m, PreferredEntry: 100m, Triggered: triggered,
             Stop: isLong ? 90m : 110m, Tp1: isLong ? 110m : 90m, Tp2: isLong ? 120m : 80m, Tp3: isLong ? 140m : 60m,
             RewardToRisk: 2m, RiskPercent: 0.5m, RiskAmount: 50m, PositionSize: 1m,

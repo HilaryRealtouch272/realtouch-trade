@@ -3,6 +3,14 @@ namespace RealtouchSmartTrade.Api.Models;
 // Session rules that decide when a market can produce real prices.
 public static class MarketHours
 {
+    // Lagos is UTC+1 throughout the year. Existing positions continue tracking on Sundays.
+    public static bool NewEntriesAllowed(DateTime utc) => utc.AddHours(1).DayOfWeek != DayOfWeek.Sunday;
+
+    public static string? NewEntryBlockReason(string symbol, string timeframe, string? grade, DateTime utc) =>
+        NewEntriesAllowed(utc)
+            ? TelegramBlockReason(symbol, timeframe, grade, utc)
+            : "New entries pause on Sundays (Lagos time)";
+
     // Spot FX is closed from Friday 22:00 UTC until Sunday 22:00 UTC.
     public static bool FxClosed(DateTime utc) => utc.DayOfWeek switch
     {

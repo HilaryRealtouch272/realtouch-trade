@@ -35,7 +35,8 @@ builder.Services.AddSingleton<INewsProvider, CompositeNewsProvider>();
 builder.Services.AddSingleton<TelegramNotifier>();
 builder.Services.AddSingleton<TelegramDeliveryOutbox>(sp => new(
     sp.GetRequiredService<IHttpClientFactory>(), sp.GetRequiredService<IConfiguration>(),
-    sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<TelegramDeliveryOutbox>>()));
+    sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<TelegramDeliveryOutbox>>(),
+    canDeliver: id => id.StartsWith("outcome:", StringComparison.Ordinal) || MarketHours.NewEntriesAllowed(DateTime.UtcNow)));
 builder.Services.AddSingleton<StrategyDiagnosticsStore>();
 builder.Services.AddSingleton<SignalOrchestrator>();
 builder.Services.AddSingleton<SignalLogService>(sp => new(

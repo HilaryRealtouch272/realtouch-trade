@@ -106,7 +106,8 @@ public record QualificationLogEntry(
 // (symbol, timeframe) still returns a successful result with a live price -
 // if it later fails to evaluate (stale data, no candidate at all), that
 // entry simply doesn't move until a future successful scan resumes it.
-public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, ILogger<SignalLogService> logger, IFineCandleSource? fineSource = null)
+public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, ILogger<SignalLogService> logger,
+    IFineCandleSource? fineSource = null, Func<DateTime>? clock = null)
 {
     private const int MaxEntries = 1000;
 
@@ -115,6 +116,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     private readonly Dictionary<string, string> _openKeyToEntryId = InitOpenKeys(
         LoadAndMigrate(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")));
     private readonly object _lock = new();
+    private DateTime UtcNow => clock?.Invoke() ?? DateTime.UtcNow;
 
     // Which outcome event (see OutcomeSignature) was last actually sent to Telegram for each entry
     // ID, so a restart or a later scan that recomputes the same already-reported event never resends it.
@@ -197,7 +199,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         foreach (var entry in changed)
         {
             // 15m trades are tracked on the dashboard only, so their TP/stop updates are not sent either.
-            if (!ShouldSendOutcome(entry, DateTime.UtcNow)) continue;
+            if (!ShouldSendOutcome(entry, UtcNow)) continue;
 
             // Idempotent delivery: the exact same lifecycle event for this entry is never sent twice,
             // even if a later scan (or a restart replaying candles it already applied) reports the
@@ -295,6 +297,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
     private void RecordIfNewLocked(OrchestratorResult result)
     {
+        if (!MarketHours.NewEntriesAllowed(UtcNow)) return;
         if (!result.Success || result.Signal is null) return;
         var signal = result.Signal;
         if (signal.Grade is not ("A+" or "A" or "B")) return;
@@ -314,7 +317,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         if (_openKeyToEntryId.ContainsKey(key)) return; // already tracking an open trade here
         if (IsInCooldownLocked(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString())) return;
 
-        var entry = CreateEntry(result, DateTime.UtcNow);
+        var entry = CreateEntry(result, UtcNow);
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;
@@ -341,10 +344,10 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         // and later reversal within the same scan gap); fall back to the
         // single scalar price when no candle list was supplied.
         entry = fineByEntry is not null && fineByEntry.TryGetValue(entry.Id, out var oneMinute)
-            ? TradeSimulator.ApplyFineSequence(entry, oneMinute, DateTime.UtcNow)
+            ? TradeSimulator.ApplyFineSequence(entry, oneMinute, UtcNow)
             : result.Candles is { Count: > 0 }
-                ? ApplyCandleSequence(entry, result.Candles, DateTime.UtcNow, result.Timeframe == "15m" ? null : fineCandles)
-                : ApplyPriceAndExpiry(entry, result.LivePrice, DateTime.UtcNow);
+                ? ApplyCandleSequence(entry, result.Candles, UtcNow, result.Timeframe == "15m" ? null : fineCandles)
+                : ApplyPriceAndExpiry(entry, result.LivePrice, UtcNow);
 
         _entries[index] = entry;
         if (!IsOpenStatus(entry.Status)) _openKeyToEntryId.Remove(key);
@@ -358,7 +361,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         IReadOnlyDictionary<string, IReadOnlyList<Models.NormalizedCandle>>? fineByEntry = null)
     {
         var changed = new List<QualificationLogEntry>();
-        var now = DateTime.UtcNow;
+        var now = UtcNow;
         var sourceKey = Key(symbol, sourceTimeframe);
         var keys = _openKeyToEntryId.Keys.Where(k => k != sourceKey && k.StartsWith(symbol + "|", StringComparison.Ordinal)).ToList();
 
@@ -478,7 +481,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     private bool IsInCooldownLocked(string symbol, string timeframe, string direction)
     {
         var window = TimeframeConfig.Duration(TimeframeIntervals.ParseLabel(timeframe) ?? Timeframe.H1) * CooldownCandles;
-        var now = DateTime.UtcNow;
+        var now = UtcNow;
         return _entries.Any(e => e.Symbol == symbol && e.Timeframe == timeframe && e.Direction == direction
             && e.ClosedAtUtc is { } closed && now - closed < window);
     }

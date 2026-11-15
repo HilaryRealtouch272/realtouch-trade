@@ -8,7 +8,7 @@ namespace RealtouchSmartTrade.Api.Services;
 // tests construct this directly - not worth a wider signature churn for a default-false flag.
 public class SignalAlertService(
     TelegramNotifier telegram, SignalLogService signalLog, IHostEnvironment env, ILogger<SignalAlertService> logger,
-    TelegramDeliveryOutbox? delivery = null, bool beta = false)
+    TelegramDeliveryOutbox? delivery = null, bool beta = false, Func<DateTime>? clock = null)
 {
     private record AlertedState(string Direction, string SetupModel, string Grade, string? NotificationId = null, bool Accepted = true);
 
@@ -20,6 +20,7 @@ public class SignalAlertService(
         DiskCache.Load<Dictionary<string, SignalFlowStatus>>(Path.Combine(env.ContentRootPath, ".cache", "signal-status.json")) ?? new();
     private readonly object _lock = new();
     private readonly SemaphoreSlim _gate = new(1, 1);
+    private DateTime UtcNow => clock?.Invoke() ?? DateTime.UtcNow;
 
     private static string Key(string symbol, string timeframe) => $"{symbol}|{timeframe}";
 
@@ -45,7 +46,7 @@ public class SignalAlertService(
         {
             foreach (var result in results)
             {
-                var blocked = MarketHours.TelegramBlockReason(result.InstrumentSymbol, result.Timeframe, result.Signal?.Grade, DateTime.UtcNow);
+                var blocked = MarketHours.NewEntryBlockReason(result.InstrumentSymbol, result.Timeframe, result.Signal?.Grade, UtcNow);
                 if (blocked is not null)
                 {
                     Record(result, "Blocked", blocked);

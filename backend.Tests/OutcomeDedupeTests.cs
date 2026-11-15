@@ -15,6 +15,7 @@ namespace RealtouchSmartTrade.Tests;
 // not just that the internal bookkeeping looks right in isolation.
 public class OutcomeDedupeTests : IDisposable
 {
+    private static readonly DateTime Now = new(2026, 11, 16, 12, 0, 0, DateTimeKind.Utc);
     private readonly string _tempRoot = Path.Combine(Path.GetTempPath(), "rst-dedupe-" + Guid.NewGuid().ToString("N"));
 
     private class FakeHostEnvironment : IHostEnvironment
@@ -47,7 +48,7 @@ public class OutcomeDedupeTests : IDisposable
             .AddInMemoryCollection(new Dictionary<string, string?> { ["Telegram:BotToken"] = "test-token", ["Telegram:ChatId"] = "1" })
             .Build();
         var notifier = new TelegramNotifier(new SingleClientFactory(new HttpClient(handler)), config);
-        var service = new SignalLogService(notifier, new FakeHostEnvironment { ContentRootPath = _tempRoot }, NullLogger<SignalLogService>.Instance);
+        var service = new SignalLogService(notifier, new FakeHostEnvironment { ContentRootPath = _tempRoot }, NullLogger<SignalLogService>.Instance, clock: () => Now);
         return (service, handler);
     }
 
@@ -58,7 +59,7 @@ public class OutcomeDedupeTests : IDisposable
             DataProvider: "Twelve Data", AnalysisTimeframe: timeframe, EntryTimeframe: timeframe,
             Direction: SetupDirection.Long, Condition: MarketCondition.TrendingBullish,
             SetupModel: SetupModelType.TrendContinuationPullback, Status: SignalState.Triggered,
-            SetupQualityScore: 80, Grade: "A", DetectedAtUtc: DateTime.UtcNow, ExpiryUtc: DateTime.UtcNow.AddDays(1),
+            SetupQualityScore: 80, Grade: "A", DetectedAtUtc: Now, ExpiryUtc: Now.AddDays(1),
             LivePrice: 100m, EntryZoneMin: 99m, EntryZoneMax: 101m, PreferredEntry: 100m, Triggered: true,
             Stop: 90m, Tp1: 110m, Tp2: 120m, Tp3: 140m,
             RewardToRisk: 2m, RiskPercent: 0.5m, RiskAmount: 50m, PositionSize: 1m,

@@ -190,7 +190,7 @@ public class VtbSignalServiceTests : IDisposable
     [InlineData("2026-11-15T23:00:00Z", true)]
     public void SundayPauseUsesLagosMidnight(string utc, bool allowed)
     {
-        Assert.Equal(allowed, VtbSignalService.NewEntriesAllowed(DateTimeOffset.Parse(utc).UtcDateTime));
+        Assert.Equal(allowed, MarketHours.NewEntriesAllowed(DateTimeOffset.Parse(utc).UtcDateTime));
     }
 
     [Fact]

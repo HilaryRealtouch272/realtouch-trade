@@ -13,6 +13,7 @@ namespace RealtouchSmartTrade.Tests;
 
 public class SignalDeliveryTests : IDisposable
 {
+    private static readonly DateTime Now = new(2026, 11, 16, 12, 0, 0, DateTimeKind.Utc);
     private readonly string _root = Path.Combine(Path.GetTempPath(), "rst-delivery-" + Guid.NewGuid().ToString("N"));
     private sealed class Env(string root) : IHostEnvironment
     {
@@ -96,7 +97,7 @@ public class SignalDeliveryTests : IDisposable
 
     private static OrchestratorResult Triggered()
     {
-        var now = DateTime.UtcNow;
+        var now = Now;
         var signal = new SignalResult("id", "v1", "BTC/USDT", "crypto", "Coinbase", "1H", "1H",
             SetupDirection.Long, MarketCondition.TrendingBullish, SetupModelType.TrendContinuationPullback,
             SignalState.Triggered, 80, "B", now, now.AddDays(2), 100m, 99m, 101m, 100m, true,
@@ -113,8 +114,8 @@ public class SignalDeliveryTests : IDisposable
         config["Telegram:ChatId"] = "";
         var env = new Env(_root);
         var notifier = new TelegramNotifier(http, config);
-        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance);
-        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, clock: () => Now);
         await alerts.CheckAndNotifyAsync(new[] { Triggered() });
         Assert.Equal("Delivery failed", Assert.Single(alerts.GetStatuses()).AlertState);
         config["Telegram:ChatId"] = "main";
@@ -125,7 +126,7 @@ public class SignalDeliveryTests : IDisposable
 
     private static OrchestratorResult Triggered(string grade, SetupModelType model = SetupModelType.TrendContinuationPullback, string timeframe = "1H")
     {
-        var now = DateTime.UtcNow;
+        var now = Now;
         var signal = new SignalResult("id", "v1", "BTC/USDT", "crypto", "Coinbase", timeframe, timeframe,
             SetupDirection.Long, MarketCondition.TrendingBullish, model,
             SignalState.Triggered, 80, grade, now, now.AddDays(2), 100m, 99m, 101m, 100m, true,
@@ -144,8 +145,8 @@ public class SignalDeliveryTests : IDisposable
         var config = Config();
         var env = new Env(_root);
         var notifier = new TelegramNotifier(http, config);
-        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance);
-        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, clock: () => Now);
 
         await alerts.CheckAndNotifyAsync(new[] { Triggered("B") });
         await ledger.RecordAndTrackAsync(new[] { Triggered("B") });
@@ -169,8 +170,8 @@ public class SignalDeliveryTests : IDisposable
         var config = Config();
         var env = new Env(_root);
         var notifier = new TelegramNotifier(http, config);
-        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance);
-        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, clock: () => Now);
 
         await alerts.CheckAndNotifyAsync(new[] { Triggered("A+", timeframe: "15m") });
         Assert.Equal("Blocked", Assert.Single(alerts.GetStatuses()).AlertState);
@@ -192,11 +193,82 @@ public class SignalDeliveryTests : IDisposable
         File.WriteAllText(Path.Combine(_root, ".cache", "alert-state.json"),
             "{\"BTC/USDT|1H\":{\"Direction\":\"Long\",\"SetupModel\":\"TrendContinuationPullback\",\"Grade\":\"B\"}}");
         var notifier = new TelegramNotifier(http, config);
-        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance);
-        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, clock: () => Now);
         await alerts.CheckAndNotifyAsync(new[] { Triggered() });
         Assert.Equal(0, http.Calls);
         Assert.Equal("Already announced", Assert.Single(alerts.GetStatuses()).AlertState);
+    }
+
+    [Fact]
+    public async Task SundayBlocksNewLedgerEntriesAndAlertsThenResumesOnMonday()
+    {
+        var http = new Http();
+        var env = new Env(_root);
+        var notifier = new TelegramNotifier(http, Config());
+        var now = Now.AddDays(-1);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => now);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, clock: () => now);
+
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        Assert.Equal("Blocked", Assert.Single(alerts.GetStatuses()).AlertState);
+        Assert.Contains("Sundays", Assert.Single(alerts.GetStatuses()).Reason);
+        Assert.Empty(ledger.GetAll());
+        Assert.Equal(0, http.Calls);
+
+        now = Now;
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        Assert.Single(ledger.GetAll());
+        Assert.Equal(1, http.Calls);
+    }
+
+    [Theory]
+    [InlineData(90, false, "StoppedOut")]
+    [InlineData(120, false, "Tp3Hit")]
+    [InlineData(100, true, "Expired")]
+    public async Task SundayStillTracksClosesAndAlertsExistingMainTrades(int price, bool expired, string status)
+    {
+        var now = Now.AddDays(-1);
+        var saved = SignalLogService.CreateEntry(Triggered(), now.AddHours(-1)) with
+        {
+            TrackingExpiryUtc = expired ? now.AddMinutes(-1) : now.AddHours(29)
+        };
+        DiskCache.Save(Path.Combine(_root, ".cache", "signal-log.json"), new[] { saved });
+        var http = new Http();
+        var ledger = new SignalLogService(new TelegramNotifier(http, Config()), new Env(_root),
+            NullLogger<SignalLogService>.Instance, clock: () => now);
+
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = price } });
+
+        var closed = Assert.Single(ledger.GetAll());
+        Assert.Equal(status, closed.Status);
+        Assert.NotNull(closed.ClosedAtUtc);
+        Assert.Null(ledger.GetOpenDirection("BTC/USDT", "1H"));
+        Assert.Equal(1, http.Calls);
+    }
+
+    [Fact]
+    public async Task SundayQueueHoldsEntryMessagesAndSendsOutcomes()
+    {
+        var now = Now.AddDays(-1);
+        var http = new Http();
+        var config = Config();
+        var queue = new TelegramDeliveryOutbox(http, config, new Env(_root), NullLogger.Instance,
+            canDeliver: id => id.StartsWith("outcome:", StringComparison.Ordinal) || MarketHours.NewEntriesAllowed(now));
+        var notifier = new TelegramNotifier(queue, config);
+        await notifier.SendAsync("Entry", notificationId: "entry-1");
+        await notifier.SendAsync("Outcome", notificationId: "outcome:trade-1:closed");
+        await queue.FlushAsync();
+        Assert.Equal(1, http.Calls);
+        Assert.Equal("Queued", queue.Get("entry-1")!.Status);
+        Assert.Equal("Delivered", queue.Get("outcome:trade-1:closed")!.Status);
+
+        now = Now;
+        await queue.FlushAsync();
+        Assert.Equal(2, http.Calls);
+        Assert.Equal("Delivered", queue.Get("entry-1")!.Status);
     }
 
     public void Dispose()

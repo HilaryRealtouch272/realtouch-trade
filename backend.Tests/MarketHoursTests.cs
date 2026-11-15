@@ -47,6 +47,32 @@ public class MarketHoursTests
     private static readonly DateTime AWeekdayNoon = new(2026, 10, 6, 12, 0, 0, DateTimeKind.Utc);
 
     [Theory]
+    [InlineData("BTC/USDT")]
+    [InlineData("ETH/USDT")]
+    [InlineData("CAKE/USDT")]
+    [InlineData("SOL/USDT")]
+    [InlineData("EUR/USD")]
+    [InlineData("GBP/USD")]
+    [InlineData("GBP/JPY")]
+    [InlineData("XAU/USD")]
+    [InlineData("WTI/USD")]
+    public void SundayBlocksNewEntriesAtEveryTimeframe(string symbol)
+    {
+        var sunday = new DateTime(2026, 11, 15, 12, 0, 0, DateTimeKind.Utc);
+        foreach (var timeframe in new[] { "15m", "1H", "4H", "Daily", "Weekly" })
+            Assert.Equal("New entries pause on Sundays (Lagos time)",
+                MarketHours.NewEntryBlockReason(symbol, timeframe, "B", sunday));
+    }
+
+    [Fact]
+    public void SundayEntryPauseAllowsExistingBtcOutcomeAlerts()
+    {
+        var sunday = new DateTime(2026, 11, 15, 12, 0, 0, DateTimeKind.Utc);
+        Assert.False(MarketHours.NewEntriesAllowed(sunday));
+        Assert.True(MarketHours.TelegramAllowed("BTC/USDT", "1H", "B", sunday));
+    }
+
+    [Theory]
     [InlineData("EUR/USD")]
     [InlineData("GBP/USD")]
     [InlineData("GBP/JPY")]
