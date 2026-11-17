@@ -317,7 +317,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             $"🎯 Entry {e.EntryRef:0.####}\n🛑 Stop {e.Stop:0.####}\n🏁 Target {e.Target:0.####}\n" +
             $"⏱ Time exit in {VtbRules.TimeExitDays} days\n" +
             (e.RiskMultiplier < 1m ? $"\n⚠️ Short - sized at {e.RiskMultiplier:0.0}x risk" : "") +
-            "\n\nPaper trade - backtested rules, not a live order.";
+            "\n\nVTB trade signal.";
         var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":open");
         if (!success) logger.LogWarning("VTB open Telegram alert failed for {Symbol}: {Error}", e.Symbol, error);
         return success;
