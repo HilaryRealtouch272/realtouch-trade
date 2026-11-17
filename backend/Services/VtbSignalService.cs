@@ -58,7 +58,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     private TelegramDeliveryOutbox? _delivery;
     private TelegramDeliveryOutbox Delivery => _delivery ??= new TelegramDeliveryOutbox(
         httpClients, _vtbTelegramConfig, env, logger, stateFileName: "vtb-telegram-delivery.json",
-        canDeliver: id => !id.EndsWith(":open", StringComparison.Ordinal) || MarketHours.NewEntriesAllowed(UtcNow));
+        canDeliver: id => id.EndsWith(":open", StringComparison.Ordinal)
+            ? MarketHours.NewEntriesAllowed(UtcNow)
+            : id.EndsWith(":outcome", StringComparison.Ordinal) &&
+                Delivery.Get(id[..^8] + ":open")?.Status == "Delivered");
     // Routes to a different chat by building a small in-memory config that overrides
     // Telegram:ChatId, rather than a per-call parameter (TelegramNotifier.SendAsync no longer
     // takes one). Falls back to the real chat if a dedicated VtbChatId isn't configured.
@@ -322,6 +325,9 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
 
     private async Task<bool> SendOutcomeAsync(VtbLogEntry e)
     {
+        // Ledger tracking is independent of Telegram. A TP/stop must never be
+        // the first notification the owner receives for an unannounced trade.
+        if (Delivery.Get(e.Id + ":open")?.Status != "Delivered") return true;
         var telegram = new TelegramNotifier(Delivery, _vtbTelegramConfig);
         var label = (e.R ?? 0m) >= 0 ? "WIN" : "LOSS";
         var text = $"📈 *VTB OUTCOME* · {e.Symbol} · {e.Side} → {label}\nNet {e.R:+0.00;-0.00}R · {e.ExitReason}";

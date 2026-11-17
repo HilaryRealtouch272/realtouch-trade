@@ -36,13 +36,15 @@ builder.Services.AddSingleton<TelegramNotifier>();
 builder.Services.AddSingleton<TelegramDeliveryOutbox>(sp => new(
     sp.GetRequiredService<IHttpClientFactory>(), sp.GetRequiredService<IConfiguration>(),
     sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<TelegramDeliveryOutbox>>(),
-    canDeliver: id => id.StartsWith("outcome:", StringComparison.Ordinal) || MarketHours.NewEntriesAllowed(DateTime.UtcNow)));
+    canDeliver: id => id.StartsWith("outcome:", StringComparison.Ordinal)
+        ? sp.GetRequiredService<SignalLogService>().EntryDeliveredForOutcome(id)
+        : MarketHours.NewEntriesAllowed(DateTime.UtcNow)));
 builder.Services.AddSingleton<StrategyDiagnosticsStore>();
 builder.Services.AddSingleton<SignalOrchestrator>();
 builder.Services.AddSingleton<SignalLogService>(sp => new(
     new TelegramNotifier(sp.GetRequiredService<TelegramDeliveryOutbox>(), sp.GetRequiredService<IConfiguration>()),
     sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<SignalLogService>>(),
-    sp.GetRequiredService<IFineCandleSource>()));
+    sp.GetRequiredService<IFineCandleSource>(), delivery: sp.GetRequiredService<TelegramDeliveryOutbox>()));
 builder.Services.AddSingleton<SignalAlertService>(sp => new(
     new TelegramNotifier(sp.GetRequiredService<TelegramDeliveryOutbox>(), sp.GetRequiredService<IConfiguration>()),
     sp.GetRequiredService<SignalLogService>(), sp.GetRequiredService<IHostEnvironment>(),

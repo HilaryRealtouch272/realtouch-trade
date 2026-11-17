@@ -69,7 +69,7 @@ public class VtbSignalServiceTests : IDisposable
         new("BTC/USDT", "BTC-USD", "Coinbase", Timeframe.Daily, day, day.AddDays(1),
             100m, high, low, close, null, day < Today, DateTime.UtcNow, DataQuality.Ok);
 
-    private void SeedLegacyOpen(DateTime? entryTimeUtc = null)
+    private void SeedLegacyOpen(DateTime? entryTimeUtc = null, bool entryDelivered = true)
     {
         // Matches the pre-fix schema, including the absence of notification fields.
         DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[]
@@ -81,6 +81,15 @@ public class VtbSignalServiceTests : IDisposable
         DiskCache.Save(Path.Combine(_root, ".cache", "vtb-history-cache.json"), new Dictionary<string, object>
         {
             ["BTC/USDT"] = new { FetchedAtUtc = Today.AddHours(12), Candles = stale }
+        });
+        DiskCache.Save(Path.Combine(_root, ".cache", "vtb-telegram-delivery.json"), new
+        {
+            Pending = new Dictionary<string, string>(),
+            Receipts = entryDelivered ? new Dictionary<string, TelegramDeliveryReceipt>
+            {
+                ["saved-short:open"] = new("saved-short:open", "Delivered", Today.AddDays(-3),
+                    Attempts: 1, DeliveredAtUtc: Today.AddDays(-3))
+            } : new Dictionary<string, TelegramDeliveryReceipt>()
         });
     }
 
@@ -253,7 +262,9 @@ public class VtbSignalServiceTests : IDisposable
             Receipts = new Dictionary<string, TelegramDeliveryReceipt>
             {
                 ["saved-short:open"] = new("saved-short:open", "Retrying", created, Attempts: 1),
-                ["previous-trade:outcome"] = new("previous-trade:outcome", "Queued", created)
+                ["previous-trade:outcome"] = new("previous-trade:outcome", "Queued", created),
+                ["previous-trade:open"] = new("previous-trade:open", "Delivered", created,
+                    Attempts: 1, DeliveredAtUtc: created)
             }
         });
     }
@@ -286,6 +297,36 @@ public class VtbSignalServiceTests : IDisposable
         using var delivery = JsonDocument.Parse(File.ReadAllText(Path.Combine(_root, ".cache", "vtb-telegram-delivery.json")));
         Assert.Equal("Cancelled", delivery.RootElement.GetProperty("Receipts").GetProperty("saved-short:open")
             .GetProperty("Status").GetString());
+    }
+
+    [Theory]
+    [InlineData(101, 79)]
+    [InlineData(111, 99)]
+    public async Task VtbWithoutDeliveredEntryTracksClosureButSendsNoOutcome(double high, double low)
+    {
+        SeedLegacyOpen(entryDelivered: false);
+        var http = new Http { Candles = new() { Daily(Today, high: (decimal)high, low: (decimal)low) } };
+        var service = Service(http);
+        await service.ProcessAsync();
+        Assert.Equal("Closed", Assert.Single(service.GetAll()).Status);
+        Assert.Empty(http.TelegramMessages);
+        await Service(http).ProcessAsync();
+        Assert.Empty(http.TelegramMessages);
+    }
+
+    [Fact]
+    public async Task RetryingVtbEntryDoesNotAuthorizeItsOutcome()
+    {
+        SeedLegacyOpen(entryDelivered: false);
+        SeedQueuedAlerts();
+        var http = new Http { Candles = new() { Daily(Today, low: 79m) } };
+        var service = Service(http);
+        await service.ProcessAsync();
+        Assert.Equal("Closed", Assert.Single(service.GetAll()).Status);
+        // The only delivered message belongs to the older, actually-announced trade.
+        Assert.Contains("Pending+VTB+outcome", Assert.Single(http.TelegramMessages));
+        using var state = JsonDocument.Parse(File.ReadAllText(Path.Combine(_root, ".cache", "vtb-telegram-delivery.json")));
+        Assert.False(state.RootElement.GetProperty("Receipts").TryGetProperty("saved-short:outcome", out _));
     }
 
     public void Dispose()

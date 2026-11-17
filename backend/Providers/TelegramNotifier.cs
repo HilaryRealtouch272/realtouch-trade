@@ -36,6 +36,9 @@ public class TelegramNotifier(IHttpClientFactory httpClientFactory, IConfigurati
             var body = await response.Content.ReadAsStringAsync(ct);
             if (!response.IsSuccessStatusCode)
                 return (false, $"Telegram {(int)response.StatusCode}: {body}");
+            using var payload = System.Text.Json.JsonDocument.Parse(body);
+            if (!payload.RootElement.TryGetProperty("ok", out var ok) || ok.ValueKind != System.Text.Json.JsonValueKind.True)
+                return (false, "Telegram did not confirm message delivery");
             return (true, null);
         }
         catch (Exception ex)

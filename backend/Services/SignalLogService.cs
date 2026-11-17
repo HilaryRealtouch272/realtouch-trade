@@ -92,7 +92,9 @@ public record QualificationLogEntry(
     NewsEvidence? News = null,
     string? SourceSetupId = null,
     string? EntryTimeframe = null,
-    DateTime? ConfirmationCandleUtc = null
+    DateTime? ConfirmationCandleUtc = null,
+    string? EntryNotificationId = null,
+    bool EntryAlertDelivered = false
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -107,7 +109,7 @@ public record QualificationLogEntry(
 // if it later fails to evaluate (stale data, no candidate at all), that
 // entry simply doesn't move until a future successful scan resumes it.
 public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, ILogger<SignalLogService> logger,
-    IFineCandleSource? fineSource = null, Func<DateTime>? clock = null)
+    IFineCandleSource? fineSource = null, Func<DateTime>? clock = null, TelegramDeliveryOutbox? delivery = null)
 {
     private const int MaxEntries = 1000;
 
@@ -117,6 +119,50 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         LoadAndMigrate(Path.Combine(env.ContentRootPath, ".cache", "signal-log.json")));
     private readonly object _lock = new();
     private DateTime UtcNow => clock?.Invoke() ?? DateTime.UtcNow;
+
+    public record EntryAlertLink(string NotificationId, bool Delivered, DateTime DetectedAtUtc);
+    private readonly string _entryAlertPath = Path.Combine(env.ContentRootPath, ".cache", "pending-entry-alerts.json");
+    private readonly Dictionary<string, EntryAlertLink> _pendingEntryAlerts =
+        DiskCache.Load<Dictionary<string, EntryAlertLink>>(Path.Combine(env.ContentRootPath, ".cache", "pending-entry-alerts.json")) ?? new();
+
+    // The entry send precedes ledger creation in a scan. Retain its exact setup
+    // identity until that row exists; never infer announcement from a later TP.
+    private static string EntryAlertKey(OrchestratorResult result) =>
+        $"{result.InstrumentSymbol}|{result.Timeframe}|{SignalIdentity.For(result.Signal!)}";
+
+    public void RegisterEntryAlert(OrchestratorResult result, string notificationId, bool delivered)
+    {
+        lock (_lock)
+        {
+            var key = Key(result.InstrumentSymbol, result.Timeframe);
+            var index = _openKeyToEntryId.TryGetValue(key, out var id) ? _entries.FindIndex(e => e.Id == id) : -1;
+            if (index >= 0)
+            {
+                var entry = _entries[index];
+                var signal = result.Signal!;
+                if (entry.Entry != signal.PreferredEntry || entry.Stop != signal.Stop ||
+                    entry.Tp1 != signal.Tp1 || entry.Tp2 != signal.Tp2 || entry.Tp3 != signal.Tp3 ||
+                    entry.Direction != signal.Direction.ToString()) return;
+                _entries[index] = _entries[index] with { EntryNotificationId = notificationId, EntryAlertDelivered = delivered };
+            }
+            else
+                _pendingEntryAlerts[EntryAlertKey(result)] = new(notificationId, delivered, result.Signal!.DetectedAtUtc);
+            DiskCache.Save(_entryAlertPath, _pendingEntryAlerts);
+            Persist();
+        }
+    }
+
+    private bool EntryWasDelivered(QualificationLogEntry entry) => entry.EntryAlertDelivered ||
+        (entry.EntryNotificationId is not null && delivery?.Get(entry.EntryNotificationId)?.Status == "Delivered");
+
+    public bool EntryDeliveredForOutcome(string notificationId)
+    {
+        var parts = notificationId.Split(':');
+        if (parts.Length != 3 || parts[0] != "outcome") return false;
+        QualificationLogEntry? entry;
+        lock (_lock) entry = _entries.FirstOrDefault(e => e.Id == parts[1]);
+        return entry is not null && EntryWasDelivered(entry);
+    }
 
     // Which outcome event (see OutcomeSignature) was last actually sent to Telegram for each entry
     // ID, so a restart or a later scan that recomputes the same already-reported event never resends it.
@@ -196,9 +242,17 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         }
         Persist();
 
-        foreach (var entry in changed)
+        // Revisit unreported outcomes after entry delivery catches up, even when
+        // price did not produce another status change on this scan.
+        foreach (var entry in GetAll().Where(e => e.Status != "Open"))
         {
             // 15m trades are tracked on the dashboard only, so their TP/stop updates are not sent either.
+            if (!EntryWasDelivered(entry))
+            {
+                if (!IsOpenStatus(entry.Status) && entry.EntryNotificationId is not null)
+                    delivery?.CancelPending(entry.EntryNotificationId);
+                continue;
+            }
             if (!ShouldSendOutcome(entry, UtcNow)) continue;
 
             // Idempotent delivery: the exact same lifecycle event for this entry is never sent twice,
@@ -318,6 +372,12 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         if (IsInCooldownLocked(result.InstrumentSymbol, result.Timeframe, signal.Direction.ToString())) return;
 
         var entry = CreateEntry(result, UtcNow);
+        if (_pendingEntryAlerts.Remove(EntryAlertKey(result), out var announcement))
+        {
+            if (announcement.DetectedAtUtc == result.Signal!.DetectedAtUtc)
+                entry = entry with { EntryNotificationId = announcement.NotificationId, EntryAlertDelivered = announcement.Delivered };
+            DiskCache.Save(_entryAlertPath, _pendingEntryAlerts);
+        }
 
         _entries.Add(entry);
         _openKeyToEntryId[key] = entry.Id;

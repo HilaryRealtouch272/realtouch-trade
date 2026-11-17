@@ -74,6 +74,7 @@ public class OutcomeDedupeTests : IDisposable
         var (service, handler) = NewService();
         // Qualify on 1H (outcome alerts are allowed there), then push price straight to TP3.
         await service.RecordAndTrackAsync(new[] { TriggeredResult("BTC/USDT", "1H") });
+        service.RegisterEntryAlert(TriggeredResult("BTC/USDT", "1H"), "delivered-btc-entry", delivered: true);
         var withPrice = TriggeredResult("BTC/USDT", "1H") with { LivePrice = 145m };
 
         await service.RecordAndTrackAsync(new[] { withPrice });
@@ -90,6 +91,7 @@ public class OutcomeDedupeTests : IDisposable
     {
         var (service, handler) = NewService();
         await service.RecordAndTrackAsync(new[] { TriggeredResult("ADA/USDT", "1H") });
+        service.RegisterEntryAlert(TriggeredResult("ADA/USDT", "1H"), "delivered-ada-entry", delivered: true);
 
         await service.RecordAndTrackAsync(new[] { TriggeredResult("ADA/USDT", "1H") with { LivePrice = 111m } }); // TP1
         Assert.Equal(1, handler.Sent);
@@ -105,6 +107,7 @@ public class OutcomeDedupeTests : IDisposable
         // status bypass the 15m/weekend Telegram gate. It must not.
         var (service, handler) = NewService();
         await service.RecordAndTrackAsync(new[] { TriggeredResult("XAU/USD", "15m") });
+        service.RegisterEntryAlert(TriggeredResult("XAU/USD", "15m"), "delivered-test-entry", delivered: true);
 
         await service.RecordAndTrackAsync(new[] { TriggeredResult("XAU/USD", "15m") with { LivePrice = 145m } }); // TP3, but 15m
 

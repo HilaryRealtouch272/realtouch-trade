@@ -233,7 +233,8 @@ public class SignalDeliveryTests : IDisposable
         var now = Now.AddDays(-1);
         var saved = SignalLogService.CreateEntry(Triggered(), now.AddHours(-1)) with
         {
-            TrackingExpiryUtc = expired ? now.AddMinutes(-1) : now.AddHours(29)
+            TrackingExpiryUtc = expired ? now.AddMinutes(-1) : now.AddHours(29),
+            EntryAlertDelivered = true // This fixture represents an entry already delivered before Sunday.
         };
         DiskCache.Save(Path.Combine(_root, ".cache", "signal-log.json"), new[] { saved });
         var http = new Http();
@@ -269,6 +270,160 @@ public class SignalDeliveryTests : IDisposable
         await queue.FlushAsync();
         Assert.Equal(2, http.Calls);
         Assert.Equal("Delivered", queue.Get("entry-1")!.Status);
+    }
+
+    [Theory]
+    [InlineData(90, "StoppedOut")]
+    [InlineData(120, "Tp3Hit")]
+    public async Task UnannouncedTradesTrackButNeverSendAnOutcome(int price, string status)
+    {
+        var saved = SignalLogService.CreateEntry(Triggered(), Now.AddHours(-1));
+        DiskCache.Save(Path.Combine(_root, ".cache", "signal-log.json"), new[] { saved });
+        var http = new Http();
+        var ledger = new SignalLogService(new TelegramNotifier(http, Config()), new Env(_root),
+            NullLogger<SignalLogService>.Instance, clock: () => Now);
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = price } });
+        Assert.Equal(status, Assert.Single(ledger.GetAll()).Status);
+        Assert.Equal(0, http.Calls);
+        Assert.False(ledger.EntryDeliveredForOutcome($"outcome:{saved.Id}:event"));
+    }
+
+    [Fact]
+    public async Task DeliveredEntryIsLinkedToItsTradeAndSurvivesRestart()
+    {
+        var env = new Env(_root);
+        var http = new Http();
+        var notifier = new TelegramNotifier(http, Config());
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, clock: () => Now);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        // Restart even before the ledger row was created: its pending link is durable.
+        ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        var entry = Assert.Single(ledger.GetAll());
+        Assert.True(entry.EntryAlertDelivered);
+        Assert.NotNull(entry.EntryNotificationId);
+        ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = 120 } });
+        Assert.Equal(2, http.Calls); // One entry, then its TP3 outcome.
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = 120 } });
+        Assert.Equal(2, http.Calls);
+    }
+
+    [Fact]
+    public async Task RetryingEntryCannotAuthorizeTpUntilDeliveryIsConfirmed()
+    {
+        var env = new Env(_root);
+        var config = Config();
+        var http = new Http { Status = HttpStatusCode.ServiceUnavailable, Body = "{\"ok\":false}" };
+        var queue = new TelegramDeliveryOutbox(http, config, env, NullLogger.Instance);
+        var notifier = new TelegramNotifier(queue, config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance,
+            clock: () => Now, delivery: queue);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance,
+            queue, clock: () => Now);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        var entry = Assert.Single(ledger.GetAll());
+        await queue.FlushAsync();
+        Assert.Equal("Retrying", queue.Get(entry.EntryNotificationId)!.Status);
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = 106 } });
+        Assert.Equal("Tp1Hit", Assert.Single(ledger.GetAll()).Status);
+        Assert.False(ledger.EntryDeliveredForOutcome($"outcome:{entry.Id}:event"));
+        using (var state = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(_root, ".cache", "telegram-delivery.json"))))
+            Assert.Single(state.RootElement.GetProperty("Pending").EnumerateObject());
+        http.Status = HttpStatusCode.OK;
+        http.Body = "{\"ok\":true}";
+        await queue.FlushAsync();
+        Assert.True(ledger.EntryDeliveredForOutcome($"outcome:{entry.Id}:event"));
+        // No new target touch is needed after the entry receipt arrives.
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = 106 } });
+        await queue.FlushAsync();
+        Assert.Equal(3, http.Calls); // Failed entry, delivered entry, delivered TP1.
+    }
+
+    [Fact]
+    public async Task ClosingBeforeEntryDeliveryCancelsTheStaleEntryAndSuppressesOutcome()
+    {
+        var env = new Env(_root);
+        var config = Config();
+        var http = new Http();
+        var queue = new TelegramDeliveryOutbox(http, config, env, NullLogger.Instance);
+        var notifier = new TelegramNotifier(queue, config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance,
+            clock: () => Now, delivery: queue);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance,
+            queue, clock: () => Now);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        var entry = Assert.Single(ledger.GetAll());
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = 120 } });
+        await queue.FlushAsync();
+        Assert.Equal("Cancelled", queue.Get(entry.EntryNotificationId)!.Status);
+        Assert.Equal(0, http.Calls);
+    }
+
+    [Fact]
+    public async Task DirectTelegramApiRejectionIsNotEntryDeliveryProof()
+    {
+        var config = Config();
+        var env = new Env(_root);
+        var http = new Http { Body = "{\"ok\":false}" };
+        var notifier = new TelegramNotifier(http, config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance, clock: () => Now);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        Assert.False(Assert.Single(ledger.GetAll()).EntryAlertDelivered);
+        Assert.Equal("Delivery failed", Assert.Single(alerts.GetStatuses()).AlertState);
+    }
+
+    [Fact]
+    public async Task QueuedOutcomeCannotBypassMissingEntryProof()
+    {
+        var env = new Env(_root);
+        var config = Config();
+        var http = new Http();
+        SignalLogService? ledger = null;
+        var queue = new TelegramDeliveryOutbox(http, config, env, NullLogger.Instance,
+            canDeliver: id => !id.StartsWith("outcome:") || ledger!.EntryDeliveredForOutcome(id));
+        var notifier = new TelegramNotifier(queue, config);
+        ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance,
+            clock: () => Now, delivery: queue);
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        var entry = Assert.Single(ledger.GetAll());
+        await notifier.SendAsync("An orphan TP queued before this fix", notificationId: $"outcome:{entry.Id}:event");
+        await queue.FlushAsync();
+        Assert.Equal(0, http.Calls);
+    }
+
+    [Fact]
+    public async Task AnEntryForDifferentPricesCannotAuthorizeAnExistingTradesOutcome()
+    {
+        var env = new Env(_root);
+        var http = new Http();
+        var ledger = new SignalLogService(new TelegramNotifier(http, Config()), env,
+            NullLogger<SignalLogService>.Instance, clock: () => Now);
+        await ledger.RecordAndTrackAsync(new[] { Triggered() });
+        var different = Triggered() with { Signal = Triggered().Signal! with { PreferredEntry = 101 } };
+        ledger.RegisterEntryAlert(different, "different-trade-entry", delivered: true);
+        await ledger.RecordAndTrackAsync(new[] { Triggered() with { LivePrice = 120 } });
+        Assert.Equal(0, http.Calls);
+        Assert.False(Assert.Single(ledger.GetAll()).EntryAlertDelivered);
+    }
+
+    [Fact]
+    public async Task AStalePendingEntryLinkCannotAnnounceALaterTrade()
+    {
+        var env = new Env(_root);
+        var http = new Http();
+        var ledger = new SignalLogService(new TelegramNotifier(http, Config()), env,
+            NullLogger<SignalLogService>.Instance, clock: () => Now);
+        ledger.RegisterEntryAlert(Triggered(), "older-entry", delivered: true);
+        var later = Triggered() with { Signal = Triggered().Signal! with { DetectedAtUtc = Now.AddMinutes(15) } };
+        await ledger.RecordAndTrackAsync(new[] { later });
+        Assert.False(Assert.Single(ledger.GetAll()).EntryAlertDelivered);
+        Assert.Null(Assert.Single(ledger.GetAll()).EntryNotificationId);
     }
 
     public void Dispose()

@@ -124,6 +124,7 @@ public class SignalAlertService(
                     notificationId: current.NotificationId);
                 if (success)
                 {
+                    signalLog.RegisterEntryAlert(result, current.NotificationId!, delivered: delivery is null);
                     lock (_lock) _lastAlerted[key] = current with { Accepted = true };
                     Persist();
                     Record(result, delivery is null ? "Delivered" : "Queued", "Entry alert accepted for delivery", current.NotificationId);

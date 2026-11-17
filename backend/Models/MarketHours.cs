@@ -42,7 +42,10 @@ public static class MarketHours
     // this set to resume alerting it.
     private static readonly HashSet<string> TelegramPaused = new(StringComparer.OrdinalIgnoreCase) { "ETH/USDT", "CAKE/USDT" };
 
-    // Owner decision, temporary: XAU/USD is held back from Telegram only during Lagos mornings
+    // XAU/USD alerts on 1H and above are allowed throughout market hours.
+    // The legacy morning hold below only applies to shorter/unknown timeframes;
+    // gold 15m also remains dashboard-only under the separate timeframe rule.
+    // XAU/USD is held back on those shorter timeframes during Lagos mornings
     // (00:00-12:00 WAT, midnight to noon - i.e. 23:00 UTC the previous day through 10:59 UTC,
     // since WAT has no DST and is a fixed UTC+1). Outside that window it alerts normally. This
     // never touches qualification or the ledger - gold setups keep qualifying and logging
@@ -60,7 +63,8 @@ public static class MarketHours
     public static string? TelegramBlockReason(string symbol, string timeframe, string? grade, DateTime utc)
     {
         if (TelegramPaused.Contains(symbol)) return "Telegram alerts are paused for this symbol";
-        if (IsPausedGoldMorning(symbol, utc)) return "Gold Telegram alerts pause before noon Lagos time";
+        if (IsPausedGoldMorning(symbol, utc) && timeframe is not ("1H" or "4H" or "Daily" or "Weekly"))
+            return "Gold Telegram alerts pause before noon Lagos time";
         if (timeframe == "15m" && !FifteenMinuteAlertsAllowed.Contains(symbol)) return "This 15m timeframe is dashboard-only";
         if (timeframe == "15m" && IsWithheldFifteenMinuteGrade(symbol, grade)) return "This grade is withheld on 15m for this symbol - dashboard-only";
         // WTI (Yahoo-sourced) reuses the same Friday-22:00/Sunday-22:00 UTC closed window as an
