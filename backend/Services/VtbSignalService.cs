@@ -16,7 +16,7 @@ namespace RealtouchSmartTrade.Api.Services;
 // to SignalOrchestrator, SignalLogService or SignalAlertService's state.
 // Fetches its own market data directly; never touches OrchestratorResult at all.
 public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration config, IHostEnvironment env, ILogger<VtbSignalService> logger,
-    Func<DateTime>? clock = null)
+    Func<DateTime>? clock = null, AutoTradingSignalSink? autoTrading = null)
 {
     // VTB-local data source marker - deliberately NOT the shared Models.DataSource enum (that
     // one drives the real orchestrator's routing); VTB's data fetch is entirely its own code
@@ -319,9 +319,12 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             (e.RiskMultiplier < 1m ? $"\n⚠️ Short - sized at {e.RiskMultiplier:0.0}x risk" : "") +
             "\n\nVTB trade signal.";
         var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":open");
+        if (success) autoTrading?.Vtb(e, e.Id + ":open");
         if (!success) logger.LogWarning("VTB open Telegram alert failed for {Symbol}: {Error}", e.Symbol, error);
         return success;
     }
+
+    public TelegramDeliveryReceipt? GetTelegramReceipt(string? id) => Delivery.Get(id);
 
     private async Task<bool> SendOutcomeAsync(VtbLogEntry e)
     {

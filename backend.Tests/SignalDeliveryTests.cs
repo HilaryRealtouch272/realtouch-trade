@@ -272,6 +272,60 @@ public class SignalDeliveryTests : IDisposable
         Assert.Equal("Delivered", queue.Get("entry-1")!.Status);
     }
 
+    [Fact]
+    public async Task QualifiedTelegramEventAlsoEmitsOnePrivateExecutionIntent()
+    {
+        var config = Config();
+        config["AutoTrading:Enabled"] = "true";
+        var env = new Env(_root);
+        var http = new Http();
+        var notifier = new TelegramNotifier(http, config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var sink = new AutoTradingSignalSink(config, NullLogger<AutoTradingSignalSink>.Instance, env);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance,
+            clock: () => Now, autoTrading: sink);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        Assert.Single(DiskCache.Load<Dictionary<string, AutoTradingSignalSink.Candidate>>(
+            Path.Combine(_root, ".cache", "auto-trading-candidates.json"))!);
+        Assert.Equal(1, http.Calls);
+    }
+
+    [Fact]
+    public async Task SundayAndRejectedSignalsNeverEmitExecutionIntents()
+    {
+        var config = Config();
+        config["AutoTrading:Enabled"] = "true";
+        var env = new Env(_root);
+        var notifier = new TelegramNotifier(new Http(), config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var sink = new AutoTradingSignalSink(config, NullLogger<AutoTradingSignalSink>.Instance, env);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance,
+            clock: () => Now.AddDays(-1), autoTrading: sink);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance,
+            clock: () => Now, autoTrading: sink);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered("C") });
+        Assert.False(Directory.Exists(Path.Combine(_root, ".autotrading")));
+    }
+
+    [Fact]
+    public async Task BrokenExecutionDirectoryDoesNotInterruptTelegram()
+    {
+        var config = Config();
+        config["AutoTrading:Enabled"] = "true";
+        config["AutoTrading:SpoolDirectory"] = "relative-invalid-path";
+        var env = new Env(_root);
+        var http = new Http();
+        var notifier = new TelegramNotifier(http, config);
+        var ledger = new SignalLogService(notifier, env, NullLogger<SignalLogService>.Instance, clock: () => Now);
+        var sink = new AutoTradingSignalSink(config, NullLogger<AutoTradingSignalSink>.Instance, env);
+        var alerts = new SignalAlertService(notifier, ledger, env, NullLogger<SignalAlertService>.Instance,
+            clock: () => Now, autoTrading: sink);
+        await alerts.CheckAndNotifyAsync(new[] { Triggered() });
+        Assert.Equal(1, http.Calls);
+    }
+
     [Theory]
     [InlineData(90, "StoppedOut")]
     [InlineData(120, "Tp3Hit")]

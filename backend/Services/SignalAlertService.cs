@@ -8,7 +8,8 @@ namespace RealtouchSmartTrade.Api.Services;
 // tests construct this directly - not worth a wider signature churn for a default-false flag.
 public class SignalAlertService(
     TelegramNotifier telegram, SignalLogService signalLog, IHostEnvironment env, ILogger<SignalAlertService> logger,
-    TelegramDeliveryOutbox? delivery = null, bool beta = false, Func<DateTime>? clock = null)
+    TelegramDeliveryOutbox? delivery = null, bool beta = false, Func<DateTime>? clock = null,
+    AutoTradingSignalSink? autoTrading = null)
 {
     private record AlertedState(string Direction, string SetupModel, string Grade, string? NotificationId = null, bool Accepted = true);
 
@@ -125,6 +126,7 @@ public class SignalAlertService(
                 if (success)
                 {
                     signalLog.RegisterEntryAlert(result, current.NotificationId!, delivered: delivery is null);
+                    autoTrading?.Main(signal, UtcNow, current.NotificationId);
                     lock (_lock) _lastAlerted[key] = current with { Accepted = true };
                     Persist();
                     Record(result, delivery is null ? "Delivered" : "Queued", "Entry alert accepted for delivery", current.NotificationId);

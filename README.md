@@ -128,4 +128,8 @@ backend behind it.
   what hasn't (no FX backtest, no simulated calendar/news in the backtester,
   grade is not a win-probability).
 
-This system does not execute real trades and is not financial advice.
+The deployed signal dashboard does not execute real trades and is not financial advice.
+
+## Exness demo execution
+
+Local autotrading for new main and VTB signals is documented in [autotrading/README.md](autotrading/README.md). Demo execution is enabled in configuration; live accounts are blocked. Desktop MT5, explicit demo account binding and verified broker symbol mappings are required. Nothing is deployed by this addition.

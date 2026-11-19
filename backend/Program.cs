@@ -33,6 +33,7 @@ builder.Services.AddSingleton<AlphaVantageNewsProvider>();
 builder.Services.AddSingleton<GdeltNewsProvider>();
 builder.Services.AddSingleton<INewsProvider, CompositeNewsProvider>();
 builder.Services.AddSingleton<TelegramNotifier>();
+builder.Services.AddSingleton<AutoTradingSignalSink>();
 builder.Services.AddSingleton<TelegramDeliveryOutbox>(sp => new(
     sp.GetRequiredService<IHttpClientFactory>(), sp.GetRequiredService<IConfiguration>(),
     sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<TelegramDeliveryOutbox>>(),
@@ -48,7 +49,8 @@ builder.Services.AddSingleton<SignalLogService>(sp => new(
 builder.Services.AddSingleton<SignalAlertService>(sp => new(
     new TelegramNotifier(sp.GetRequiredService<TelegramDeliveryOutbox>(), sp.GetRequiredService<IConfiguration>()),
     sp.GetRequiredService<SignalLogService>(), sp.GetRequiredService<IHostEnvironment>(),
-    sp.GetRequiredService<ILogger<SignalAlertService>>(), sp.GetRequiredService<TelegramDeliveryOutbox>()));
+    sp.GetRequiredService<ILogger<SignalAlertService>>(), sp.GetRequiredService<TelegramDeliveryOutbox>(),
+    autoTrading: sp.GetRequiredService<AutoTradingSignalSink>()));
 // Validated Trend Breakout: its own daily SMA200+channel-breakout module, fully isolated
 // from the real engine - own data fetch, own state, own Telegram delivery queue.
 // It never shares the real TelegramDeliveryOutbox instance. See VtbSignalService's
@@ -546,6 +548,12 @@ async Task RunScanOnceAsync(IServiceProvider services)
     {
         scanLogger.LogWarning(ex, "VTB output unavailable for this scan");
     }
+
+    var executionFeed = Environment.GetEnvironmentVariable("AUTO_TRADING_OUTPUT_PATH")
+        ?? Path.Combine(env.ContentRootPath, "auto-trading-signals.json");
+    services.GetRequiredService<AutoTradingSignalSink>().Publish(signalLog.GetAll(),
+        services.GetRequiredService<VtbSignalService>().GetAll(), delivery.Get,
+        services.GetRequiredService<VtbSignalService>().GetTelegramReceipt, executionFeed);
 
     scanLogger.LogInformation("Scan complete: {Count} results written to {Path}", allResults.Count, outputPath);
 }

@@ -1,0 +1,21 @@
+{
+  "mode": "demo",
+  "entriesEnabled": true,
+  "expectedLogin": 0,
+  "expectedServer": "",
+  "terminalPath": "",
+  "spoolDirectory": "../backend/.autotrading/spool",
+  "stateDatabase": "../backend/.autotrading/execution.sqlite3",
+  "riskPercent": 0.25,
+  "maxOpenRiskPercent": 0.5,
+  "dailyLossPercent": 1.0,
+  "maxEntryDriftR": 0.10,
+  "maxSpreadR": 0.10,
+  "minimumRewardRisk": 0.8,
+  "deviationPoints": 10,
+  "pollSeconds": 5,
+  "remoteFeedUrl": "",
+  "remoteFeedKey": "",
+  "feedPollSeconds": 30,
+  "symbols": {}
+}

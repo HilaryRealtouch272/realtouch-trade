@@ -12,3 +12,7 @@ obj/
 .env
 appsettings.*.local.json
 .cache/
+.autotrading/
+__pycache__/
+.venv/
+autotrading/config.local.json

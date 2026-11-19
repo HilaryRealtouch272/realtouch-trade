@@ -99,6 +99,9 @@ jobs:
           # Optional: Validated Trend Breakout alerts post here instead, if set. Falls back to
           # the main ChatId when unset.
           Telegram__VtbChatId: ${{ secrets.TELEGRAM__VTBCHATID }}
+          AutoTrading__Enabled: "true"
+          AutoTrading__FeedSigningKey: ${{ secrets.AUTOTRADING_FEED_SIGNING_KEY }}
+          AUTO_TRADING_OUTPUT_PATH: ${{ github.workspace }}/auto-trading-signals.json
           SIGNALS_OUTPUT_PATH: ${{ github.workspace }}/signals.json
           SIGNAL_LOG_OUTPUT_PATH: ${{ github.workspace }}/signal-log.json
           VTB_LOG_OUTPUT_PATH: ${{ github.workspace }}/vtb-log.json
@@ -170,6 +173,7 @@ jobs:
           cp diagnostics.json frontend/dist/frontend/browser/diagnostics.json
           cp reconciliation.json frontend/dist/frontend/browser/reconciliation.json || echo "no reconciliation report this run"
           cp shadow-candidates.json frontend/dist/frontend/browser/shadow-candidates.json || echo "no shadow candidates this run"
+          cp auto-trading-signals.json frontend/dist/frontend/browser/auto-trading-signals.json
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
