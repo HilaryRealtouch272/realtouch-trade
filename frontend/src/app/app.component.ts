@@ -674,7 +674,7 @@ function vtbStatusClass(e) {
 function vtbStatusLabel(e) {
   if (e.status === "Cancelled") return "Cancelled (weekend entry)";
   if (e.status !== "Closed") return "Open";
-  const label = e.exitReason === "Stop" ? "Stopped out" : e.exitReason === "Target" ? "Target hit" : "Time exit";
+  const label = e.exitReason === "Stop" ? "Stopped out" : e.exitReason === "Target" ? "Target hit" : e.exitReason === "Channel" ? "50-day low exit" : "Time exit";
   return `${label} (${e.r > EPS_R ? "win" : e.r < -EPS_R ? "loss" : "flat"})`;
 }
 
@@ -694,7 +694,7 @@ async function renderVtbLedger() {
       <td><span class="direction ${e.side.toLowerCase()}">${e.side.toUpperCase()}</span></td>
       <td>${formatPrice(e.entryRef, 5)}</td>
       <td>${formatPrice(e.stop, 5)}</td>
-      <td>${formatPrice(e.target, 5)}</td>
+      <td>${e.exitMode === "SpxTrend" ? "No fixed TP · 50-day low exit" : formatPrice(e.target, 5)}</td>
       <td>${e.riskMultiplier.toFixed(2)}x</td>
       <td>${formatInUserTimezone(e.entryTimeUtc)}</td>
       <td>${e.status === "Closed" && e.exitTimeUtc ? formatInUserTimezone(e.exitTimeUtc) : "—"}</td>

@@ -26,6 +26,13 @@ public class AutoTradingSignalSinkTests : IDisposable
         "Open", null, null, null, null, .5m);
 
     [Fact]
+    public void SpxLedgerSignalsCannotReachFixedTargetBrokerWorker()
+    {
+        Sink(true).Vtb(Entry() with { Symbol = "SPX/USD", ExitMode = "SpxTrend", Target = 0m });
+        Assert.False(Directory.Exists(root));
+    }
+
+    [Fact]
     public void DisabledSinkCreatesNoExecutionFiles()
     {
         Sink(false).Vtb(Entry());

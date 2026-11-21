@@ -28,6 +28,7 @@ public class VtbSignalServiceTests : IDisposable
         public List<NormalizedCandle> Candles { get; set; } = new();
         public List<string> TelegramMessages { get; } = new();
         public bool TelegramAccepted { get; set; } = true;
+        public List<NormalizedCandle> SpxCandles { get; set; } = new();
         public int MarketRequests { get; private set; }
         public HttpClient CreateClient(string name) => new(this, false);
 
@@ -50,6 +51,17 @@ public class VtbSignalServiceTests : IDisposable
                 });
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(rows)) };
             }
+            if (request.RequestUri.Host == "query1.finance.yahoo.com" && request.RequestUri.AbsoluteUri.Contains("GSPC") && SpxCandles.Count > 0)
+            {
+                var body = new { chart = new { result = new[] { new {
+                    timestamp = SpxCandles.Select(c => new DateTimeOffset(c.OpenTimeUtc.AddHours(14)).ToUnixTimeSeconds()),
+                    indicators = new { quote = new[] { new {
+                        open = SpxCandles.Select(c => c.Open), high = SpxCandles.Select(c => c.High),
+                        low = SpxCandles.Select(c => c.Low), close = SpxCandles.Select(c => c.Close)
+                    } } }
+                } } } };
+                return new(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(body)) };
+            }
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"chart\":{\"result\":[]}}") };
         }
     }
@@ -68,6 +80,66 @@ public class VtbSignalServiceTests : IDisposable
     private static NormalizedCandle Daily(DateTime day, decimal high = 101m, decimal low = 99m, decimal close = 100m) =>
         new("BTC/USDT", "BTC-USD", "Coinbase", Timeframe.Daily, day, day.AddDays(1),
             100m, high, low, close, null, day < Today, DateTime.UtcNow, DataQuality.Ok);
+
+    private static List<NormalizedCandle> SpxBreakout(DateTime day) => Enumerable.Range(1, 340)
+        .Select(i => Daily(day.AddDays(-i))).Where(c => c.OpenTimeUtc.DayOfWeek is not (DayOfWeek.Saturday or DayOfWeek.Sunday))
+        .Reverse().Append(Daily(day, high: 111m, close: 110m)).ToList();
+
+    [Fact]
+    public async Task SpxConfirmedEntryPersistsAndAlertsOnceAcrossRestart()
+    {
+        var http = new Http { SpxCandles = SpxBreakout(Today) };
+        var now = Today.AddHours(21).AddMinutes(30);
+        var service = Service(http, now: now);
+        await service.ProcessAsync();
+        var entry = Assert.Single(service.GetAll());
+        Assert.Equal(SpxTrendRules.Symbol, entry.Symbol);
+        Assert.Equal(SpxTrendRules.ExitMode, entry.ExitMode);
+        Assert.Equal(0m, entry.Target);
+        Assert.Equal(Today.AddHours(21).AddMinutes(15), entry.ConfirmedAtUtc);
+        Assert.Single(http.TelegramMessages);
+        Assert.Contains("chat_id=vtb", http.TelegramMessages[0]);
+        await Service(http, now: now.AddMinutes(1)).ProcessAsync();
+        Assert.Single(http.TelegramMessages);
+    }
+
+    [Theory]
+    [InlineData(21, 14)] // unfinished bar
+    [InlineData(22, 1)] // missed entry window; no stale backfill
+    public async Task SpxIncompleteOrStaleEntryDoesNotAlert(int hour, int minute)
+    {
+        var http = new Http { SpxCandles = SpxBreakout(Today) };
+        var service = Service(http, now: Today.AddHours(hour).AddMinutes(minute));
+        await service.ProcessAsync();
+        Assert.Empty(service.GetAll());
+        Assert.Empty(http.TelegramMessages);
+    }
+
+    [Fact]
+    public async Task SpxFridaySignalDoesNotOpenOnSaturday()
+    {
+        var friday = new DateTime(2026, 11, 20, 0, 0, 0, DateTimeKind.Utc);
+        var service = Service(new Http { SpxCandles = SpxBreakout(friday) }, now: friday.AddDays(1).AddHours(12));
+        await service.ProcessAsync();
+        Assert.Empty(service.GetAll());
+    }
+
+    [Fact]
+    public async Task SpxStopClosesSavedPositionEvenOnWeekendButDoesNotSendUnannouncedOutcome()
+    {
+        DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[] {
+            new VtbSignalService.VtbLogEntry("spx-saved", SpxTrendRules.Symbol, "Long", Today.AddDays(-4),
+                100m, 90m, 0m, 10m, "Open", null, null, null, null, 1m, ExitMode: SpxTrendRules.ExitMode)
+        });
+        var http = new Http { SpxCandles = new() { Daily(Today, low: 89m) } };
+        var service = Service(http, now: Today.AddDays(5));
+        await service.ProcessAsync();
+        var closed = Assert.Single(service.GetAll());
+        Assert.Equal("Closed", closed.Status);
+        Assert.Equal("Stop", closed.ExitReason);
+        Assert.Equal(-1m, closed.R);
+        Assert.Empty(http.TelegramMessages);
+    }
 
     private void SeedLegacyOpen(DateTime? entryTimeUtc = null, bool entryDelivered = true)
     {

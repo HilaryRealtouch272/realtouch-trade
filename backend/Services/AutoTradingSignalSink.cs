@@ -32,6 +32,8 @@ public sealed class AutoTradingSignalSink(IConfiguration config, ILogger<AutoTra
 
     public void Vtb(VtbSignalService.VtbLogEntry entry, string? notificationId = null)
     {
+        // SPX has no fixed target/expiry. The current broker worker cannot manage it.
+        if (entry.Symbol == SpxTrendRules.Symbol || entry.ExitMode == SpxTrendRules.ExitMode) return;
         // Daily EntryTimeUtc labels the bar OPEN; confirmation is its close.
         var confirmed = entry.EntryTimeUtc.AddDays(1);
         Write(new("vtb:" + entry.Id, "vtb", entry.Symbol, entry.Side, confirmed,

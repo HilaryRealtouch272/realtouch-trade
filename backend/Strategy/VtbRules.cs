@@ -9,7 +9,7 @@ namespace RealtouchSmartTrade.Api.Strategy;
 // Deliberately a self-contained rule set, independent of the real four-model engine: fixed
 // stop/target/time-exit, no zones, no confluence scoring - a different strategy family.
 public enum VtbSide { Long, Short }
-public enum VtbExitReason { Stop, Target, Time }
+public enum VtbExitReason { Stop, Target, Time, Channel }
 
 public record VtbDailyIndicators(decimal Close, decimal Sma200, decimal Atr14, decimal HhN, decimal LlN, bool HasFullHistory);
 

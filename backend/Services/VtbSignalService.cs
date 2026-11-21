@@ -76,7 +76,9 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         lock (_lock)
         {
             var entry = _entries.FirstOrDefault(e => e.Id + ":open" == id);
-            return entry is { Status: "Open" } && MarketHours.NewEntriesAllowed(entry.Symbol, UtcNow);
+            return entry is { Status: "Open" } && MarketHours.NewEntriesAllowed(entry.Symbol, UtcNow)
+                && (entry.ExitMode != SpxTrendRules.ExitMode ||
+                    (entry.ConfirmedAtUtc is DateTime confirmed && UtcNow >= confirmed && UtcNow - confirmed <= TimeSpan.FromMinutes(45)));
         }
     }
 
@@ -92,7 +94,8 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     public record VtbLogEntry(
         string Id, string Symbol, string Side, DateTime EntryTimeUtc, decimal EntryRef, decimal Stop, decimal Target, decimal Risk,
         string Status, DateTime? ExitTimeUtc, decimal? Exit, string? ExitReason, decimal? R, decimal RiskMultiplier,
-        bool OpenAlertPending = false, bool OutcomeAlertPending = false);
+        bool OpenAlertPending = false, bool OutcomeAlertPending = false,
+        string? ExitMode = null, DateTime? ConfirmedAtUtc = null);
 
     public IReadOnlyList<VtbLogEntry> GetAll() { lock (_lock) return _entries.ToList(); }
 
@@ -121,6 +124,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                     logger.LogWarning(ex, "VTB: could not process {Symbol}", market.Symbol);
                 }
             }
+            await ProcessSpxAsync();
             await SendPendingAlertsAsync();
             await Delivery.FlushAsync();
         }
@@ -199,6 +203,50 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         DiskCache.Save(_riskStatePath, _risk);
     }
 
+    private async Task ProcessSpxAsync()
+    {
+        try
+        {
+            var market = new MarketConfig(SpxTrendRules.Symbol, VtbDataSource.Yahoo, "^GSPC", 55, 0m);
+            var daily = await GetDailyHistoryAsync(market);
+            var now = UtcNow;
+            lock (_lock)
+            {
+                for (var i = 0; i < _entries.Count; i++)
+                {
+                    var e = _entries[i];
+                    if (e.Symbol != SpxTrendRules.Symbol || e.Status != "Open") continue;
+                    var trade = SpxTrendRules.Settle(new(VtbSide.Long, e.EntryTimeUtc, e.EntryRef, e.Risk, e.Stop, 0m), daily, now);
+                    if (trade is null) continue;
+                    var moneyR = trade.R * e.RiskMultiplier;
+                    _entries[i] = e with { Status = "Closed", ExitTimeUtc = trade.ExitTimeUtc, Exit = trade.Exit,
+                        ExitReason = trade.Reason.ToString(), R = moneyR, OpenAlertPending = false, OutcomeAlertPending = true };
+                    _risk.CumulativeR += moneyR;
+                    _risk.PeakEquityR = Math.Max(_risk.PeakEquityR, _risk.CumulativeR);
+                    Persist();
+                    Delivery.CancelPending(e.Id + ":open");
+                }
+                var complete = daily.Where(c => c.IsComplete && c.CloseTimeUtc <= now).ToList();
+                if (complete.Count < 220) return;
+                var last = complete[^1];
+                // Do not resurrect old research positions or Monday-alert Friday's setup.
+                if (!SpxTrendRules.FreshEntry(last, now)) return;
+                if (VtbRules.SignalAt(VtbRules.ComputeIndicators(complete, 55)[^1]) != VtbSide.Long) return;
+                if (_entries.Any(e => e.Symbol == market.Symbol && (e.Status == "Open" || e.EntryTimeUtc == last.OpenTimeUtc))) return;
+                // Admission guard for this new sleeve; existing four-market behavior stays intact.
+                if (_entries.Count(e => e.Status == "Open") >= 4 || _risk.DrawdownGuardTripped
+                    || _risk.PeakEquityR - _risk.CumulativeR >= DrawdownGuardR) return;
+                var risk = VtbRules.ComputeIndicators(complete, 55)[^1].Atr14 * 1.5m;
+                if (risk <= 0m) return;
+                _entries.Add(new(Guid.NewGuid().ToString("N"), market.Symbol, "Long", last.OpenTimeUtc,
+                    last.Close, last.Close - risk, 0m, risk, "Open", null, null, null, null, 1m,
+                    OpenAlertPending: true, ExitMode: SpxTrendRules.ExitMode, ConfirmedAtUtc: last.CloseTimeUtc));
+                Persist();
+            }
+        }
+        catch (Exception ex) { logger.LogWarning(ex, "SPX trend: could not process daily history"); }
+    }
+
     // Refresh the deep indicator history once per UTC day and its recent tail every scan.
     // Developing bars settle saved positions but never confirm new daily entries.
     private async Task<IReadOnlyList<NormalizedCandle>> GetDailyHistoryAsync(MarketConfig market)
@@ -212,7 +260,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         {
             VtbDataSource.Coinbase => await CoinbaseHistory.FetchAsync(httpClients.CreateClient(), market.Symbol,
                 market.FeedSymbol, Timeframe.Daily, 86400, from, now.Date.AddDays(1), CancellationToken.None),
-            VtbDataSource.Yahoo => await FetchYahooDailyAsync(market.FeedSymbol, warm ? "1mo" : "5y"),
+            VtbDataSource.Yahoo => await FetchYahooDailyAsync(market.FeedSymbol, warm ? "1mo" : "5y", market.Symbol),
             _ => await FetchTwelveDataDailyAsync(market.FeedSymbol, warm ? 30 : 800),
         };
         if (candles.Count == 0) throw new InvalidOperationException("VTB: empty daily history for " + market.Symbol);
@@ -259,7 +307,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     // API key. Parallel arrays (timestamp / open / high / low / close) indexed together;
     // Yahoo returns null in any of the OHLC arrays for a few non-trading/partial bars, so
     // those indices are skipped rather than producing a zero-range candle.
-    private async Task<List<NormalizedCandle>> FetchYahooDailyAsync(string tickerSymbol, string range)
+    private async Task<List<NormalizedCandle>> FetchYahooDailyAsync(string tickerSymbol, string range, string symbol = "WTI/USD")
     {
         var client = httpClients.CreateClient();
         var url = $"https://query1.finance.yahoo.com/v8/finance/chart/{Uri.EscapeDataString(tickerSymbol)}?interval=1d&range={range}";
@@ -285,7 +333,15 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                 lows[i].ValueKind == System.Text.Json.JsonValueKind.Null || closes[i].ValueKind == System.Text.Json.JsonValueKind.Null)
                 continue;
             var open = DateTimeOffset.FromUnixTimeSeconds(timestamps[i].GetInt64()).UtcDateTime;
-            list.Add(new NormalizedCandle("WTI/USD", tickerSymbol, "Yahoo", Timeframe.Daily, open, open.AddDays(1),
+            var close = open.AddDays(1);
+            if (symbol == SpxTrendRules.Symbol)
+            {
+                open = DateTime.SpecifyKind(SpxTrendRules.SessionDate(open), DateTimeKind.Utc);
+                if (open.DayOfWeek is DayOfWeek.Saturday or DayOfWeek.Sunday) continue;
+                close = SpxTrendRules.SessionClose(open);
+                if (highs[i].GetDouble() <= lows[i].GetDouble()) continue;
+            }
+            list.Add(new NormalizedCandle(symbol, tickerSymbol, "Yahoo", Timeframe.Daily, open, close,
                 Convert.ToDecimal(opens[i].GetDouble()), Convert.ToDecimal(highs[i].GetDouble()),
                 Convert.ToDecimal(lows[i].GetDouble()), Convert.ToDecimal(closes[i].GetDouble()),
                 null, true, DateTime.UtcNow, DataQuality.Ok));
@@ -301,7 +357,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         foreach (var entry in pending)
         {
             var openQueued = entry.OpenAlertPending && MarketHours.NewEntriesAllowed(entry.Symbol, UtcNow)
-                && await SendOpenAsync(entry, Markets.Single(m => m.Symbol == entry.Symbol));
+                && CanDeliverOpen(entry.Id + ":open")
+                && await SendOpenAsync(entry, entry.Symbol == SpxTrendRules.Symbol
+                    ? new MarketConfig(SpxTrendRules.Symbol, VtbDataSource.Yahoo, "^GSPC", 55, 0m)
+                    : Markets.Single(m => m.Symbol == entry.Symbol));
             var outcomeQueued = entry.OutcomeAlertPending && await SendOutcomeAsync(entry);
             lock (_lock)
             {
@@ -321,14 +380,19 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     {
         var telegram = new TelegramNotifier(Delivery, _vtbTelegramConfig);
         var icon = e.Side == "Long" ? "🟢" : "🔴";
-        var text = $"📈 *VTB* · {e.Symbol} · {icon} *{e.Side.ToUpperInvariant()}*\n" +
+        var text = e.ExitMode == SpxTrendRules.ExitMode
+            ? $"📈 *VTB · SPX TREND* · {icon} *LONG*\n55-day breakout · Daily close confirmed\n\n" +
+              $"🎯 Entry {e.EntryRef:0.####}\n🛑 Stop {e.Stop:0.####}\n" +
+              "🏁 No fixed target: exit on a daily close below the prior 50-day low.\n" +
+              "⏱ No time expiry. Cash-index reference; CFD broker prices may differ.\n\nVTB trade signal."
+            : $"📈 *VTB* · {e.Symbol} · {icon} *{e.Side.ToUpperInvariant()}*\n" +
             $"Channel {market.ChannelN}d · R:R 1:{market.RewardToRisk}\n\n" +
             $"🎯 Entry {e.EntryRef:0.####}\n🛑 Stop {e.Stop:0.####}\n🏁 Target {e.Target:0.####}\n" +
             $"⏱ Time exit in {VtbRules.TimeExitDays} days\n" +
             (e.RiskMultiplier < 1m ? $"\n⚠️ Short - sized at {e.RiskMultiplier:0.0}x risk" : "") +
             "\n\nVTB trade signal.";
         var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":open");
-        if (success) autoTrading?.Vtb(e, e.Id + ":open");
+        if (success && e.ExitMode != SpxTrendRules.ExitMode) autoTrading?.Vtb(e, e.Id + ":open");
         if (!success) logger.LogWarning("VTB open Telegram alert failed for {Symbol}: {Error}", e.Symbol, error);
         return success;
     }
