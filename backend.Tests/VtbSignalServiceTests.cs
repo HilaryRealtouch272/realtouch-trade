@@ -94,6 +94,20 @@ public class VtbSignalServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task SaturdayGoldPendingEntryDoesNotAlert()
+    {
+        var saturday = new DateTime(2026, 11, 21, 12, 0, 0, DateTimeKind.Utc);
+        DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[]
+        {
+            new VtbSignalService.VtbLogEntry("weekend-gold", "XAU/USD", "Short", saturday.Date.AddDays(-1),
+                100m, 110m, 80m, 10m, "Open", null, null, null, null, 0.5m, OpenAlertPending: true)
+        });
+        var http = new Http();
+        await Service(http, now: saturday).ProcessAsync();
+        Assert.Empty(http.TelegramMessages);
+    }
+
+    [Fact]
     public async Task WarmCacheStillFetchesAndSettlesSavedLevelsOnTheFormingDay()
     {
         SeedLegacyOpen();

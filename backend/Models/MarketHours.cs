@@ -6,6 +6,11 @@ public static class MarketHours
     // Lagos is UTC+1 throughout the year. Existing positions continue tracking on Sundays.
     public static bool NewEntriesAllowed(DateTime utc) => utc.AddHours(1).DayOfWeek != DayOfWeek.Sunday;
 
+    // Owner rule: non-crypto entries never open on Lagos weekends or in the FX closed window.
+    public static bool NewEntriesAllowed(string symbol, DateTime utc) => NewEntriesAllowed(utc)
+        && (symbol.EndsWith("/USDT", StringComparison.OrdinalIgnoreCase)
+            || (utc.AddHours(1).DayOfWeek != DayOfWeek.Saturday && !FxClosed(utc)));
+
     public static string? NewEntryBlockReason(string symbol, string timeframe, string? grade, DateTime utc) =>
         NewEntriesAllowed(utc)
             ? TelegramBlockReason(symbol, timeframe, grade, utc)

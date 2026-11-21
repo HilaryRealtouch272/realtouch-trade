@@ -672,6 +672,7 @@ function vtbStatusClass(e) {
 }
 
 function vtbStatusLabel(e) {
+  if (e.status === "Cancelled") return "Cancelled (weekend entry)";
   if (e.status !== "Closed") return "Open";
   const label = e.exitReason === "Stop" ? "Stopped out" : e.exitReason === "Target" ? "Target hit" : "Time exit";
   return `${label} (${e.r > EPS_R ? "win" : e.r < -EPS_R ? "loss" : "flat"})`;

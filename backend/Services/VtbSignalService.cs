@@ -59,7 +59,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     private TelegramDeliveryOutbox Delivery => _delivery ??= new TelegramDeliveryOutbox(
         httpClients, _vtbTelegramConfig, env, logger, stateFileName: "vtb-telegram-delivery.json",
         canDeliver: id => id.EndsWith(":open", StringComparison.Ordinal)
-            ? MarketHours.NewEntriesAllowed(UtcNow)
+            ? CanDeliverOpen(id)
             : id.EndsWith(":outcome", StringComparison.Ordinal) &&
                 Delivery.Get(id[..^8] + ":open")?.Status == "Delivered");
     // Routes to a different chat by building a small in-memory config that overrides
@@ -70,6 +70,15 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         ["Telegram:BotToken"] = config["Telegram:BotToken"],
         ["Telegram:ChatId"] = string.IsNullOrWhiteSpace(config["Telegram:VtbChatId"]) ? config["Telegram:ChatId"] : config["Telegram:VtbChatId"],
     }).Build();
+
+    private bool CanDeliverOpen(string id)
+    {
+        lock (_lock)
+        {
+            var entry = _entries.FirstOrDefault(e => e.Id + ":open" == id);
+            return entry is { Status: "Open" } && MarketHours.NewEntriesAllowed(entry.Symbol, UtcNow);
+        }
+    }
 
     private record HistoryCacheEntry(DateTime FetchedAtUtc, List<NormalizedCandle> Candles);
 
@@ -144,7 +153,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
 
     private void ReconcileOpen(MarketConfig market, VtbPosition? open)
     {
-        if (open is null || !MarketHours.NewEntriesAllowed(UtcNow)) return;
+        if (open is null || !MarketHours.NewEntriesAllowed(market.Symbol, UtcNow)) return;
         bool alreadyLogged;
         lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && (e.EntryTimeUtc == open.EntryTimeUtc || e.Status == "Open"));
         if (alreadyLogged) return;
@@ -291,7 +300,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         lock (_lock) pending = _entries.Where(e => e.OpenAlertPending || e.OutcomeAlertPending).ToList();
         foreach (var entry in pending)
         {
-            var openQueued = entry.OpenAlertPending && MarketHours.NewEntriesAllowed(UtcNow)
+            var openQueued = entry.OpenAlertPending && MarketHours.NewEntriesAllowed(entry.Symbol, UtcNow)
                 && await SendOpenAsync(entry, Markets.Single(m => m.Symbol == entry.Symbol));
             var outcomeQueued = entry.OutcomeAlertPending && await SendOutcomeAsync(entry);
             lock (_lock)

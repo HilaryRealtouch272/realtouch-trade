@@ -21,6 +21,20 @@ public class MarketHoursTests
         Assert.Equal(closed, MarketHours.FxClosed(DateTime.Parse(utc, null, System.Globalization.DateTimeStyles.AdjustToUniversal)));
     }
 
+    [Theory]
+    [InlineData("XAU/USD", "2026-11-21T12:00:00Z", false)]
+    [InlineData("WTI/USD", "2026-11-21T12:00:00Z", false)]
+    [InlineData("EUR/USD", "2026-11-21T12:00:00Z", false)]
+    [InlineData("XAU/USD", "2026-11-20T22:00:00Z", false)]
+    [InlineData("BTC/USDT", "2026-11-21T12:00:00Z", true)]
+    [InlineData("ETH/USDT", "2026-11-22T12:00:00Z", false)]
+    [InlineData("XAU/USD", "2026-11-23T12:00:00Z", true)]
+    public void NonCryptoVtbEntriesRespectWeekendSessions(string symbol, string time, bool allowed)
+    {
+        Assert.Equal(allowed, MarketHours.NewEntriesAllowed(symbol, DateTime.Parse(time, null,
+            System.Globalization.DateTimeStyles.AdjustToUniversal)));
+    }
+
     [Fact]
     public void AGradeChangeIsLabelledInTheTelegramMessage()
     {
