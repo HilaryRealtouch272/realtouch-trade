@@ -166,6 +166,39 @@ public class VtbSignalServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task HiddenCancelledGoldIsNotReturnedOrReopened()
+    {
+        DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[] {
+            new VtbSignalService.VtbLogEntry("cancelled-gold", "XAU/USD", "Short", Today.AddDays(-2),
+                100m, 110m, 80m, 10m, "Cancelled", null, null, null, null, .5m, HiddenFromLedger: true)
+        });
+        var service = Service(new Http());
+        await service.ProcessAsync();
+        Assert.Empty(service.GetAll());
+        var saved = DiskCache.Load<List<VtbSignalService.VtbLogEntry>>(Path.Combine(_root, ".cache", "vtb-signal-log.json"));
+        Assert.Equal("Cancelled", Assert.Single(saved!).Status);
+    }
+
+    [Fact]
+    public void CancelledReplayEntryDoesNotBlockLaterBreakout()
+    {
+        var bars = Enumerable.Range(0, 225).Select(i => Daily(Today.AddDays(i - 230))).ToList();
+        var cancelledDay = bars[^1].OpenTimeUtc.AddDays(1);
+        bars.Add(Daily(cancelledDay, high: 111m, low: 109m, close: 110m) with { Open = 110m });
+        bars.Add(Daily(cancelledDay.AddDays(1), high: 112m, low: 109m, close: 111m) with { Open = 110m });
+        var freshDay = cancelledDay.AddDays(2);
+        bars.Add(Daily(freshDay, high: 121m, low: 119m, close: 120m) with { Open = 120m });
+        var original = VtbRules.Replay(bars, 55, 100m);
+        Assert.Equal(cancelledDay, original.Open!.EntryTimeUtc);
+        var fixedReplay = VtbRules.Replay(bars, 55, 100m, new HashSet<DateTime> { cancelledDay, cancelledDay.AddDays(1) });
+        Assert.Equal(freshDay, fixedReplay.Open!.EntryTimeUtc);
+        Assert.DoesNotContain(fixedReplay.Closed, t => t.EntryTimeUtc == cancelledDay);
+        var unchanged = VtbRules.Replay(bars, 55, 100m, new HashSet<DateTime>());
+        Assert.Equal(original.Open, unchanged.Open);
+        Assert.Equal(original.Closed, unchanged.Closed);
+    }
+
+    [Fact]
     public async Task SaturdayGoldPendingEntryDoesNotAlert()
     {
         var saturday = new DateTime(2026, 11, 21, 12, 0, 0, DateTimeKind.Utc);

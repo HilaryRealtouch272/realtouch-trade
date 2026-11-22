@@ -94,7 +94,8 @@ public static class VtbRules
     // function of the candle history: callers diff the result against persisted state rather
     // than this function tracking "have I seen this bar before" itself.
     public static (IReadOnlyList<VtbClosedTrade> Closed, VtbPosition? Open) Replay(
-        IReadOnlyList<NormalizedCandle> daily, int channelN, decimal rewardToRisk)
+        IReadOnlyList<NormalizedCandle> daily, int channelN, decimal rewardToRisk,
+        IReadOnlySet<DateTime>? excludedEntryTimes = null)
     {
         var ind = ComputeIndicators(daily, channelN);
         var closed = new List<VtbClosedTrade>();
@@ -116,6 +117,8 @@ public static class VtbRules
 
             if (pos is null)
             {
+                // Owner-cancelled entries must never become replay-only open positions.
+                if (excludedEntryTimes?.Contains(bar.OpenTimeUtc) == true) continue;
                 var side = SignalAt(ind[i]);
                 if (side is null) continue;
                 var risk = StopAtrMultiple * ind[i].Atr14;

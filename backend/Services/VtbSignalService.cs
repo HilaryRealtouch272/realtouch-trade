@@ -95,9 +95,9 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         string Id, string Symbol, string Side, DateTime EntryTimeUtc, decimal EntryRef, decimal Stop, decimal Target, decimal Risk,
         string Status, DateTime? ExitTimeUtc, decimal? Exit, string? ExitReason, decimal? R, decimal RiskMultiplier,
         bool OpenAlertPending = false, bool OutcomeAlertPending = false,
-        string? ExitMode = null, DateTime? ConfirmedAtUtc = null);
+        string? ExitMode = null, DateTime? ConfirmedAtUtc = null, bool HiddenFromLedger = false);
 
-    public IReadOnlyList<VtbLogEntry> GetAll() { lock (_lock) return _entries.ToList(); }
+    public IReadOnlyList<VtbLogEntry> GetAll() { lock (_lock) return _entries.Where(e => !e.HiddenFromLedger).ToList(); }
 
     public async Task ProcessAsync()
     {
@@ -115,7 +115,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                     SettleOpenPositions(market, daily, now);
                     var complete = daily.Where(c => c.IsComplete && c.CloseTimeUtc <= now).ToList();
                     if (complete.Count < 220) continue;
-                    var (_, open) = VtbRules.Replay(complete, market.ChannelN, market.RewardToRisk);
+                    HashSet<DateTime> cancelled;
+                    lock (_lock) cancelled = _entries.Where(e => e.Symbol == market.Symbol && e.Status == "Cancelled")
+                        .Select(e => e.EntryTimeUtc).ToHashSet();
+                    var (_, open) = VtbRules.Replay(complete, market.ChannelN, market.RewardToRisk, cancelled);
                     ReconcileOpen(market, open);
                     SettleOpenPositions(market, daily, now);
                 }
