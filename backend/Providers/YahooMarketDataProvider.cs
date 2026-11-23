@@ -14,7 +14,7 @@ namespace RealtouchSmartTrade.Api.Providers;
 // the boundary. Yahoo's own intraday range limits: 15m bars only go back
 // ~60 days, 60m bars ~2 years - both comfortably over the 60-bar minimum
 // the orchestrator requires, so no further fallback is needed.
-public class YahooMarketDataProvider(IHttpClientFactory httpClientFactory) : IMarketDataProvider
+public class YahooMarketDataProvider(IHttpClientFactory httpClientFactory, IConfiguration? config = null) : IMarketDataProvider
 {
     public string Name => "Yahoo";
 
@@ -31,6 +31,8 @@ public class YahooMarketDataProvider(IHttpClientFactory httpClientFactory) : IMa
     public async Task<IReadOnlyList<NormalizedCandle>> GetCandlesAsync(
         string canonicalSymbol, string providerSymbol, Timeframe timeframe, CancellationToken ct = default)
     {
+        if (canonicalSymbol == "WTI/USD" && !string.IsNullOrWhiteSpace(config?["MarketData:SnapshotPath"]))
+            return CandleQualityChecker.Annotate(MarketHistoryBridge.Load(config["MarketData:SnapshotPath"]!, canonicalSymbol, timeframe, DateTime.UtcNow), timeframe, DateTime.UtcNow);
         var (interval, range) = ParamsFor(timeframe);
         var raw = await FetchRawCached(providerSymbol, interval, range, ct);
         if (raw.Count == 0)

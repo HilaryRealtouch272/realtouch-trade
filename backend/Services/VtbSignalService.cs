@@ -95,7 +95,20 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         string Id, string Symbol, string Side, DateTime EntryTimeUtc, decimal EntryRef, decimal Stop, decimal Target, decimal Risk,
         string Status, DateTime? ExitTimeUtc, decimal? Exit, string? ExitReason, decimal? R, decimal RiskMultiplier,
         bool OpenAlertPending = false, bool OutcomeAlertPending = false,
-        string? ExitMode = null, DateTime? ConfirmedAtUtc = null, bool HiddenFromLedger = false);
+        string? ExitMode = null, DateTime? ConfirmedAtUtc = null, bool HiddenFromLedger = false, string? PriceSource = null);
+
+    public record MarketFeedStatus(string Symbol, string State, string Source, DateTime CheckedAtUtc,
+        DateTime? LastBarUtc = null, int CompleteBars = 0);
+    private readonly Dictionary<string, MarketFeedStatus> _marketFeeds = new();
+    public IReadOnlyList<MarketFeedStatus> GetMarketFeeds() { lock (_lock) return _marketFeeds.Values.ToList(); }
+    private bool UsesBridge(string symbol) => !string.IsNullOrWhiteSpace(config["MarketData:SnapshotPath"])
+        && symbol is "WTI/USD" or SpxTrendRules.Symbol;
+    private void FeedState(string symbol, string state, IReadOnlyList<NormalizedCandle>? daily = null)
+    {
+        lock (_lock) _marketFeeds[symbol] = new(symbol, state,
+            UsesBridge(symbol) ? symbol == "WTI/USD" ? "Exness USOILm · UTC daily" : "SPX cash index · via AWS" : "Direct provider",
+            UtcNow, daily?.LastOrDefault()?.CloseTimeUtc, daily?.Count(c => c.IsComplete && c.CloseTimeUtc <= UtcNow) ?? 0);
+    }
 
     public IReadOnlyList<VtbLogEntry> GetAll() { lock (_lock) return _entries.Where(e => !e.HiddenFromLedger).ToList(); }
 
@@ -111,6 +124,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                 try
                 {
                     var daily = await GetDailyHistoryAsync(market);
+                    FeedState(market.Symbol, "Receiving data", daily);
                     var now = UtcNow;
                     SettleOpenPositions(market, daily, now);
                     var complete = daily.Where(c => c.IsComplete && c.CloseTimeUtc <= now).ToList();
@@ -119,11 +133,24 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                     lock (_lock) cancelled = _entries.Where(e => e.Symbol == market.Symbol && e.Status == "Cancelled")
                         .Select(e => e.EntryTimeUtc).ToHashSet();
                     var (_, open) = VtbRules.Replay(complete, market.ChannelN, market.RewardToRisk, cancelled);
-                    ReconcileOpen(market, open);
+                    if (market.Symbol == "WTI/USD" && UsesBridge(market.Symbol))
+                    {
+                        // Source cutover never backfills an already-open historical replay.
+                        var last = complete[^1];
+                        var ind = VtbRules.ComputeIndicators(complete, market.ChannelN)[^1];
+                        var side = VtbRules.SignalAt(ind);
+                        var risk = ind.Atr14 * VtbRules.StopAtrMultiple;
+                        open = side is null || risk <= 0 || now - last.CloseTimeUtc > TimeSpan.FromMinutes(15) ? null :
+                            new(side.Value, last.OpenTimeUtc, last.Close, risk,
+                                last.Close + (side == VtbSide.Long ? -risk : risk),
+                                last.Close + (side == VtbSide.Long ? risk : -risk) * market.RewardToRisk);
+                    }
+                    ReconcileOpen(market, open, UsesBridge(market.Symbol) ? daily[0].Provider : null);
                     SettleOpenPositions(market, daily, now);
                 }
                 catch (Exception ex)
                 {
+                    FeedState(market.Symbol, "Feed unavailable · new entries blocked");
                     logger.LogWarning(ex, "VTB: could not process {Symbol}", market.Symbol);
                 }
             }
@@ -143,6 +170,8 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             {
                 var e = _entries[idx];
                 if (e.Symbol != market.Symbol || e.Status != "Open") continue;
+                if (market.Symbol == "WTI/USD" && UsesBridge(market.Symbol) && e.PriceSource != "Exness")
+                    continue; // Never settle legacy futures-reference levels against a CFD feed.
                 var position = new VtbPosition(Enum.Parse<VtbSide>(e.Side), e.EntryTimeUtc, e.EntryRef, e.Risk, e.Stop, e.Target);
                 var trade = VtbRules.Settle(position, daily, now);
                 if (trade is null) continue;
@@ -158,7 +187,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         }
     }
 
-    private void ReconcileOpen(MarketConfig market, VtbPosition? open)
+    private void ReconcileOpen(MarketConfig market, VtbPosition? open, string? priceSource = null)
     {
         if (open is null || !MarketHours.NewEntriesAllowed(market.Symbol, UtcNow)) return;
         bool alreadyLogged;
@@ -194,7 +223,8 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             }
 
             opened = new VtbLogEntry(Guid.NewGuid().ToString("N"), market.Symbol, open.Side.ToString(), open.EntryTimeUtc,
-                open.EntryRef, open.Stop, open.Target, open.Risk, "Open", null, null, null, null, riskMultiplier, OpenAlertPending: true);
+                open.EntryRef, open.Stop, open.Target, open.Risk, "Open", null, null, null, null, riskMultiplier,
+                OpenAlertPending: true, PriceSource: priceSource);
             _entries.Add(opened);
             Persist();
         }
@@ -212,6 +242,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         {
             var market = new MarketConfig(SpxTrendRules.Symbol, VtbDataSource.Yahoo, "^GSPC", 55, 0m);
             var daily = await GetDailyHistoryAsync(market);
+            FeedState(market.Symbol, "Receiving data", daily);
             var now = UtcNow;
             lock (_lock)
             {
@@ -247,7 +278,10 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                 Persist();
             }
         }
-        catch (Exception ex) { logger.LogWarning(ex, "SPX trend: could not process daily history"); }
+        catch (Exception ex) {
+            FeedState(SpxTrendRules.Symbol, "Feed unavailable · new entries blocked");
+            logger.LogWarning(ex, "SPX trend: could not process daily history");
+        }
     }
 
     // Refresh the deep indicator history once per UTC day and its recent tail every scan.
@@ -255,6 +289,8 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     private async Task<IReadOnlyList<NormalizedCandle>> GetDailyHistoryAsync(MarketConfig market)
     {
         var now = UtcNow;
+        if (UsesBridge(market.Symbol))
+            return MarketHistoryBridge.Load(config["MarketData:SnapshotPath"]!, market.Symbol, Timeframe.Daily, now);
         var cacheAll = DiskCache.Load<Dictionary<string, HistoryCacheEntry>>(_historyCachePath) ?? new();
         cacheAll.TryGetValue(market.Symbol, out var cached);
         var warm = cached is not null && cached.FetchedAtUtc.Date == now.Date;

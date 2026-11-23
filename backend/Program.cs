@@ -267,6 +267,7 @@ app.MapGet("/api/signal-log", (SignalLogService signalLog) => Results.Ok(signalL
 
 app.MapGet("/api/vtb-log", (VtbSignalService vtb) => Results.Ok(vtb.GetAll()))
 .WithName("GetVtbLog");
+app.MapGet("/api/vtb-feed-status", (VtbSignalService vtb) => Results.Ok(vtb.GetMarketFeeds()));
 
 app.MapGet("/api/signal-status", (SignalAlertService alerts, TelegramDeliveryOutbox delivery) =>
     Results.Ok(SignalStatusReport.Build(alerts, delivery)));
@@ -543,6 +544,8 @@ async Task RunScanOnceAsync(IServiceProvider services)
         var vtbPath = Environment.GetEnvironmentVariable("VTB_LOG_OUTPUT_PATH")
             ?? Path.Combine(env.ContentRootPath, "vtb-log.json");
         await File.WriteAllTextAsync(vtbPath, System.Text.Json.JsonSerializer.Serialize(vtb.GetAll(), jsonOptions));
+        await File.WriteAllTextAsync(Path.Combine(Path.GetDirectoryName(vtbPath)!, "vtb-feed-status.json"),
+            System.Text.Json.JsonSerializer.Serialize(vtb.GetMarketFeeds(), jsonOptions));
     }
     catch (Exception ex)
     {

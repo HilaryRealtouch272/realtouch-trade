@@ -682,6 +682,19 @@ async function renderVtbLedger() {
   const body = $("#vtbBody");
   if (!body) return;
   let vtbEntries = [];
+  const feedStatus = $("#vtbFeedStatus");
+  if (feedStatus) {
+    try {
+      const path = IS_STATIC_DEPLOYMENT ? `vtb-feed-status.json?_=${Date.now()}` : `${API_BASE}/api/vtb-feed-status`;
+      const response = await fetch(path, { cache: "no-store" });
+      if (!response.ok) throw new Error("Feed report unavailable");
+      const feeds = await response.json();
+      feedStatus.textContent = feeds.map(f => {
+        const stale = Date.now() - new Date(f.checkedAtUtc).getTime() > 30 * 60 * 1000;
+        return `${f.symbol}: ${stale ? "Status stale" : f.state} · ${f.source}${f.completeBars ? ` · ${f.completeBars} closed daily bars` : ""}`;
+      }).join(" | ") || "No market feed report available";
+    } catch { feedStatus.textContent = "Market feed status unavailable—do not assume prices are current."; }
+  }
   try { vtbEntries = await fetchVtbEntries(); }
   catch (err) { console.error("Could not load VTB ledger:", err); }
   if (!vtbEntries.length) {

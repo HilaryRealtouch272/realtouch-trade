@@ -73,6 +73,23 @@ jobs:
       - name: Build backend
         run: dotnet build backend/RealtouchSmartTrade.Api.csproj -c Release -o backend-build
 
+      - name: Read-only AWS market-data credentials
+        id: market_credentials
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::271251458596:role/realtouch-market-data-reader
+          aws-region: us-east-1
+          role-duration-seconds: 900
+          retry-max-attempts: 3
+
+      - name: Download private WTI and SPX candle snapshot
+        if: ${{ steps.market_credentials.outcome == 'success' }}
+        continue-on-error: true
+        run: |
+          aws s3 cp s3://realtouch-demo-bootstrap-271251458596/market-data/vtb-snapshot.json market-data-snapshot.json.tmp --only-show-errors
+          mv market-data-snapshot.json.tmp market-data-snapshot.json
+
       - name: Run one-shot scan (real engine + Telegram alerts)
         env:
           ASPNETCORE_ENVIRONMENT: Production
@@ -87,6 +104,7 @@ jobs:
           # why Telegram re-alerted on setups that hadn't actually changed
           # and why the signal tracker's history wasn't accumulating.
           ASPNETCORE_CONTENTROOT: ${{ github.workspace }}/backend
+          MarketData__SnapshotPath: ${{ github.workspace }}/market-data-snapshot.json
           # Right-hand side names match what's actually configured in this
           # repo's Settings -> Secrets and variables -> Actions (double
           # underscore, no separating underscore before "APIKEYS") - GitHub
@@ -170,6 +188,7 @@ jobs:
           cp signals.json frontend/dist/frontend/browser/signals.json
           cp signal-log.json frontend/dist/frontend/browser/signal-log.json
           cp vtb-log.json frontend/dist/frontend/browser/vtb-log.json || echo "VTB output unavailable this scan"
+          cp vtb-feed-status.json frontend/dist/frontend/browser/vtb-feed-status.json || echo "VTB feed status unavailable this scan"
           cp signal-status.json frontend/dist/frontend/browser/signal-status.json || echo "Signal status unavailable this scan"
           cp diagnostics.json frontend/dist/frontend/browser/diagnostics.json
           cp reconciliation.json frontend/dist/frontend/browser/reconciliation.json || echo "no reconciliation report this run"
