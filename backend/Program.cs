@@ -432,6 +432,7 @@ async Task RunScanOnceAsync(IServiceProvider services)
 
     var fxResults = new List<OrchestratorResult>();
     var freshFxResults = new List<OrchestratorResult>();
+    var useBrokerOil = !string.IsNullOrWhiteSpace(services.GetRequiredService<IConfiguration>()["MarketData:SnapshotPath"]);
     var fxInstruments = SetupCatalog.Instruments.Where(i => i.Source is DataSource.TwelveData or DataSource.Yahoo).ToList();
     foreach (var tf in TimeframeIntervals.All)
     {
@@ -442,7 +443,18 @@ async Task RunScanOnceAsync(IServiceProvider services)
         {
             scanLogger.LogInformation("Skipping FX {Timeframe} - {Reason}, carrying forward prior results",
                 label, "scanned recently");
-            fxResults.AddRange(fxInstruments.Select(i => priorResults[(i.Symbol, label)]));
+            foreach (var instrument in fxInstruments)
+            {
+                // Broker snapshots are local reads, not quota-limited FX requests.
+                // Refresh only WTI so old Yahoo failures cannot linger for a Daily/Weekly interval.
+                if (instrument.Symbol == "WTI/USD" && useBrokerOil)
+                {
+                    var result = await orchestrator.Evaluate(instrument, tf);
+                    fxResults.Add(result);
+                    freshFxResults.Add(result);
+                }
+                else fxResults.Add(priorResults[(instrument.Symbol, label)]);
+            }
             continue;
         }
 

@@ -492,7 +492,7 @@ public class SignalOrchestrator(
         {
             if (tf == displayTimeframe) { result[tf] = mainCondition; continue; }
 
-            var cacheKey = (provider.Name, instrument.Symbol, tf);
+            var cacheKey = (provider is YahooMarketDataProvider oil ? oil.ContextCacheIdentity(instrument.Symbol) : provider.Name, instrument.Symbol, tf);
             // A cached entry saved before levels were stored has none: refetch once.
             if (_contextCache.TryGetValue(cacheKey, out var cached) && cached.Levels is not null && now - cached.FetchedAtUtc < ContextCacheTtl(tf))
             {

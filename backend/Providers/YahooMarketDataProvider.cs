@@ -17,6 +17,8 @@ namespace RealtouchSmartTrade.Api.Providers;
 public class YahooMarketDataProvider(IHttpClientFactory httpClientFactory, IConfiguration? config = null) : IMarketDataProvider
 {
     public string Name => "Yahoo";
+    public string ContextCacheIdentity(string symbol) => symbol == "WTI/USD"
+        && !string.IsNullOrWhiteSpace(config?["MarketData:SnapshotPath"]) ? "ExnessUSOILm" : Name;
 
     private static (string Interval, string Range) ParamsFor(Timeframe tf) => tf switch
     {
