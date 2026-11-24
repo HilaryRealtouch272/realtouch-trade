@@ -1,1 +1,1 @@
-{}
+{"vtb:65a892da521245919986b93007ec7058":{"Signal":{"Id":"vtb:65a892da521245919986b93007ec7058","Flow":"vtb","Symbol":"WTI/USD","Side":"Short","QualifiedAtUtc":"2026-11-24T00:00:00Z","EntryDeadlineUtc":"2026-11-24T00:15:00Z","CloseByUtc":"2026-12-14T00:00:00Z","Entry":80.187,"ZoneMin":80.187,"ZoneMax":80.187,"Stop":86.10889285714285714285714286,"Targets":[71.304160714285714285714285714],"RiskMultiplier":0.125,"NotificationId":"65a892da521245919986b93007ec7058:open","TelegramDeliveredAtUtc":null}}}
