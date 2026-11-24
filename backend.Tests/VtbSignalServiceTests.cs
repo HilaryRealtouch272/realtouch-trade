@@ -290,15 +290,96 @@ public class VtbSignalServiceTests : IDisposable
             TelegramAccepted = false
         };
         http.Candles.Add(Daily(Today.AddDays(-1), high: 111m, close: 110m));
-        var service = Service(http);
+        var service = Service(http, now: Today.AddMinutes(5));
         await service.ProcessAsync();
         Assert.NotEmpty(service.GetAll());
         var ids = service.GetAll().Select(e => e.Id).ToArray();
         http.TelegramAccepted = true;
-        var restarted = Service(http);
+        var restarted = Service(http, now: Today.AddMinutes(10));
         await restarted.ProcessAsync();
         Assert.Equal(ids, restarted.GetAll().Select(e => e.Id).ToArray());
         Assert.All(restarted.GetAll(), e => Assert.Equal("Open", e.Status));
+        Assert.All(restarted.GetAll(), e => Assert.Equal(Today, e.ConfirmedAtUtc));
+        Assert.NotEmpty(http.TelegramMessages);
+    }
+
+    private static Http FreshBreakout() => new() { Candles = Enumerable.Range(2, 225)
+        .Select(i => Daily(Today.AddDays(-i))).Reverse()
+        .Append(Daily(Today.AddDays(-1), high: 111m, close: 110m)).ToList() };
+
+    [Theory]
+    [InlineData(16)]
+    [InlineData(720)]
+    [InlineData(7200)]
+    public async Task HistoricalBreakoutCannotBackfillAfterFreshWindow(int minutes)
+    {
+        var http = FreshBreakout();
+        var service = Service(http, now: Today.AddMinutes(minutes));
+        await service.ProcessAsync();
+        Assert.Empty(service.GetAll());
+        Assert.Empty(http.TelegramMessages);
+    }
+
+    [Theory]
+    [InlineData("Long")]
+    [InlineData("Short")]
+    public async Task SavedOpenPositionBlocksEitherDirectionForSamePair(string side)
+    {
+        DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[] {
+            new VtbSignalService.VtbLogEntry("existing", "BTC/USDT", side, Today.AddDays(-3),
+                100m, side == "Long" ? 50m : 150m, side == "Long" ? 150m : 50m,
+                50m, "Open", null, null, null, null, .5m)
+        });
+        var service = Service(FreshBreakout(), now: Today.AddMinutes(5));
+        await service.ProcessAsync();
+        Assert.Single(service.GetAll(), e => e.Symbol == "BTC/USDT");
+        Assert.Equal("Open", service.GetAll().Single(e => e.Id == "existing").Status);
+    }
+
+    [Theory]
+    [InlineData(-1, true)]
+    [InlineData(1, false)]
+    public async Task ClosedPositionOccupancyUsesConfirmationTime(int exitMinutes, bool admitted)
+    {
+        DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[] {
+            new VtbSignalService.VtbLogEntry("previous", "BTC/USDT", "Long", Today.AddDays(-3),
+                100m, 50m, 150m, 50m, "Closed", Today.AddMinutes(exitMinutes), 150m, "Target", 1m, 1m)
+        });
+        var service = Service(FreshBreakout(), now: Today.AddMinutes(5));
+        await service.ProcessAsync();
+        Assert.Equal(admitted ? 2 : 1, service.GetAll().Count(e => e.Symbol == "BTC/USDT"));
+    }
+
+    [Fact]
+    public async Task RetryExpiresWithoutAlteringTrackedPosition()
+    {
+        var http = FreshBreakout();
+        http.TelegramAccepted = false;
+        await Service(http, now: Today.AddMinutes(5)).ProcessAsync();
+        var attempts = http.TelegramMessages.Count;
+        Assert.True(attempts > 0);
+        http.TelegramAccepted = true;
+        var service = Service(http, now: Today.AddMinutes(16));
+        await service.ProcessAsync();
+        Assert.Equal(attempts, http.TelegramMessages.Count);
+        Assert.All(service.GetAll(), e => { Assert.Equal("Open", e.Status); Assert.False(e.OpenAlertPending); });
+    }
+
+    [Fact]
+    public async Task ClosingSavedPositionDuringScanCannotImportAnEarlierBreakout()
+    {
+        SeedLegacyOpen(entryTimeUtc: Today.AddDays(-8));
+        var http = new Http { Candles = Enumerable.Range(2, 225)
+            .Select(i => Daily(Today.AddDays(-i))).Reverse().ToList() };
+        http.Candles.Add(Daily(Today.AddDays(-1), high: 101m, low: 89m, close: 90m));
+        // Saved short reaches its target now, while the historical replay short stays open.
+        http.Candles.Add(Daily(Today, high: 91m, low: 79m, close: 85m));
+        var service = Service(http, now: Today.AddMinutes(5));
+        await service.ProcessAsync();
+        var btc = Assert.Single(service.GetAll(), e => e.Symbol == "BTC/USDT");
+        Assert.Equal("saved-short", btc.Id);
+        Assert.Equal("Closed", btc.Status);
+        Assert.DoesNotContain(http.TelegramMessages, m => m.Contains("Entry+90"));
     }
 
     [Fact]
@@ -389,7 +470,7 @@ public class VtbSignalServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task SundayHoldsQueuedEntriesAndDeliversOutcomesAcrossRestart()
+    public async Task SundayDeliversOutcomesButStaleQueuedEntryNeverResumesOnMonday()
     {
         SeedLegacyOpen();
         SeedQueuedAlerts();
@@ -398,8 +479,9 @@ public class VtbSignalServiceTests : IDisposable
         Assert.Contains("Pending+VTB+outcome", Assert.Single(http.TelegramMessages));
 
         await Service(http).ProcessAsync();
-        Assert.Equal(2, http.TelegramMessages.Count);
-        Assert.Contains("Pending+VTB+entry", http.TelegramMessages[1]);
+        Assert.Single(http.TelegramMessages);
+        using var delivery = JsonDocument.Parse(File.ReadAllText(Path.Combine(_root, ".cache", "vtb-telegram-delivery.json")));
+        Assert.Equal("Cancelled", delivery.RootElement.GetProperty("Receipts").GetProperty("saved-short:open").GetProperty("Status").GetString());
     }
 
     [Fact]

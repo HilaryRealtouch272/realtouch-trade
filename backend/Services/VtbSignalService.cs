@@ -77,10 +77,21 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         {
             var entry = _entries.FirstOrDefault(e => e.Id + ":open" == id);
             return entry is { Status: "Open" } && MarketHours.NewEntriesAllowed(entry.Symbol, UtcNow)
-                && (entry.ExitMode != SpxTrendRules.ExitMode ||
-                    (entry.ConfirmedAtUtc is DateTime confirmed && UtcNow >= confirmed && UtcNow - confirmed <= TimeSpan.FromMinutes(45)));
+                && IsFreshEntry(entry.ConfirmedAtUtc ?? entry.EntryTimeUtc.AddDays(1), entry.ExitMode)
+                && !OverlapsSavedPosition(entry.Symbol, entry.ConfirmedAtUtc ?? entry.EntryTimeUtc.AddDays(1), entry.Id);
         }
     }
+
+    private bool IsFreshEntry(DateTime confirmed, string? exitMode = null) =>
+        UtcNow >= confirmed && UtcNow - confirmed <= TimeSpan.FromMinutes(exitMode == SpxTrendRules.ExitMode ? 45 : 15);
+
+    // The saved ledger, not a reconstruction using revised history, owns position occupancy.
+    // Compare actual confirmation times: EntryTimeUtc is the signal candle's open label.
+    private bool OverlapsSavedPosition(string symbol, DateTime confirmed, string? exceptId = null) =>
+        _entries.Any(e => e.Symbol == symbol && e.Id != exceptId && e.Status != "Cancelled" &&
+            (e.Status == "Open" ||
+                ((e.ConfirmedAtUtc ?? e.EntryTimeUtc.AddDays(1)) <= confirmed &&
+                 (e.ExitTimeUtc is null || e.ExitTimeUtc > confirmed))));
 
     private record HistoryCacheEntry(DateTime FetchedAtUtc, List<NormalizedCandle> Candles);
 
@@ -132,20 +143,18 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                     HashSet<DateTime> cancelled;
                     lock (_lock) cancelled = _entries.Where(e => e.Symbol == market.Symbol && e.Status == "Cancelled")
                         .Select(e => e.EntryTimeUtc).ToHashSet();
-                    var (_, open) = VtbRules.Replay(complete, market.ChannelN, market.RewardToRisk, cancelled);
-                    if (market.Symbol == "WTI/USD" && UsesBridge(market.Symbol))
-                    {
-                        // Source cutover never backfills an already-open historical replay.
-                        var last = complete[^1];
-                        var ind = VtbRules.ComputeIndicators(complete, market.ChannelN)[^1];
-                        var side = VtbRules.SignalAt(ind);
-                        var risk = ind.Atr14 * VtbRules.StopAtrMultiple;
-                        open = side is null || risk <= 0 || now - last.CloseTimeUtc > TimeSpan.FromMinutes(15) ? null :
-                            new(side.Value, last.OpenTimeUtc, last.Close, risk,
-                                last.Close + (side == VtbSide.Long ? -risk : risk),
-                                last.Close + (side == VtbSide.Long ? risk : -risk) * market.RewardToRisk);
-                    }
-                    ReconcileOpen(market, open, UsesBridge(market.Symbol) ? daily[0].Provider : null);
+                    // Production admits only a freshly confirmed latest candle. Historical
+                    // replay remains a backtest tool and must never backfill live entries.
+                    var last = complete[^1];
+                    var ind = VtbRules.ComputeIndicators(complete, market.ChannelN)[^1];
+                    var side = VtbRules.SignalAt(ind);
+                    var risk = ind.Atr14 * VtbRules.StopAtrMultiple;
+                    VtbPosition? open = side is null || risk <= 0 || cancelled.Contains(last.OpenTimeUtc)
+                        || !IsFreshEntry(last.CloseTimeUtc) ? null :
+                        new(side.Value, last.OpenTimeUtc, last.Close, risk,
+                            last.Close + (side == VtbSide.Long ? -risk : risk),
+                            last.Close + (side == VtbSide.Long ? risk : -risk) * market.RewardToRisk);
+                    ReconcileOpen(market, open, UsesBridge(market.Symbol) ? daily[0].Provider : null, last.CloseTimeUtc);
                     SettleOpenPositions(market, daily, now);
                 }
                 catch (Exception ex)
@@ -187,11 +196,14 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         }
     }
 
-    private void ReconcileOpen(MarketConfig market, VtbPosition? open, string? priceSource = null)
+    private void ReconcileOpen(MarketConfig market, VtbPosition? open, string? priceSource = null, DateTime? confirmedAtUtc = null)
     {
         if (open is null || !MarketHours.NewEntriesAllowed(market.Symbol, UtcNow)) return;
         bool alreadyLogged;
-        lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && (e.EntryTimeUtc == open.EntryTimeUtc || e.Status == "Open"));
+        var confirmed = confirmedAtUtc ?? open.EntryTimeUtc.AddDays(1);
+        if (!IsFreshEntry(confirmed)) return;
+        lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && e.EntryTimeUtc == open.EntryTimeUtc)
+            || OverlapsSavedPosition(market.Symbol, confirmed);
         if (alreadyLogged) return;
 
         VtbLogEntry opened;
@@ -224,7 +236,7 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
 
             opened = new VtbLogEntry(Guid.NewGuid().ToString("N"), market.Symbol, open.Side.ToString(), open.EntryTimeUtc,
                 open.EntryRef, open.Stop, open.Target, open.Risk, "Open", null, null, null, null, riskMultiplier,
-                OpenAlertPending: true, PriceSource: priceSource);
+                OpenAlertPending: true, ConfirmedAtUtc: confirmed, PriceSource: priceSource);
             _entries.Add(opened);
             Persist();
         }
@@ -266,7 +278,8 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
                 // Do not resurrect old research positions or Monday-alert Friday's setup.
                 if (!SpxTrendRules.FreshEntry(last, now)) return;
                 if (VtbRules.SignalAt(VtbRules.ComputeIndicators(complete, 55)[^1]) != VtbSide.Long) return;
-                if (_entries.Any(e => e.Symbol == market.Symbol && (e.Status == "Open" || e.EntryTimeUtc == last.OpenTimeUtc))) return;
+                if (_entries.Any(e => e.Symbol == market.Symbol && e.EntryTimeUtc == last.OpenTimeUtc)
+                    || OverlapsSavedPosition(market.Symbol, last.CloseTimeUtc)) return;
                 // Admission guard for this new sleeve; existing four-market behavior stays intact.
                 if (_entries.Count(e => e.Status == "Open") >= 4 || _risk.DrawdownGuardTripped
                     || _risk.PeakEquityR - _risk.CumulativeR >= DrawdownGuardR) return;
@@ -392,7 +405,21 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
     private async Task SendPendingAlertsAsync()
     {
         List<VtbLogEntry> pending;
-        lock (_lock) pending = _entries.Where(e => e.OpenAlertPending || e.OutcomeAlertPending).ToList();
+        lock (_lock)
+        {
+            for (var i = 0; i < _entries.Count; i++)
+            {
+                var entry = _entries[i];
+                if (IsFreshEntry(entry.ConfirmedAtUtc ?? entry.EntryTimeUtc.AddDays(1), entry.ExitMode)) continue;
+                Delivery.CancelPending(entry.Id + ":open");
+                if (entry.OpenAlertPending)
+                {
+                    _entries[i] = entry with { OpenAlertPending = false };
+                    Persist();
+                }
+            }
+            pending = _entries.Where(e => e.OpenAlertPending || e.OutcomeAlertPending).ToList();
+        }
         foreach (var entry in pending)
         {
             var openQueued = entry.OpenAlertPending && MarketHours.NewEntriesAllowed(entry.Symbol, UtcNow)
