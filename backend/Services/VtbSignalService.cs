@@ -202,8 +202,27 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
         bool alreadyLogged;
         var confirmed = confirmedAtUtc ?? open.EntryTimeUtc.AddDays(1);
         if (!IsFreshEntry(confirmed)) return;
-        lock (_lock) alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && e.EntryTimeUtc == open.EntryTimeUtc)
-            || OverlapsSavedPosition(market.Symbol, confirmed);
+        lock (_lock)
+        {
+            alreadyLogged = _entries.Any(e => e.Symbol == market.Symbol && e.EntryTimeUtc == open.EntryTimeUtc);
+            if (alreadyLogged) return;
+            // Only a fresh, fully qualified opposite signal can replace a position.
+            // Same-direction signals remain blocked and past occupancy is never backfilled.
+            foreach (var old in _entries.Where(e => e.Symbol == market.Symbol && e.Status == "Open"
+                && e.Side != open.Side.ToString()).ToList())
+            {
+                if (old.PriceSource != priceSource || (old.ConfirmedAtUtc ?? old.EntryTimeUtc.AddDays(1)) >= confirmed) return;
+                var realized = (old.Side == "Long" ? 1m : -1m) * (open.EntryRef - old.EntryRef) / old.Risk * old.RiskMultiplier;
+                var index = _entries.FindIndex(e => e.Id == old.Id);
+                _entries[index] = old with { Status = "Closed", ExitTimeUtc = confirmed, Exit = open.EntryRef,
+                    ExitReason = "Reversal", R = realized, OpenAlertPending = false, OutcomeAlertPending = true };
+                _risk.CumulativeR += realized;
+                _risk.PeakEquityR = Math.Max(_risk.PeakEquityR, _risk.CumulativeR);
+                Persist();
+                Delivery.CancelPending(old.Id + ":open");
+            }
+            alreadyLogged = OverlapsSavedPosition(market.Symbol, confirmed);
+        }
         if (alreadyLogged) return;
 
         VtbLogEntry opened;
@@ -458,7 +477,14 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             (e.RiskMultiplier < 1m ? $"\n⚠️ Short - sized at {e.RiskMultiplier:0.0}x risk" : "") +
             "\n\nVTB trade signal.";
         var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":open");
-        if (success && e.ExitMode != SpxTrendRules.ExitMode) autoTrading?.Vtb(e, e.Id + ":open");
+        if (success && e.ExitMode != SpxTrendRules.ExitMode)
+        {
+            string[] replaces;
+            lock (_lock) replaces = _entries.Where(old => old.Symbol == e.Symbol && old.Side != e.Side
+                && old.Status == "Closed" && old.ExitReason == "Reversal" && old.ExitTimeUtc == e.ConfirmedAtUtc)
+                .Select(old => "vtb:" + old.Id).ToArray();
+            autoTrading?.Vtb(e, e.Id + ":open", replaces);
+        }
         if (!success) logger.LogWarning("VTB open Telegram alert failed for {Symbol}: {Error}", e.Symbol, error);
         return success;
     }

@@ -323,7 +323,7 @@ public class VtbSignalServiceTests : IDisposable
     [Theory]
     [InlineData("Long")]
     [InlineData("Short")]
-    public async Task SavedOpenPositionBlocksEitherDirectionForSamePair(string side)
+    public async Task SavedPositionBlocksSameDirectionOrReversesOnFreshOpposite(string side)
     {
         DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[] {
             new VtbSignalService.VtbLogEntry("existing", "BTC/USDT", side, Today.AddDays(-3),
@@ -332,8 +332,19 @@ public class VtbSignalServiceTests : IDisposable
         });
         var service = Service(FreshBreakout(), now: Today.AddMinutes(5));
         await service.ProcessAsync();
-        Assert.Single(service.GetAll(), e => e.Symbol == "BTC/USDT");
-        Assert.Equal("Open", service.GetAll().Single(e => e.Id == "existing").Status);
+        Assert.Single(service.GetAll(), e => e.Symbol == "BTC/USDT" && e.Status == "Open");
+        var previous = service.GetAll().Single(e => e.Id == "existing");
+        if (side == "Long") Assert.Equal("Open", previous.Status);
+        else
+        {
+            Assert.Equal("Closed", previous.Status);
+            Assert.Equal("Reversal", previous.ExitReason);
+            Assert.Equal(Today, previous.ExitTimeUtc);
+            Assert.Equal(-.1m, previous.R);
+            Assert.Equal(110m, previous.Exit);
+            await Service(http: FreshBreakout(), now: Today.AddMinutes(6)).ProcessAsync();
+            Assert.Equal(2, Service(FreshBreakout()).GetAll().Count(e => e.Symbol == "BTC/USDT"));
+        }
     }
 
     [Theory]
@@ -348,6 +359,19 @@ public class VtbSignalServiceTests : IDisposable
         var service = Service(FreshBreakout(), now: Today.AddMinutes(5));
         await service.ProcessAsync();
         Assert.Equal(admitted ? 2 : 1, service.GetAll().Count(e => e.Symbol == "BTC/USDT"));
+    }
+
+    [Fact]
+    public async Task StaleOppositeBreakoutDoesNotReverseSavedPosition()
+    {
+        DiskCache.Save(Path.Combine(_root, ".cache", "vtb-signal-log.json"), new[] {
+            new VtbSignalService.VtbLogEntry("existing", "BTC/USDT", "Short", Today.AddDays(-3),
+                100m, 150m, 50m, 50m, "Open", null, null, null, null, .5m)
+        });
+        var service = Service(FreshBreakout(), now: Today.AddHours(12));
+        await service.ProcessAsync();
+        Assert.Equal("Open", service.GetAll().Single(e => e.Id == "existing").Status);
+        Assert.Single(service.GetAll(), e => e.Symbol == "BTC/USDT");
     }
 
     [Fact]

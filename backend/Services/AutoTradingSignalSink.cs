@@ -14,7 +14,7 @@ public sealed class AutoTradingSignalSink(IConfiguration config, ILogger<AutoTra
         DateTime QualifiedAtUtc, DateTime EntryDeadlineUtc, DateTime CloseByUtc,
         decimal Entry, decimal ZoneMin, decimal ZoneMax, decimal Stop,
         decimal[] Targets, decimal RiskMultiplier, string? NotificationId = null,
-        DateTime? TelegramDeliveredAtUtc = null);
+        DateTime? TelegramDeliveredAtUtc = null, string[]? Replaces = null);
     public record Candidate(Intent Signal);
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
     private readonly object gate = new();
@@ -30,15 +30,15 @@ public sealed class AutoTradingSignalSink(IConfiguration config, ILogger<AutoTra
             [signal.Tp1, signal.Tp2, signal.Tp3], 1m, notificationId));
     }
 
-    public void Vtb(VtbSignalService.VtbLogEntry entry, string? notificationId = null)
+    public void Vtb(VtbSignalService.VtbLogEntry entry, string? notificationId = null, string[]? replaces = null)
     {
         // SPX has no fixed target/expiry. The current broker worker cannot manage it.
         if (entry.Symbol == SpxTrendRules.Symbol || entry.ExitMode == SpxTrendRules.ExitMode) return;
         // Daily EntryTimeUtc labels the bar OPEN; confirmation is its close.
-        var confirmed = entry.EntryTimeUtc.AddDays(1);
+        var confirmed = entry.ConfirmedAtUtc ?? entry.EntryTimeUtc.AddDays(1);
         Write(new("vtb:" + entry.Id, "vtb", entry.Symbol, entry.Side, confirmed,
             confirmed.AddMinutes(15), confirmed.AddDays(VtbRules.TimeExitDays), entry.EntryRef,
-            entry.EntryRef, entry.EntryRef, entry.Stop, [entry.Target], entry.RiskMultiplier, notificationId));
+            entry.EntryRef, entry.EntryRef, entry.Stop, [entry.Target], entry.RiskMultiplier, notificationId, Replaces: replaces));
     }
 
     private void Write(Intent intent)

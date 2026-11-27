@@ -57,6 +57,18 @@ public class AutoTradingSignalSinkTests : IDisposable
     }
 
     [Fact]
+    public void ReversalCarriesOnlyExplicitPredecessorIdsAndActualConfirmationTime()
+    {
+        var confirmed = Entry().EntryTimeUtc.AddDays(1).AddMinutes(2);
+        Sink(true).Vtb(Entry() with { ConfirmedAtUtc = confirmed }, "id:open", ["vtb:previous"]);
+        var candidates = DiskCache.Load<Dictionary<string, AutoTradingSignalSink.Candidate>>(
+            Path.Combine(root, ".cache", "auto-trading-candidates.json"))!;
+        var intent = Assert.Single(candidates).Value.Signal;
+        Assert.Equal(confirmed, intent.QualifiedAtUtc);
+        Assert.Equal(new[] { "vtb:previous" }, intent.Replaces);
+    }
+
+    [Fact]
     public void FeedRequiresConfirmedEntryAndStillOpenTrade()
     {
         var sink=Sink(true);

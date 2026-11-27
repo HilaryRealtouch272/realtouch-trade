@@ -1,4 +1,14 @@
-# Exness demo autotrading
+# Exness MT5 autotrading
+
+## Owner-controlled real profile
+
+The isolated real profile is described in [LIVE-SETUP.md](LIVE-SETUP.md). It requires an explicit login/server binding, fixed 0.01-lot entries, main TP2 without partial exits, and the owner's `--allow-real-orders` launch option. WTI is blocked in code. Setup and update scripts leave entries disabled; pushing this repository does not update or start an AWS execution worker.
+
+For main signals, `mainEntryPolicy: "zone"` uses the signal's entry zone at both preflight and submission without the additional 0.1R drift cap. The legacy `"drift-and-zone"` default preserves existing demo configurations. Stale entries, invalid stops/targets, excess spread, insufficient remaining reward/risk, broker minimum lots/margin and overlapping positions can still reject a trade. Rejections are reported to beta explicitly; they are not broker fills.
+
+Fresh opposite VTB signals can replace an existing VTB position. The signed intent names its predecessor. Only a matching tracked VTB position can be closed; manual and main positions remain protected. The replacement waits for broker-confirmed closure and uncertain close requests are never resent blindly. SPX stays long-only and is not enabled for broker execution.
+
+`--status` reports the worker heartbeat and connection failures separately from scheduled-task state. A running task does not establish execution readiness. A real fill and its beta delivery must be verified separately. Tests use a simulated broker and do not prove live fills.
 
 ## Deployed signal feed
 
@@ -8,11 +18,11 @@ Use the existing GitHub scanner and cron. **Do not run a second scanner or migra
 
 Run `exness_worker.py --config config.local.json --feed-check` to verify the feed without trading. `--status` includes the latest feed status and broker execution records. The worker polls the signed feed every 30 seconds and reconciles its actual broker positions every five seconds. Between the existing 15-minute scans, a signed snapshot older than five minutes is treated as waiting for the next scan, never as permission to enter old signals.
 
-The account owner elected to keep the $20 demo balance and the existing demo risk caps. Orders below the broker's minimum volume are rejected, never rounded up to force an execution. This is expected risk-limit behavior, not a lost connection. The worker runs on this Windows computer and stops when the computer is off; AWS hosting has not been installed.
+The account owner elected to keep the $20 demo balance and subsequently selected fixed 0.01-lot VTB demo execution with the signal's original SL and single TP. Cash-risk caps are bypassed in that demo mode. Broker minimum volume and margin checks remain enforced; lots are never rounded up to force an execution. Main fixed-lot demo entries use 0.02 total: 0.01 at TP1 and 0.01 at TP2, both with the original SL. See [AWS hosting and cutover](AWS.md) for moving the worker independently of the local computer.
 
-This adds broker execution to **new qualified main and VTB signal events**. The existing Telegram gates, strategy rules and paper ledger are unchanged. The signal producer is enabled in `backend/appsettings.json`; the worker configuration enables **demo** entries. No live mode exists. A matching, explicitly configured Exness demo login/server and symbol map are required before an order can be sent.
+This adds broker execution to **new qualified main and VTB signal events**. The main strategy qualification rules are unchanged. The signal producer is enabled in `backend/appsettings.json`; the example worker configuration selects **demo** entries. The separate real profile requires explicit owner setup. A matching, explicitly configured account and symbol map are required before an order can be sent.
 
-The worker has not been connected to the owner's demo account or tested against Exness yet. The automated tests use a simulated broker. Phone MT5 can monitor the same account but cannot run this worker.
+The worker has connected to the owner's Exness demo account and executed an explicitly authorized XAU/USD VTB test with attached SL and TP. Automated tests use a simulated broker. Phone MT5 can monitor the same account but cannot run this worker.
 
 ## Local demo setup
 
@@ -33,10 +43,10 @@ For a local isolated test, use separate backend state and a test Telegram chat. 
 - Main uses its existing **25% / 50% / 25%** target weights with the original stop on each leg. VTB uses one stop and target. All legs are preflighted before submission. If even one target leg is below minimum lot size, the signal is rejected, never rounded up. A small balance may therefore produce no executable trades.
 - Only one position group per broker symbol across both streams. Existing manual positions and pending orders also block overlap; all account positions count towards risk. A position without a stop blocks new entries. No martingale, averaging or automatic position increases.
 - New entries are blocked on Sundays in Lagos. Stops, targets, reconciliation and time exits continue. This does not add the previously discussed VTB cooldown.
-- Main events have a five-minute entry deadline. VTB has fifteen minutes from the completed daily candle close, **not** from the bar's opening date or a delayed alert. A later scan can still create a paper row, but its old VTB entry will be rejected for execution. Drift above 0.10 of original stop distance, spread above 0.10 of that distance, a stale quote, an invalid broker stop/target, insufficient remaining reward/risk, or an entry outside the main zone also rejects the trade. Missed signals are not chased.
+- Main events have a five-minute entry deadline. VTB has fifteen minutes from the completed daily candle close, **not** from the bar's opening date or a delayed alert. Production VTB admission does not backfill stale historical replay entries. The legacy drift rule rejects a move above 0.10 of original stop distance; main's zone policy replaces that extra drift rule with its entry zone. Spread, stale quotes, invalid stops/targets, insufficient remaining reward/risk and broker constraints still apply. Missed signals are not replayed.
 - Main remaining positions time-exit after the paper ledger's holding window (30 analysis candles from acceptance). VTB time-exits at the close of its 20th holding day. Stops and targets are sent to the broker with every entry and remain there if the worker stops; **time exits require the worker and MT5 to be online**.
 - SQLite remembers every signal and each target leg across restarts. A crash/timeout around order submission causes reconciliation and blocks new entries until the broker outcome is proven. Uncertain orders are never automatically resubmitted. Inspect MT5 positions/orders/deals before resolving an uncertain state; do not delete the database.
-- Actual broker tickets, filled entry prices, volume, stops, closure confirmation and net account-currency P&L are stored in the private execution database. The dashboard paper ledger remains a simulation and is **not** a display of broker fills. Broker history, not paper TP/SL notices, determines actual execution closures. No additional Telegram messages are sent by this worker.
+- Actual broker tickets, filled entry prices, volume, stops, closure confirmation and net account-currency P&L are stored in the private execution database. The dashboard signal ledger is **not** a display of broker fills. Broker history determines actual execution closures. The separate read-only reporter sends broker-confirmed entry/exit and rejected-entry notices to the configured beta destination.
 
 Set `entriesEnabled` to `false` and restart the worker to pause new entries while continuing to track and close existing demo positions. To disable signal production, set `AutoTrading__Enabled=false` for the backend. Stopping the worker does not close open positions. Keep the backend, MT5 and worker supervised; a console window alone is not a reliable production deployment.
 

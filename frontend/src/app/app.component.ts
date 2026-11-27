@@ -674,7 +674,7 @@ function vtbStatusClass(e) {
 function vtbStatusLabel(e) {
   if (e.status === "Cancelled") return "Cancelled (weekend entry)";
   if (e.status !== "Closed") return "Open";
-  const label = e.exitReason === "Stop" ? "Stopped out" : e.exitReason === "Target" ? "Target hit" : e.exitReason === "Channel" ? "50-day low exit" : "Time exit";
+  const label = e.exitReason === "Stop" ? "Stopped out" : e.exitReason === "Target" ? "Target hit" : e.exitReason === "Reversal" ? "Opposite VTB signal exit" : e.exitReason === "Channel" ? "50-day low exit" : "Time exit";
   return `${label} (${e.r > EPS_R ? "win" : e.r < -EPS_R ? "loss" : "flat"})`;
 }
 

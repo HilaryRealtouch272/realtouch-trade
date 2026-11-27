@@ -1,4 +1,4 @@
-"""Private local signal spool -> Exness MT5 DEMO execution. No live mode.
+"""Private signed signal feed -> Exness MT5 execution. Defaults to demo only.
 
 Use desktop MT5 on the same Windows machine. Credentials stay in MT5.
 Only this process may use its execution database (OS lock enforced in main).
@@ -23,6 +23,26 @@ LOG = logging.getLogger("exness-demo")
 
 class Blocked(Exception):
     pass
+
+
+class ReversalPending(Blocked):
+    pass
+
+
+def initialize_terminal(mt5, config):
+    options = {"portable": config.get("terminalPortable", config.get("mode") == "live")}
+    connected = mt5.initialize(config["terminalPath"], **options) if config.get("terminalPath") else mt5.initialize(**options)
+    if not connected:
+        error = mt5.last_error()
+        mt5.shutdown()  # Reset this process's IPC connection, not the terminal/account.
+        raise Blocked(f"MT5 connection failed (code {error[0]}); check the configured {config.get('mode')} terminal and Windows session")
+
+
+def write_worker_status(path, state, reason=""):
+    data = dict(state=state, checkedAtUtc=datetime.now(UTC).isoformat(), reason=reason)
+    temp = path.with_suffix(".tmp")
+    temp.write_text(json.dumps(data), encoding="utf-8")
+    temp.replace(path)
 
 
 def utc(value):
@@ -58,6 +78,11 @@ def validate_intent(s, now):
         raise Blocked("Invalid signal lifetime")
     if (now + timedelta(hours=1)).weekday() == 6:
         raise Blocked("Sunday in Lagos: existing positions only")
+    if not s["symbol"].upper().endswith("/USDT"):
+        if ((now + timedelta(hours=1)).weekday() >= 5 or now.weekday() == 5
+                or (now.weekday() == 4 and now.hour >= 22)
+                or (now.weekday() == 6 and now.hour < 22)):
+            raise Blocked("Non-crypto market closed: existing positions only")
     entry, stop = positive(s["entry"]), positive(s["stop"])
     lo, hi = positive(s["zoneMin"]), positive(s["zoneMax"])
     if not lo <= entry <= hi or not 0 < positive(s["riskMultiplier"]) <= 1:
@@ -70,6 +95,11 @@ def validate_intent(s, now):
         raise Blocked("Invalid stop/target geometry")
     if any(direction * (b - a) <= 0 for a, b in zip(targets, targets[1:])):
         raise Blocked("Targets out of order")
+    replaces = s.get("replaces") or []
+    if (not isinstance(replaces, list) or len(replaces) > 8 or
+            any(not isinstance(identity, str) or not identity.startswith("vtb:") or identity == s["id"] for identity in replaces)
+            or (replaces and s["flow"] != "vtb")):
+        raise Blocked("Invalid VTB reversal references")
 
 
 class Store:
@@ -107,13 +137,25 @@ class Store:
 
 
 class Worker:
-    def __init__(self, mt5, config, store, source=None):
+    def __init__(self, mt5, config, store, source=None, allow_real_orders=False):
         self.mt = mt5
         self.c = config
         self.store = store
         self.source = source
-        if config.get("mode") != "demo":
-            raise Blocked("Only demo execution is implemented; live accounts are prohibited")
+        self.allow_real_orders = allow_real_orders
+        self.main_entry_policy = config.get("mainEntryPolicy", "drift-and-zone")
+        if self.main_entry_policy not in ("drift-and-zone", "zone"):
+            raise Blocked("mainEntryPolicy must be drift-and-zone or zone")
+        self.allowed_flows = config.get("allowedFlows", ["main", "vtb"])
+        if (not isinstance(self.allowed_flows, list) or not self.allowed_flows
+                or any(flow not in ("main", "vtb") for flow in self.allowed_flows)):
+            raise Blocked("allowedFlows must select main and/or vtb")
+        if config.get("mode") not in ("demo", "live"):
+            raise Blocked("Execution mode must be demo or live")
+        if config["mode"] == "live":
+            if (config.get("sizingMode") != "fixed" or config.get("fixedLots") != .01
+                    or config.get("mainFixedLots") != .01 or config.get("mainExitMode") != "tp2"):
+                raise Blocked("Live profile requires 0.01 lots and main TP2 without partial exits")
         for key, ceiling in (("riskPercent", 0.25), ("maxOpenRiskPercent", 0.5),
                              ("dailyLossPercent", 1), ("maxEntryDriftR", 0.1), ("maxSpreadR", 0.1)):
             if positive(config[key]) > ceiling:
@@ -127,11 +169,12 @@ class Worker:
         a, terminal = self.mt.account_info(), self.mt.terminal_info()
         if a is None or terminal is None or not terminal.connected:
             raise Blocked("MT5 is disconnected")
-        if a.trade_mode != self.mt.ACCOUNT_TRADE_MODE_DEMO or "exness" not in a.company.lower():
-            raise Blocked("Connected account must be an Exness DEMO")
+        mode = self.mt.ACCOUNT_TRADE_MODE_DEMO if self.c["mode"] == "demo" else self.mt.ACCOUNT_TRADE_MODE_REAL
+        if a.trade_mode != mode or "exness" not in a.company.lower():
+            raise Blocked("Connected account type does not match the configured Exness mode")
         if (not self.c.get("expectedLogin") or not self.c.get("expectedServer") or
                 a.login != int(self.c["expectedLogin"]) or a.server != self.c["expectedServer"]):
-            raise Blocked("Demo login/server do not match the configured account")
+            raise Blocked("Configured login/server do not match the connected account")
         if a.margin_mode != self.mt.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
             raise Blocked("A hedging demo account is required for independent target legs")
         binding = f"{a.login}@{a.server}"
@@ -140,6 +183,10 @@ class Worker:
             raise Blocked("Execution database belongs to a different account")
         self.store.db.execute("INSERT OR IGNORE INTO meta VALUES('account',?)", (binding,))
         return a, terminal
+
+    def submission_permission(self):
+        if self.c["mode"] == "live" and not self.allow_real_orders:
+            raise Blocked("Real orders require the owner's explicit --allow-real-orders launch option")
 
     def positions(self):
         positions = self.mt.positions_get()
@@ -150,12 +197,20 @@ class Worker:
     def quote(self, symbol, now):
         if not self.mt.symbol_select(symbol, True):
             raise Blocked("Configured broker symbol is unavailable")
-        info, tick = self.mt.symbol_info(symbol), self.mt.symbol_info_tick(symbol)
-        if info is None or tick is None or abs(now.timestamp() - tick.time) > 30:
-            raise Blocked("Missing or stale broker quote")
-        if positive(tick.ask) < positive(tick.bid):
-            raise Blocked("Invalid broker spread")
-        return info, tick
+        # A newly subscribed symbol can briefly have no tick. Wait at most three
+        # seconds for an executable quote; never relax the freshness requirement.
+        started = time.monotonic()
+        for attempt in range(13):
+            info, tick = self.mt.symbol_info(symbol), self.mt.symbol_info_tick(symbol)
+            current_time = now.timestamp() + time.monotonic() - started
+            if (info is not None and tick is not None and abs(current_time - tick.time) <= 30
+                    and math.isfinite(tick.ask) and math.isfinite(tick.bid) and tick.ask > 0 and tick.bid > 0):
+                if tick.ask < tick.bid:
+                    raise Blocked("Invalid broker spread")
+                return info, tick
+            if attempt < 12:
+                time.sleep(.25)
+        raise Blocked("Missing or stale broker quote after subscription warm-up")
 
     def filling(self, info):
         if info.filling_mode & 2:
@@ -176,6 +231,8 @@ class Worker:
         return total
 
     def daily_guard(self, a, positions, now):
+        if self.c.get("sizingMode") == "fixed":
+            return  # Explicitly authorized demo-only fixed-lot test mode.
         # Whole account, Lagos calendar day, including commission, swap and floating loss.
         local = now + timedelta(hours=1)
         start = local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=1)
@@ -190,7 +247,12 @@ class Worker:
 
     def plan(self, s, a, positions, now):
         validate_intent(s, now)
+        if s["flow"] not in self.allowed_flows:
+            raise Blocked("Signal strategy is not assigned to this account")
         symbol = self.c["symbols"].get(s["symbol"])
+        if self.c["mode"] == "live" and (s["symbol"].upper() == "WTI/USD"
+                or any(name in (symbol or "").upper() for name in ("USOIL", "WTI"))):
+            raise Blocked("WTI is excluded from the real-account profile")
         if not symbol:
             raise Blocked("No explicit Exness symbol mapping; never guess suffixes")
         if any(p.symbol == symbol for p in positions):
@@ -205,8 +267,11 @@ class Worker:
         action = self.mt.ORDER_TYPE_BUY if long else self.mt.ORDER_TYPE_SELL
         price = tick.ask if long else tick.bid
         reference_risk = abs(s["entry"] - s["stop"])
-        if abs(price - s["entry"]) > reference_risk * self.c["maxEntryDriftR"]:
-            raise Blocked("Broker entry has drifted too far from the qualified entry")
+        if self.entry_drift_exceeded(s, price):
+            raise Blocked(f"Broker entry has drifted too far from the qualified entry: broker={price:.8f}, "
+                          f"reference={s['entry']:.8f}, drift={abs(price-s['entry']):.8f}, "
+                          f"allowed={reference_risk*self.c['maxEntryDriftR']:.8f}, "
+                          f"zone={s['zoneMin']:.8f}..{s['zoneMax']:.8f}")
         if s["flow"] == "main" and not s["zoneMin"] <= price <= s["zoneMax"]:
             raise Blocked("Broker entry is outside the qualified zone")
         if tick.ask - tick.bid > reference_risk * self.c["maxSpreadR"]:
@@ -214,6 +279,9 @@ class Worker:
         grid = positive(info.trade_tick_size)
         stop = round(round(s["stop"] / grid) * grid, info.digits)
         targets = [round(round(t / grid) * grid, info.digits) for t in s["targets"]]
+        single_tp2 = s["flow"] == "main" and self.c.get("sizingMode") == "fixed" and self.c.get("mainExitMode") == "tp2"
+        if single_tp2:
+            targets = [targets[1]]
         # Native stops must be valid against the closing side of the spread too.
         closing_price = tick.bid if long else tick.ask
         distance = max(info.trade_stops_level * info.point, grid)
@@ -228,11 +296,23 @@ class Worker:
         if loss is None or not math.isfinite(loss) or loss >= 0:
             raise Blocked("Cannot calculate stop loss in account currency")
         weights = (0.25, 0.50, 0.25) if s["flow"] == "main" else (1.0,)
-        volumes = [volume_down(budget * w / abs(loss), positive(info.volume_step)) for w in weights]
+        fixed = self.c.get("sizingMode") == "fixed"
+        if single_tp2:
+            volumes = [positive(self.c["mainFixedLots"])]
+        elif fixed and s["flow"] == "main":
+            if self.c.get("mainExitMode") != "tp1_tp2":
+                raise Blocked("Main demo entries paused until the target/partial-exit choice is confirmed")
+            total = positive(self.c["mainFixedLots"])
+            volumes = [total / 2, total / 2]
+            targets = targets[:2]
+        else:
+            volumes = [positive(self.c["fixedLots"])] if fixed else [volume_down(budget * w / abs(loss), positive(info.volume_step)) for w in weights]
+        if any(abs(v / info.volume_step - round(v / info.volume_step)) > 1e-7 for v in volumes):
+            raise Blocked("Requested fixed lot size is not supported by the broker")
         if any(v < positive(info.volume_min) or v > positive(info.volume_max) for v in volumes):
             raise Blocked("Broker minimum/maximum lot size cannot meet the risk budget")
         planned = sum(volumes) * abs(loss)
-        if self.risk(positions) + planned > a.equity * self.c["maxOpenRiskPercent"] / 100:
+        if not fixed and self.risk(positions) + planned > a.equity * self.c["maxOpenRiskPercent"] / 100:
             raise Blocked("Combined account stop risk would exceed the limit")
         requests = []
         for index, (volume, target) in enumerate(zip(volumes, targets)):
@@ -253,7 +333,13 @@ class Worker:
                 raise Blocked("Broker order preflight rejected a target leg")
         return requests
 
+    def entry_drift_exceeded(self, signal, price):
+        if signal["flow"] == "main" and self.main_entry_policy == "zone":
+            return False  # Main's published entry zone is its price boundary.
+        return abs(price - signal["entry"]) > abs(signal["entry"] - signal["stop"]) * self.c["maxEntryDriftR"]
+
     def execute(self, s, now):
+        self.submission_permission()
         started = time.monotonic()
         a, terminal = self.account()
         if not self.c.get("entriesEnabled"):
@@ -262,6 +348,7 @@ class Worker:
             raise Blocked("Unresolved broker submission; inspect before any new entry")
         if not terminal.trade_allowed or not a.trade_allowed or not a.trade_expert:
             raise Blocked("MT5 algorithmic trading is disabled")
+        self.prepare_reversal(s, a, now)
         requests = self.plan(s, a, self.positions(), now)
         for leg_id, request in requests:
             self.store.db.execute("INSERT INTO legs(id,signal_id,magic,symbol,status,volume,target) VALUES(?,?,?,?,'Planned',?,?)",
@@ -276,7 +363,7 @@ class Worker:
             # do not authorize chasing a price during a slow broker submission.
             info, tick = self.quote(request["symbol"], send_now)
             current = tick.ask if s["side"] == "Long" else tick.bid
-            if (abs(current - s["entry"]) > abs(s["entry"] - s["stop"]) * self.c["maxEntryDriftR"]
+            if (self.entry_drift_exceeded(s, current)
                     or tick.ask - tick.bid > abs(s["entry"] - s["stop"]) * self.c["maxSpreadR"]
                     or (s["flow"] == "main" and not s["zoneMin"] <= current <= s["zoneMax"])):
                 self.store.leg_status(leg_id, "Cancelled", "Quote drifted before submission")
@@ -289,9 +376,11 @@ class Worker:
                 raise Blocked("Cannot recheck stop risk before submission")
             weight = (0.25, 0.50, 0.25)[leg_index] if s["flow"] == "main" else 1.0
             leg_budget = a.equity * self.c["riskPercent"] / 100 * s["riskMultiplier"] * weight * 0.9
-            request["volume"] = min(request["volume"], volume_down(leg_budget / abs(per_lot), info.volume_step))
-            if (request["volume"] < info.volume_min or self.risk(positions) + request["volume"] * abs(per_lot)
-                    > a.equity * self.c["maxOpenRiskPercent"] / 100):
+            fixed = self.c.get("sizingMode") == "fixed"
+            if not fixed:
+                request["volume"] = min(request["volume"], volume_down(leg_budget / abs(per_lot), info.volume_step))
+            if (request["volume"] < info.volume_min or (not fixed and self.risk(positions) + request["volume"] * abs(per_lot)
+                    > a.equity * self.c["maxOpenRiskPercent"] / 100)):
                 self.store.leg_status(leg_id, "Cancelled", "Updated broker risk exceeds budget")
                 break
             check = self.mt.order_check(request)
@@ -314,7 +403,43 @@ class Worker:
         self.store.signal_status(s["id"], "Tracking" if active else "Rejected",
                                  "" if active else "No legs submitted; broker conditions changed")
 
+    def prepare_reversal(self, s, account, now):
+        validate_intent(s, now)
+        references = s.get("replaces") or []
+        if not references:
+            return
+        positions = self.positions()
+        target_rows = []
+        for row in self.store.db.execute("SELECT legs.*, signals.payload FROM legs JOIN signals ON legs.signal_id=signals.id WHERE legs.status IN ('Open','Prepared','Uncertain')"):
+            if row["signal_id"] not in references:
+                continue
+            old = json.loads(row["payload"])
+            if old["flow"] != "vtb" or old["symbol"] != s["symbol"] or old["side"] == s["side"]:
+                raise Blocked("Reversal cannot close a manual/main/unrelated position")
+            target_rows.append(row)
+        if not target_rows:
+            return  # Normal plan still blocks any untracked, manual or main exposure.
+        tickets = {row["ticket"] for row in target_rows}
+        closing = [p for p in positions if p.ticket in tickets]
+        if not closing:
+            raise ReversalPending("Awaiting broker-confirmed VTB closure")
+        # Preflight the replacement before closing anything. Existing unrelated
+        # positions, stale entry, invalid stop, WTI, drift or margin still block it.
+        self.plan(s, account, [p for p in positions if p.ticket not in tickets], now)
+        for row in target_rows:
+            position = next((p for p in closing if p.ticket == row["ticket"] and p.magic == row["magic"] and p.symbol == row["symbol"]), None)
+            if position is None:
+                raise Blocked("Reversal position identity cannot be verified")
+            key = "reversal-close:" + row["id"]
+            if self.store.db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES(?,?)", (key, s["id"])).rowcount:
+                self.store.leg_status(row["id"], "Uncertain", "VTB reversal close requested; awaiting broker confirmation")
+                self.close(position, now)
+        # Persist across restarts. Never repeat an ambiguous close or enter the
+        # opposite trade before broker history confirms the old position is gone.
+        raise ReversalPending("Awaiting broker-confirmed VTB closure")
+
     def close(self, p, now):
+        self.submission_permission()
         # Ticket-scoped close: a later poll cannot open a reverse position.
         self.account()
         info, tick = self.quote(p.symbol, now)
@@ -392,15 +517,26 @@ class Worker:
         if self.store.blocked():
             LOG.warning("Uncertain submission: new entries halted; inspect private execution state")
             return
-        for path in sorted(spool.glob("*.json")):
+        pending = [json.loads(row[0]) for row in self.store.db.execute("SELECT payload FROM signals WHERE status='PendingReversal'")]
+        files = sorted(spool.glob("*.json"))
+        for item in pending + files:
             try:
-                if path.stat().st_size > 16384:
-                    raise Blocked("Oversized signal file")
-                s = json.loads(path.read_text(encoding="utf-8"))
-                if not self.store.remember(s):
+                if isinstance(item, Path):
+                    if item.stat().st_size > 16384:
+                        raise Blocked("Oversized signal file")
+                    s = json.loads(item.read_text(encoding="utf-8"))
+                    if s.get("flow") not in self.allowed_flows:
+                        continue
+                    if not self.store.remember(s):
+                        continue
+                else:
+                    s = item
+                if s.get("flow") not in self.allowed_flows:
                     continue
                 try:
                     self.execute(s, now)
+                except ReversalPending as exc:
+                    self.store.signal_status(s["id"], "PendingReversal", str(exc))
                 except (Blocked, KeyError, ValueError, TypeError) as exc:
                     active = self.store.db.execute("SELECT 1 FROM legs WHERE signal_id=? AND status IN ('Prepared','Uncertain','Open')",
                                                    (s["id"],)).fetchone()
@@ -410,15 +546,16 @@ class Worker:
                 if self.store.blocked():
                     return
             except (Blocked, KeyError, ValueError, TypeError) as exc:
-                LOG.error("Invalid spool file %s: %s", path.name, exc)
+                LOG.error("Invalid signal item: %s", exc)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True)
+    parser.add_argument("--allow-real-orders", action="store_true", help="Owner-only explicit opt-in for the isolated live profile")
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--status", action="store_true", help="Read private database without connecting to MT5")
-    parser.add_argument("--check", action="store_true", help="Verify configured demo connection; never send orders")
+    parser.add_argument("--check", action="store_true", help="Verify configured connection; never send orders")
     parser.add_argument("--inspect-demo", action="store_true", help="Read demo account and available symbol names; never send orders")
     parser.add_argument("--feed-check", action="store_true", help="Verify the deployed feed without placing or queuing orders")
     args = parser.parse_args()
@@ -428,6 +565,7 @@ def main():
     state = (config_path.parent / c["stateDatabase"]).resolve()
     spool = (config_path.parent / c["spoolDirectory"]).resolve()
     feed_status = state.with_name("feed-status.json")
+    worker_status = state.with_name("worker-status.json")
     if args.feed_check:
         source = SignedSignalFeed(c, feed_status)
         data = source.fetch(datetime.now(UTC))
@@ -440,7 +578,16 @@ def main():
             return
         db = sqlite3.connect(f"file:{state.as_posix()}?mode=ro", uri=True)
         db.row_factory = sqlite3.Row
-        print(json.dumps({"feed": json.loads(feed_status.read_text()) if feed_status.exists() else None,
+        health = json.loads(worker_status.read_text()) if worker_status.exists() else None
+        feed = json.loads(feed_status.read_text()) if feed_status.exists() else None
+        ready = bool(health and health.get("state") == "Ready" and
+                     0 <= (datetime.now(UTC) - utc(health["checkedAtUtc"])).total_seconds() <= 30)
+        if c.get("remoteFeedUrl"):
+            ready = bool(ready and feed and feed.get("state") in ("Verified", "WaitingForNextScan")
+                         and 0 <= (datetime.now(UTC) - utc(feed["checkedAtUtc"])).total_seconds() <= 60
+                         and -30 <= (datetime.now(UTC) - utc(feed["generatedAtUtc"])).total_seconds() <= 1200)
+        print(json.dumps({"worker": health, "ready": ready,
+                          "entriesEnabled": c.get("entriesEnabled") is True, "feed": feed,
                           "signals": [dict(r) for r in db.execute("SELECT id,status,reason FROM signals")],
                           "legs": [dict(r) for r in db.execute("SELECT * FROM legs")]}, indent=2))
         return
@@ -449,12 +596,11 @@ def main():
     import MetaTrader5 as mt5
     if args.check or args.inspect_demo:
         try:
-            connected = mt5.initialize(c["terminalPath"]) if c.get("terminalPath") else mt5.initialize()
-            if not connected:
-                raise Blocked("Start desktop MT5 and sign into your Exness demo")
+            initialize_terminal(mt5, c)
             a = mt5.account_info()
-            if a is None or a.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO or "exness" not in a.company.lower():
-                raise Blocked("Sign into an Exness DEMO account in desktop MT5 first")
+            expected_mode = mt5.ACCOUNT_TRADE_MODE_DEMO if args.inspect_demo or c.get("mode") != "live" else mt5.ACCOUNT_TRADE_MODE_REAL
+            if a is None or a.trade_mode != expected_mode or "exness" not in a.company.lower():
+                raise Blocked("Sign into the configured Exness account type in desktop MT5 first")
             if args.inspect_demo:
                 symbols = mt5.symbols_get()
                 if symbols is None:
@@ -468,7 +614,7 @@ def main():
                 store = Store(state)
                 try:
                     Worker(mt5, c, store).account()
-                    print("Exness demo account verified. No orders sent.")
+                    print("Configured Exness account verified. No orders sent.")
                 finally:
                     store.db.close()
         finally:
@@ -481,17 +627,26 @@ def main():
         msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
         store = Store(state)
         source = SignedSignalFeed(c, feed_status) if c.get("remoteFeedUrl") else None
-        worker = Worker(mt5, c, store, source=source)
+        worker = Worker(mt5, c, store, source=source, allow_real_orders=args.allow_real_orders)
+        worker.submission_permission()
         try:
             while True:
                 try:
-                    connected = mt5.initialize(c["terminalPath"]) if c.get("terminalPath") else mt5.initialize()
-                    if not connected:
-                        raise Blocked("Start desktop MT5 and sign into the configured Exness demo")
+                    if c["mode"] == "live":
+                        # Owner can pause entries without interrupting a broker submission.
+                        try:
+                            current_config = json.loads(config_path.read_text(encoding="utf-8-sig"))
+                            c["entriesEnabled"] = current_config.get("entriesEnabled") is True
+                        except (OSError, ValueError):
+                            c["entriesEnabled"] = False
+                    initialize_terminal(mt5, c)
                     worker.cycle(spool, datetime.now(UTC))
+                    write_worker_status(worker_status, "Ready")
                 except Blocked as exc:
+                    write_worker_status(worker_status, "Blocked", str(exc))
                     LOG.warning("Worker blocked: %s", exc)
                 except Exception:
+                    write_worker_status(worker_status, "Error", "Worker cycle failed; inspect private log")
                     LOG.exception("Worker failed; new submissions stop until next safe reconciliation")
                 if args.once:
                     break

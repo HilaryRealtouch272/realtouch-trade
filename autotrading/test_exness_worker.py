@@ -4,8 +4,9 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
+from unittest.mock import patch
 
-from exness_worker import Blocked, Store, Worker, validate_intent, volume_down
+from exness_worker import Blocked, Store, Worker, validate_intent, volume_down, initialize_terminal
 
 NOW = datetime(2026, 11, 16, 12, tzinfo=timezone.utc)
 
@@ -19,6 +20,7 @@ def signal(flow="vtb", identity="one"):
 
 class Broker:
     ACCOUNT_TRADE_MODE_DEMO = 0
+    ACCOUNT_TRADE_MODE_REAL = 2
     ACCOUNT_MARGIN_MODE_RETAIL_HEDGING = 2
     DEAL_TYPE_BUY, DEAL_TYPE_SELL = 0, 1
     ORDER_TYPE_BUY, ORDER_TYPE_SELL = 0, 1
@@ -97,9 +99,74 @@ class ExecutionTests(unittest.TestCase):
         self.assertEqual(1, len(self.mt.sent))
         self.assertEqual("Open", self.store.db.execute("SELECT status FROM legs").fetchone()[0])
 
+    def test_fixed_vtb_demo_uses_exact_lots_without_cash_caps(self):
+        self.c.update(sizingMode="fixed",fixedLots=.01)
+        self.mt.a.equity=20
+        requests=self.w.plan(signal(),self.mt.a,[],NOW)
+        self.assertEqual(.01,requests[0][1]['volume'])
+        self.assertEqual(90,requests[0][1]['sl'])
+        self.assertEqual(120,requests[0][1]['tp'])
+        with self.assertRaisesRegex(Blocked,'target/partial'):
+            self.w.plan(signal('main'),self.mt.a,[],NOW)
+
+    def test_fixed_main_two_targets_fills_once_and_preserves_stop(self):
+        self.c.update(sizingMode="fixed", fixedLots=.01, mainFixedLots=.02, mainExitMode="tp1_tp2")
+        self.spool(signal("main"))
+        self.w.cycle(self.root, NOW)
+        Worker(self.mt, self.c, self.store).cycle(self.root, NOW)
+        self.assertEqual([.01, .01], [r["volume"] for r in self.mt.sent])
+        self.assertEqual([110, 120], [r["tp"] for r in self.mt.sent])
+        self.assertTrue(all(r["sl"] == 90 for r in self.mt.sent))
+        self.assertEqual(2, self.store.db.execute("select count(*) from legs where status='Open'").fetchone()[0])
+
+    def test_fixed_main_rejects_unsplittable_volume_and_keeps_vtb_single(self):
+        self.c.update(sizingMode="fixed", fixedLots=.01, mainFixedLots=.02, mainExitMode="tp1_tp2")
+        self.mt.info.volume_min=.1
+        with self.assertRaises(Blocked): self.w.plan(signal("main"),self.mt.a,[],NOW)
+        self.mt.info.volume_min=.01
+        requests=self.w.plan(signal(),self.mt.a,[],NOW)
+        self.assertEqual(1,len(requests))
+        self.assertEqual(.01,requests[0][1]["volume"])
+        self.assertEqual(120,requests[0][1]["tp"])
+
+    def test_account_strategy_assignment_filters_before_submission(self):
+        self.c["allowedFlows"]=["vtb"]
+        self.w=Worker(self.mt,self.c,self.store)
+        with self.assertRaisesRegex(Blocked,"not assigned"):
+            self.w.plan(signal("main"),self.mt.a,[],NOW)
+        self.spool(signal("main"));self.w.cycle(self.root,NOW)
+        self.assertEqual([],self.mt.sent)
+        self.assertEqual(0,self.store.db.execute("select count(*) from signals").fetchone()[0])
+        self.spool(signal());self.w.cycle(self.root,NOW)
+        self.assertEqual(1,len(self.mt.sent))
+
+    def test_strategy_assignment_does_not_stop_existing_trade_expiry(self):
+        s=signal();s["closeByUtc"]=(NOW+timedelta(seconds=1)).isoformat()
+        self.spool(s);self.w.cycle(self.root,NOW)
+        self.c["allowedFlows"]=["main"]
+        w=Worker(self.mt,self.c,self.store);self.mt.tick.time+=2
+        w.reconcile(NOW+timedelta(seconds=2));w.reconcile(NOW+timedelta(seconds=2))
+        self.assertEqual([],self.mt.ps)
+        self.assertEqual("Closed",self.store.db.execute("select status from legs").fetchone()[0])
+
+    def test_invalid_strategy_assignment_is_rejected(self):
+        for flows in ([],["other"],"vtb"):
+            self.c["allowedFlows"]=flows
+            with self.assertRaisesRegex(Blocked,"allowedFlows"):
+                Worker(self.mt,self.c,self.store)
+
+    def test_saturday_blocks_noncrypto_but_not_crypto(self):
+        saturday=NOW+timedelta(days=5)
+        for flow in ("main","vtb"):
+            s=signal(flow);s.update(qualifiedAtUtc=saturday.isoformat(),entryDeadlineUtc=(saturday+timedelta(minutes=5)).isoformat())
+            validate_intent(s,saturday)
+            s["symbol"]="XAU/USD"
+            with self.assertRaisesRegex(Blocked,"Non-crypto"):
+                validate_intent(s,saturday)
+
     def test_real_account_is_always_blocked(self):
         self.mt.a.trade_mode = 2
-        with self.assertRaisesRegex(Blocked, "DEMO"): self.w.account()
+        with self.assertRaisesRegex(Blocked, "account type"): self.w.account()
         self.assertEqual([], self.mt.sent)
 
     def test_account_switch_is_blocked(self):
@@ -111,9 +178,171 @@ class ExecutionTests(unittest.TestCase):
         self.c["expectedLogin"] = 0
         with self.assertRaisesRegex(Blocked, "login/server"): self.w.account()
 
-    def test_live_mode_not_implemented(self):
+    def test_live_mode_requires_exact_profile(self):
         self.c["mode"] = "live"
         with self.assertRaises(Blocked): Worker(self.mt, self.c, self.store)
+
+    def live_worker(self, enabled=False, opted_in=False):
+        self.c.update(mode="live", sizingMode="fixed", fixedLots=.01, mainFixedLots=.01,
+                      mainExitMode="tp2", entriesEnabled=enabled)
+        self.mt.a.trade_mode = self.mt.ACCOUNT_TRADE_MODE_REAL
+        return Worker(self.mt, self.c, self.store, allow_real_orders=opted_in)
+
+    def test_live_requires_manual_launch_opt_in_and_enabled_configuration(self):
+        w = self.live_worker(enabled=True)
+        with self.assertRaisesRegex(Blocked, "allow-real-orders"): w.execute(signal(), NOW)
+        self.assertEqual([], self.mt.sent)
+        w = self.live_worker(opted_in=True)
+        with self.assertRaisesRegex(Blocked, "paused"): w.execute(signal(), NOW)
+        self.assertEqual([], self.mt.sent)
+
+    def test_live_profile_submits_one_main_tp2_leg_once(self):
+        w = self.live_worker(enabled=True, opted_in=True)
+        self.spool(signal("main")); w.cycle(self.root, NOW)
+        w.cycle(self.root, NOW)
+        self.assertEqual(1, len(self.mt.sent))
+        self.assertEqual((.01, 90, 120), tuple(self.mt.sent[0][k] for k in ("volume", "sl", "tp")))
+
+    def test_tp2_does_not_reject_already_crossed_unselected_tp1(self):
+        w = self.live_worker()
+        s = signal("main"); s["targets"][0] = 100.005
+        requests = w.plan(s, self.mt.a, [], NOW)
+        self.assertEqual(120, requests[0][1]["tp"])
+
+    def test_live_profile_vtb_single_target_and_no_wti_even_if_mapped(self):
+        w = self.live_worker()
+        requests = w.plan(signal(), self.mt.a, [], NOW)
+        self.assertEqual(1, len(requests))
+        self.assertEqual(.01, requests[0][1]["volume"])
+        self.c["symbols"]["WTI/USD"] = "USOILm"
+        s = signal(); s["symbol"] = "WTI/USD"
+        with self.assertRaisesRegex(Blocked, "WTI is excluded"): w.plan(s, self.mt.a, [], NOW)
+        self.c["symbols"]["BTC/USDT"] = "USOILm"
+        with self.assertRaisesRegex(Blocked, "WTI is excluded"): w.plan(signal(), self.mt.a, [], NOW)
+
+    def test_live_profile_rejects_demo_and_does_not_reuse_demo_database(self):
+        self.w.account()
+        w = self.live_worker()
+        self.mt.a.trade_mode = 0
+        with self.assertRaises(Blocked): w.account()
+        self.mt.a.trade_mode = 2
+        self.c["expectedLogin"] = self.mt.a.login = 999
+        with self.assertRaisesRegex(Blocked, "different account"): w.account()
+
+    def test_live_broker_minimum_never_rounds_up(self):
+        w = self.live_worker()
+        self.mt.info.volume_min = .1
+        with self.assertRaisesRegex(Blocked, "minimum/maximum"): w.plan(signal(), self.mt.a, [], NOW)
+
+    def test_quote_waits_for_new_subscription_without_loosening_freshness(self):
+        fresh = self.mt.tick
+        with patch.object(self.mt, "symbol_info_tick", side_effect=[None, fresh]), patch("exness_worker.time.sleep") as pause:
+            self.assertEqual(fresh, self.w.quote("BTCUSDm", NOW)[1])
+            pause.assert_called_once_with(.25)
+        self.mt.tick = NS(ask=100.01, bid=100, time=NOW.timestamp()-60)
+        with patch("exness_worker.time.sleep") as pause:
+            with self.assertRaisesRegex(Blocked, "stale broker quote"): self.w.quote("BTCUSDm", NOW)
+            self.assertEqual(12, pause.call_count)
+
+    def test_live_terminal_connection_uses_portable_mode_and_reports_failure_code(self):
+        from unittest.mock import Mock
+        mt = Mock()
+        mt.initialize.return_value = True
+        initialize_terminal(mt, {"mode":"live", "terminalPath":"isolated.exe"})
+        mt.initialize.assert_called_once_with("isolated.exe", portable=True)
+        mt.initialize.return_value = False
+        mt.last_error.return_value = (-10004, "IPC unavailable")
+        with self.assertRaisesRegex(Blocked, "code -10004"):
+            initialize_terminal(mt, {"mode":"live", "terminalPath":"isolated.exe"})
+        mt.shutdown.assert_called_once()
+
+    def opposite(self, flow="vtb", references=None):
+        s = signal(flow, "opposite")
+        s.update(side="Short", stop=110, targets=[80] if flow == "vtb" else [90, 80, 70])
+        if references is not None: s["replaces"] = references
+        return s
+
+    def test_vtb_reversal_waits_for_broker_close_then_opens_once(self):
+        self.spool(signal()); self.w.cycle(self.root, NOW)
+        self.spool(self.opposite(references=["vtb:one"]))
+        self.w.cycle(self.root, NOW)
+        self.assertEqual(2, len(self.mt.sent))  # entry + ticket-scoped close only
+        self.assertIn("position", self.mt.sent[-1])
+        self.assertEqual("PendingReversal", self.store.db.execute("select status from signals where id='vtb:opposite'").fetchone()[0])
+        self.w.cycle(self.root, NOW)
+        self.w.cycle(self.root, NOW)
+        self.assertEqual(3, len(self.mt.sent))
+        self.assertEqual(self.mt.ORDER_TYPE_SELL, self.mt.sent[-1]["type"])
+        self.assertEqual(1, len(self.mt.ps))
+
+    def test_reversal_never_closes_main_position_or_untracked_position(self):
+        self.spool(signal("main")); self.w.cycle(self.root, NOW)
+        before = len(self.mt.sent)
+        self.spool(self.opposite(references=["main:one"]))
+        self.w.cycle(self.root, NOW)
+        self.assertEqual(before, len(self.mt.sent))
+
+    def test_reversal_requires_same_symbol_and_opposite_direction(self):
+        self.spool(signal()); self.w.cycle(self.root, NOW)
+        s = signal(identity="same"); s["replaces"] = ["vtb:one"]
+        self.spool(s); self.w.cycle(self.root, NOW)
+        self.assertEqual(1, len(self.mt.sent))
+
+    def test_ambiguous_reversal_close_is_not_resent_or_hedged(self):
+        self.spool(signal()); self.w.cycle(self.root, NOW)
+        self.mt.response = "timeout"
+        self.spool(self.opposite(references=["vtb:one"]))
+        self.w.cycle(self.root, NOW)
+        self.w.cycle(self.root, NOW)
+        self.w.cycle(self.root, NOW)
+        self.assertEqual(2, len(self.mt.sent))
+        self.assertEqual(1, len(self.mt.ps))
+
+    def test_stale_reversal_never_closes_existing_position(self):
+        self.spool(signal()); self.w.cycle(self.root, NOW)
+        self.spool(self.opposite(references=["vtb:one"]))
+        self.w.cycle(self.root, NOW + timedelta(hours=1))
+        self.assertEqual(1, len(self.mt.sent))
+
+    def gbp_zone_worker(self):
+        self.c.update(sizingMode="fixed", fixedLots=.01, mainFixedLots=.01,
+                      mainExitMode="tp2", mainEntryPolicy="zone", symbols={"GBP/USD":"GBPUSDm"})
+        self.w = Worker(self.mt, self.c, self.store)
+        self.mt.info.trade_tick_size=.00001; self.mt.info.point=.00001; self.mt.info.digits=5
+        self.mt.tick.ask=1.30948; self.mt.tick.bid=1.30947
+        s=signal("main"); s.update(symbol="GBP/USD",entry=1.30938,zoneMin=1.30926369026,
+            zoneMax=1.30949630974,stop=1.30878,targets=[1.30998,1.3109,1.31242])
+        return s
+
+    def test_main_zone_accepts_in_range_gbp_beyond_extra_drift_cap(self):
+        s=self.gbp_zone_worker()
+        self.assertGreater(abs(self.mt.tick.ask-s['entry']),abs(s['entry']-s['stop'])*.1)
+        self.spool(s); self.w.cycle(self.root,NOW)
+        self.assertEqual(1,len(self.mt.sent))
+        self.assertEqual((.01,1.30878,1.3109),tuple(self.mt.sent[0][k] for k in ('volume','sl','tp')))
+
+    def test_main_zone_rechecks_actual_quote_before_submit(self):
+        s=self.gbp_zone_worker()
+        original=self.mt.order_check; calls=0
+        def check(request):
+            nonlocal calls
+            calls+=1
+            result=original(request)
+            if calls==1: self.mt.tick.ask=1.3096; self.mt.tick.bid=1.30959
+            return result
+        self.mt.order_check=check
+        self.spool(s);self.w.cycle(self.root,NOW)
+        self.assertEqual([],self.mt.sent)
+
+    def test_main_zone_does_not_accept_outside_range_or_stale_signal(self):
+        s=self.gbp_zone_worker();self.mt.tick.ask=1.3096;self.mt.tick.bid=1.30959
+        with self.assertRaisesRegex(Blocked,'outside the qualified zone'):self.w.plan(s,self.mt.a,[],NOW)
+        self.mt.tick.ask=1.30948;self.mt.tick.bid=1.30947
+        with self.assertRaisesRegex(Blocked,'Stale'):self.w.plan(s,self.mt.a,[],NOW+timedelta(hours=1))
+
+    def test_main_zone_policy_does_not_change_vtb_drift_guard(self):
+        self.c['mainEntryPolicy']='zone';self.w=Worker(self.mt,self.c,self.store)
+        self.assertTrue(self.w.entry_drift_exceeded(signal(),102))
 
     def test_stale_and_future_signals_rejected(self):
         for offset in (-3600, 60):
