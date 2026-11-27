@@ -72,10 +72,13 @@ def validate_intent(s, now):
     qualified, deadline, close_by = (utc(s[k]) for k in
                                     ("qualifiedAtUtc", "entryDeadlineUtc", "closeByUtc"))
     max_age = timedelta(minutes=15 if s["flow"] == "vtb" else 5)
-    if qualified > now or now > deadline or now - qualified > max_age:
+    telegram_policy = s.get("entryPolicy") == "telegram"
+    if qualified > now or now > deadline or (not telegram_policy and now - qualified > max_age):
         raise Blocked("Stale, expired or future signal; never enter historical alerts")
-    if deadline < qualified or deadline - qualified > max_age or close_by <= now:
+    if deadline < qualified or (not telegram_policy and deadline - qualified > max_age) or close_by <= now:
         raise Blocked("Invalid signal lifetime")
+    if telegram_policy and (deadline != close_by or s.get("contractVersion") != 2):
+        raise Blocked("Invalid Telegram entry contract")
     if (now + timedelta(hours=1)).weekday() == 6:
         raise Blocked("Sunday in Lagos: existing positions only")
     if not s["symbol"].upper().endswith("/USDT"):
@@ -144,6 +147,9 @@ class Worker:
         self.source = source
         self.allow_real_orders = allow_real_orders
         self.main_entry_policy = config.get("mainEntryPolicy", "drift-and-zone")
+        self.telegram_execution = config.get("entryExecutionPolicy", "legacy") == "telegram"
+        if config.get("entryExecutionPolicy", "legacy") not in ("legacy", "telegram"):
+            raise Blocked("Unknown execution policy")
         if self.main_entry_policy not in ("drift-and-zone", "zone"):
             raise Blocked("mainEntryPolicy must be drift-and-zone or zone")
         self.allowed_flows = config.get("allowedFlows", ["main", "vtb"])
@@ -156,11 +162,13 @@ class Worker:
             if (config.get("sizingMode") != "fixed" or config.get("fixedLots") != .01
                     or config.get("mainFixedLots") != .01 or config.get("mainExitMode") != "tp2"):
                 raise Blocked("Live profile requires 0.01 lots and main TP2 without partial exits")
-        for key, ceiling in (("riskPercent", 0.25), ("maxOpenRiskPercent", 0.5),
-                             ("dailyLossPercent", 1), ("maxEntryDriftR", 0.1), ("maxSpreadR", 0.1)):
+        limits = [("riskPercent", 0.25), ("maxOpenRiskPercent", 0.5), ("dailyLossPercent", 1)]
+        if not self.telegram_execution:
+            limits += [("maxEntryDriftR", 0.1), ("maxSpreadR", 0.1)]
+        for key, ceiling in limits:
             if positive(config[key]) > ceiling:
                 raise Blocked(f"{key} exceeds this demo implementation's limit")
-        if not 0.8 <= positive(config["minimumRewardRisk"]) <= 10:
+        if not self.telegram_execution and not 0.8 <= positive(config["minimumRewardRisk"]) <= 10:
             raise Blocked("Invalid minimum reward/risk")
         if not 0 <= int(config["deviationPoints"]) <= 20:
             raise Blocked("Invalid deviation allowance")
@@ -176,7 +184,7 @@ class Worker:
                 a.login != int(self.c["expectedLogin"]) or a.server != self.c["expectedServer"]):
             raise Blocked("Configured login/server do not match the connected account")
         if a.margin_mode != self.mt.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING:
-            raise Blocked("A hedging demo account is required for independent target legs")
+            raise Blocked("An Exness hedging account is required for this worker")
         binding = f"{a.login}@{a.server}"
         row = self.store.db.execute("SELECT value FROM meta WHERE key='account'").fetchone()
         if row and row[0] != binding:
@@ -232,7 +240,7 @@ class Worker:
 
     def daily_guard(self, a, positions, now):
         if self.c.get("sizingMode") == "fixed":
-            return  # Explicitly authorized demo-only fixed-lot test mode.
+            return  # Owner-selected fixed lots bypass cash-risk sizing limits.
         # Whole account, Lagos calendar day, including commission, swap and floating loss.
         local = now + timedelta(hours=1)
         start = local.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(hours=1)
@@ -258,7 +266,8 @@ class Worker:
         if any(p.symbol == symbol for p in positions):
             raise Blocked("A position already exists in this symbol, across either flow")
         orders = self.mt.orders_get()
-        if orders is None or orders:
+        if orders is None or (orders and (not self.telegram_execution or
+                any(not getattr(order, "symbol", None) or order.symbol == symbol for order in orders))):
             raise Blocked("Cannot verify pending orders or account has pending orders")
         self.daily_guard(a, positions, now)
         info, tick = self.quote(symbol, now)
@@ -273,8 +282,9 @@ class Worker:
                           f"allowed={reference_risk*self.c['maxEntryDriftR']:.8f}, "
                           f"zone={s['zoneMin']:.8f}..{s['zoneMax']:.8f}")
         if s["flow"] == "main" and not s["zoneMin"] <= price <= s["zoneMax"]:
-            raise Blocked("Broker entry is outside the qualified zone")
-        if tick.ask - tick.bid > reference_risk * self.c["maxSpreadR"]:
+            raise Blocked(f"Broker entry is outside the qualified zone: broker={price:.8f}, "
+                          f"zone={s['zoneMin']:.8f}..{s['zoneMax']:.8f}")
+        if not self.telegram_execution and tick.ask - tick.bid > reference_risk * self.c["maxSpreadR"]:
             raise Blocked("Broker spread exceeds the limit")
         grid = positive(info.trade_tick_size)
         stop = round(round(s["stop"] / grid) * grid, info.digits)
@@ -288,7 +298,7 @@ class Worker:
         if direction * (closing_price - stop) < distance or any(
                 direction * (t - closing_price) < distance for t in targets):
             raise Blocked("Stop or target already crossed / too close for the broker")
-        if min(direction * (t - price) for t in targets) / abs(price - stop) < self.c["minimumRewardRisk"]:
+        if not self.telegram_execution and min(direction * (t - price) for t in targets) / abs(price - stop) < self.c["minimumRewardRisk"]:
             raise Blocked("Insufficient remaining reward/risk")
         positive(a.equity)
         budget = a.equity * self.c["riskPercent"] / 100 * s["riskMultiplier"] * 0.90
@@ -310,7 +320,8 @@ class Worker:
         if any(abs(v / info.volume_step - round(v / info.volume_step)) > 1e-7 for v in volumes):
             raise Blocked("Requested fixed lot size is not supported by the broker")
         if any(v < positive(info.volume_min) or v > positive(info.volume_max) for v in volumes):
-            raise Blocked("Broker minimum/maximum lot size cannot meet the risk budget")
+            raise Blocked(f"Requested lot sizes {volumes} are outside broker minimum/maximum: "
+                          f"min={info.volume_min}, max={info.volume_max}, step={info.volume_step}")
         planned = sum(volumes) * abs(loss)
         if not fixed and self.risk(positions) + planned > a.equity * self.c["maxOpenRiskPercent"] / 100:
             raise Blocked("Combined account stop risk would exceed the limit")
@@ -325,7 +336,8 @@ class Worker:
                 "comment": "RT-" + hashlib.sha256(leg_id.encode()).hexdigest()[:20],
                 "type_time": self.mt.ORDER_TIME_GTC, "type_filling": self.filling(info)}))
         margins = [self.mt.order_calc_margin(action, symbol, v, price) for v in volumes]
-        if any(m is None or not math.isfinite(m) or m < 0 for m in margins) or sum(margins) > a.margin_free * 0.9:
+        margin_available = a.margin_free if self.telegram_execution else a.margin_free * 0.9
+        if any(m is None or not math.isfinite(m) or m < 0 for m in margins) or sum(margins) > margin_available:
             raise Blocked("Insufficient free margin")
         for _, request in requests:
             checked = self.mt.order_check(request)
@@ -334,6 +346,8 @@ class Worker:
         return requests
 
     def entry_drift_exceeded(self, signal, price):
+        if self.telegram_execution:
+            return False
         if signal["flow"] == "main" and self.main_entry_policy == "zone":
             return False  # Main's published entry zone is its price boundary.
         return abs(price - signal["entry"]) > abs(signal["entry"] - signal["stop"]) * self.c["maxEntryDriftR"]
@@ -343,11 +357,12 @@ class Worker:
         started = time.monotonic()
         a, terminal = self.account()
         if not self.c.get("entriesEnabled"):
-            raise Blocked("New demo entries are paused")
+            raise Blocked("New entries are paused")
         if self.store.blocked():
             raise Blocked("Unresolved broker submission; inspect before any new entry")
         if not terminal.trade_allowed or not a.trade_allowed or not a.trade_expert:
             raise Blocked("MT5 algorithmic trading is disabled")
+        self.require_active_intent(s, now)
         self.prepare_reversal(s, a, now)
         requests = self.plan(s, a, self.positions(), now)
         for leg_id, request in requests:
@@ -359,12 +374,13 @@ class Worker:
             a, _ = self.account()
             send_now = now + timedelta(seconds=time.monotonic() - started)
             validate_intent(s, send_now)
+            self.require_active_intent(s, send_now)
             # Check each leg against a fresh executable quote. Preflight estimates
             # do not authorize chasing a price during a slow broker submission.
             info, tick = self.quote(request["symbol"], send_now)
             current = tick.ask if s["side"] == "Long" else tick.bid
             if (self.entry_drift_exceeded(s, current)
-                    or tick.ask - tick.bid > abs(s["entry"] - s["stop"]) * self.c["maxSpreadR"]
+                    or (not self.telegram_execution and tick.ask - tick.bid > abs(s["entry"] - s["stop"]) * self.c["maxSpreadR"])
                     or (s["flow"] == "main" and not s["zoneMin"] <= current <= s["zoneMax"])):
                 self.store.leg_status(leg_id, "Cancelled", "Quote drifted before submission")
                 break
@@ -402,6 +418,13 @@ class Worker:
                                        (s["id"],)).fetchone()
         self.store.signal_status(s["id"], "Tracking" if active else "Rejected",
                                  "" if active else "No legs submitted; broker conditions changed")
+
+    def require_active_intent(self, signal, now):
+        if signal.get("entryPolicy") == "telegram":
+            if not self.telegram_execution or self.source is None or not self.source.authorizes(signal, now):
+                raise Blocked("No current signed active Telegram instruction; no new entry authorized")
+        elif self.telegram_execution:
+            raise Blocked("Legacy signal is not eligible for the Telegram execution policy")
 
     def prepare_reversal(self, s, account, now):
         validate_intent(s, now)
@@ -517,7 +540,9 @@ class Worker:
         if self.store.blocked():
             LOG.warning("Uncertain submission: new entries halted; inspect private execution state")
             return
-        pending = [json.loads(row[0]) for row in self.store.db.execute("SELECT payload FROM signals WHERE status='PendingReversal'")]
+        if self.telegram_execution and (self.source is None or not self.source.is_current(now)):
+            return  # Track existing positions, but never act on an offline/stale snapshot.
+        pending = [json.loads(row[0]) for row in self.store.db.execute("SELECT payload FROM signals WHERE status IN ('PendingReversal','PendingEntry')")]
         files = sorted(spool.glob("*.json"))
         for item in pending + files:
             try:
@@ -527,10 +552,15 @@ class Worker:
                     s = json.loads(item.read_text(encoding="utf-8"))
                     if s.get("flow") not in self.allowed_flows:
                         continue
+                    if self.telegram_execution and not self.source.authorizes(s, now):
+                        continue
                     if not self.store.remember(s):
                         continue
                 else:
                     s = item
+                    if self.telegram_execution and not self.source.authorizes(s, now):
+                        self.store.signal_status(s["id"], "Rejected", "Signal closed/cancelled or removed from current signed instructions")
+                        continue
                 if s.get("flow") not in self.allowed_flows:
                     continue
                 try:
@@ -540,8 +570,12 @@ class Worker:
                 except (Blocked, KeyError, ValueError, TypeError) as exc:
                     active = self.store.db.execute("SELECT 1 FROM legs WHERE signal_id=? AND status IN ('Prepared','Uncertain','Open')",
                                                    (s["id"],)).fetchone()
-                    self.store.signal_status(s["id"], "Tracking" if active else "Rejected", str(exc))
-                    LOG.warning("Rejected %s: %s", s["id"], exc)
+                    has_legs = self.store.db.execute("SELECT 1 FROM legs WHERE signal_id=?", (s["id"],)).fetchone()
+                    wait_for_quote = self.telegram_execution and not has_legs and (
+                        "outside the qualified zone" in str(exc) or "Missing or stale broker quote" in str(exc))
+                    status = "Tracking" if active else "PendingEntry" if wait_for_quote else "Rejected"
+                    self.store.signal_status(s["id"], status, str(exc))
+                    LOG.warning("%s %s: %s", status, s["id"], exc)
                 self.reconcile(now)
                 if self.store.blocked():
                     return
@@ -587,7 +621,8 @@ def main():
                          and 0 <= (datetime.now(UTC) - utc(feed["checkedAtUtc"])).total_seconds() <= 60
                          and -30 <= (datetime.now(UTC) - utc(feed["generatedAtUtc"])).total_seconds() <= 1200)
         print(json.dumps({"worker": health, "ready": ready,
-                          "entriesEnabled": c.get("entriesEnabled") is True, "feed": feed,
+                          "entriesEnabled": c.get("entriesEnabled") is True,
+                          "entryExecutionPolicy": c.get("entryExecutionPolicy", "legacy"), "feed": feed,
                           "signals": [dict(r) for r in db.execute("SELECT id,status,reason FROM signals")],
                           "legs": [dict(r) for r in db.execute("SELECT * FROM legs")]}, indent=2))
         return

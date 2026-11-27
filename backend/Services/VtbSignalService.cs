@@ -476,15 +476,15 @@ public class VtbSignalService(IHttpClientFactory httpClients, IConfiguration con
             $"⏱ Time exit in {VtbRules.TimeExitDays} days\n" +
             (e.RiskMultiplier < 1m ? $"\n⚠️ Short - sized at {e.RiskMultiplier:0.0}x risk" : "") +
             "\n\nVTB trade signal.";
-        var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":open");
-        if (success && e.ExitMode != SpxTrendRules.ExitMode)
+        if (e.ExitMode != SpxTrendRules.ExitMode)
         {
             string[] replaces;
             lock (_lock) replaces = _entries.Where(old => old.Symbol == e.Symbol && old.Side != e.Side
                 && old.Status == "Closed" && old.ExitReason == "Reversal" && old.ExitTimeUtc == e.ConfirmedAtUtc)
                 .Select(old => "vtb:" + old.Id).ToArray();
-            autoTrading?.Vtb(e, e.Id + ":open", replaces);
+            if (autoTrading?.CaptureVtb(e, e.Id + ":open", replaces) == false) return false;
         }
+        var (success, error) = await telegram.SendAsync(text, notificationId: e.Id + ":open");
         if (!success) logger.LogWarning("VTB open Telegram alert failed for {Symbol}: {Error}", e.Symbol, error);
         return success;
     }

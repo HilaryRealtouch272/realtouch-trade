@@ -33,4 +33,8 @@ class ReportingTests(unittest.TestCase):
  def test_old_rejections_are_not_replayed(self):
   row=dict(id='main:old',status='Rejected',reason='expired',payload=json.dumps(dict(qualifiedAtUtc='1970-01-01T00:00:01Z')))
   r=Reporter(self.path,-5446001871,self.sender,100);r.report_rejections([row]);r.db.close();self.assertEqual([],self.sent)
+ def test_waiting_for_zone_notice_does_not_claim_execution_or_final_rejection(self):
+  row=dict(id='main:wait',status='PendingEntry',reason='Broker entry is outside the qualified zone',payload=json.dumps(dict(flow='main',symbol='GBP/USD',side='Long',entry=1.30938,qualifiedAtUtc='2026-11-27T01:31:30Z')))
+  r=Reporter(self.path,-5446001871,self.sender,100);r.report_rejections([row]);r.report_rejections([row]);r.db.close()
+  self.assertEqual(1,len(self.sent));self.assertIn('WAITING FOR ENTRY',self.sent[0]);self.assertIn('Will recheck',self.sent[0]);self.assertNotIn('ENTRY SKIPPED',self.sent[0])
 if __name__=='__main__':unittest.main()

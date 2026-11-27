@@ -39,7 +39,7 @@ builder.Services.AddSingleton<TelegramDeliveryOutbox>(sp => new(
     sp.GetRequiredService<IHostEnvironment>(), sp.GetRequiredService<ILogger<TelegramDeliveryOutbox>>(),
     canDeliver: id => id.StartsWith("outcome:", StringComparison.Ordinal)
         ? sp.GetRequiredService<SignalLogService>().EntryDeliveredForOutcome(id)
-        : MarketHours.NewEntriesAllowed(DateTime.UtcNow)));
+        : sp.GetRequiredService<SignalLogService>().EntryAllowedForDelivery(id, DateTime.UtcNow)));
 builder.Services.AddSingleton<StrategyDiagnosticsStore>();
 builder.Services.AddSingleton<SignalOrchestrator>();
 builder.Services.AddSingleton<SignalLogService>(sp => new(

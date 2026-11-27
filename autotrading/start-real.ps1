@@ -27,6 +27,7 @@ if ($Action -eq 'Setup') {
     $realTemplate | Add-Member mainFixedLots 0.01 -Force
     $realTemplate | Add-Member mainExitMode 'tp2' -Force
     $realTemplate | Add-Member mainEntryPolicy 'zone' -Force
+    $realTemplate | Add-Member entryExecutionPolicy 'telegram' -Force
     $realTemplate | Add-Member terminalPortable $true -Force
     $realTemplate | Add-Member stateDatabase (Join-Path $realState 'execution.sqlite3') -Force
     $realTemplate | Add-Member spoolDirectory (Join-Path $realState 'spool') -Force

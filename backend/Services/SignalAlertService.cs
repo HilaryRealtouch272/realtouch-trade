@@ -67,6 +67,11 @@ public class SignalAlertService(
                     continue;
                 }
                 var signal = result.Signal!;
+                if (signal.DetectedAtUtc > UtcNow || SignalLogService.EntryAlertValidUntil(signal) <= UtcNow)
+                {
+                    Record(result, "Stale entry blocked", "Entry expired before Telegram delivery; no new announcement");
+                    continue;
+                }
                 var openDirection = signalLog.GetOpenDirection(result.InstrumentSymbol, result.Timeframe);
                 if (openDirection is not null && openDirection != signal.Direction.ToString())
                 {
@@ -121,12 +126,18 @@ public class SignalAlertService(
                     ? signalLog.GetOpenEntriesOnShorterTimeframes(result.InstrumentSymbol, signal.SetupModel.ToString(), signal.Direction.ToString(), result.Timeframe)
                         .Select(e => e.Timeframe).Distinct().ToList()
                     : null;
+                if (autoTrading?.CaptureMain(signal, UtcNow, current.NotificationId) == false)
+                {
+                    lock (_lock) _lastAlerted.Remove(key);
+                    Persist();
+                    Record(result, "Execution handoff unavailable", "Entry announcement withheld because its execution instruction could not be saved");
+                    continue;
+                }
                 var (success, error) = await telegram.SendAsync(TelegramSignalFormatter.Format(signal, true, gradeChange, relatedOpen),
                     notificationId: current.NotificationId);
                 if (success)
                 {
                     signalLog.RegisterEntryAlert(result, current.NotificationId!, delivered: delivery is null);
-                    autoTrading?.Main(signal, UtcNow, current.NotificationId);
                     lock (_lock) _lastAlerted[key] = current with { Accepted = true };
                     Persist();
                     Record(result, delivery is null ? "Delivered" : "Queued", "Entry alert accepted for delivery", current.NotificationId);

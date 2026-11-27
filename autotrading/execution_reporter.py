@@ -63,14 +63,17 @@ class Reporter:
     def report_rejections(self, rows):
         from datetime import datetime
         for row in rows:
-            if row['status'] != 'Rejected': continue
+            if row['status'] not in ('Rejected','PendingEntry'): continue
             s=json.loads(row['payload'])
             qualified=datetime.fromisoformat(s['qualifiedAtUtc'].replace('Z','+00:00')).timestamp()
             if qualified < self.cutoff: continue  # Never broadcast old missed history on installation.
-            message=(f"⚠️ {self.mode_label} BOT ENTRY SKIPPED | {s['flow'].upper()} | {s['symbol']}\n"
+            waiting=row['status']=='PendingEntry'
+            label='⏳ '+self.mode_label+' BOT WAITING FOR ENTRY' if waiting else '⚠️ '+self.mode_label+' BOT ENTRY SKIPPED'
+            message=(f"{label} | {s['flow'].upper()} | {s['symbol']}\n"
                      f"Direction: {s['side'].upper()} | Signal entry: {s['entry']}\n"
                      f"Reason: {row['reason'][:800]}\nNo broker fill was confirmed for this signal.")
-            self.notice(row['id']+':rejected',message)
+            if waiting:message+='\nWill recheck while the signed instruction remains active.'
+            self.notice(row['id']+(':waiting' if waiting else ':rejected'),message)
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--config',required=True);p.add_argument('--once',action='store_true');a=p.parse_args()
@@ -89,7 +92,7 @@ def main():
             try:
                 db=sqlite3.connect('file:'+Path(c['executionDatabase']).as_posix()+'?mode=ro',uri=True);db.row_factory=sqlite3.Row
                 rows=db.execute('select legs.*,signals.payload from legs join signals on signals.id=legs.signal_id where legs.status in (\'Open\',\'Closed\',\'Uncertain\') order by legs.opened_at,legs.id').fetchall()
-                rejected=db.execute("select id,payload,status,reason from signals where status='Rejected'").fetchall();db.close()
+                rejected=db.execute("select id,payload,status,reason from signals where status IN ('Rejected','PendingEntry')").fetchall();db.close()
                 reporter.report(rows)
                 reporter.report_rejections(rejected)
             except Exception: print('Reporter check failed; execution worker is unaffected.',flush=True)

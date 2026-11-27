@@ -107,6 +107,53 @@ public class SignalDeliveryTests : IDisposable
     }
 
     [Fact]
+    public async Task StaleSignalIsBlockedBeforeTelegramAndNeverCreatesExecutionIntent()
+    {
+        var http=new Http();var config=Config();config["AutoTrading:Enabled"]="true";var env=new Env(_root);
+        var notifier=new TelegramNotifier(http,config);
+        var ledger=new SignalLogService(notifier,env,NullLogger<SignalLogService>.Instance,clock:()=>Now);
+        var sink=new AutoTradingSignalSink(config,NullLogger<AutoTradingSignalSink>.Instance,env);
+        var alerts=new SignalAlertService(notifier,ledger,env,NullLogger<SignalAlertService>.Instance,clock:()=>Now,autoTrading:sink);
+        var result=Triggered();result=result with { Signal=result.Signal! with { DetectedAtUtc=Now.AddHours(-1) } };
+        await alerts.CheckAndNotifyAsync([result]);
+        Assert.Equal(0,http.Calls);
+        Assert.Equal("Stale entry blocked",Assert.Single(alerts.GetStatuses()).AlertState);
+        Assert.False(File.Exists(Path.Combine(_root,".cache","auto-trading-candidates.json")));
+    }
+
+    [Fact]
+    public async Task FailedExecutionCaptureWithholdsEntryInsteadOfSendingAnUnexecutableAnnouncement()
+    {
+        Directory.CreateDirectory(Path.Combine(_root,".cache","auto-trading-candidates.json"));
+        var http=new Http();var config=Config();config["AutoTrading:Enabled"]="true";var env=new Env(_root);
+        var notifier=new TelegramNotifier(http,config);
+        var ledger=new SignalLogService(notifier,env,NullLogger<SignalLogService>.Instance,clock:()=>Now);
+        var sink=new AutoTradingSignalSink(config,NullLogger<AutoTradingSignalSink>.Instance,env);
+        var alerts=new SignalAlertService(notifier,ledger,env,NullLogger<SignalAlertService>.Instance,clock:()=>Now,autoTrading:sink);
+        await alerts.CheckAndNotifyAsync([Triggered()]);
+        Assert.Equal(0,http.Calls);
+        Assert.Equal("Execution handoff unavailable",Assert.Single(alerts.GetStatuses()).AlertState);
+    }
+
+    [Fact]
+    public async Task QueuedEntryCannotAnnounceAfterItBecomesStaleEvenAcrossRestart()
+    {
+        var now=Now;var http=new Http { Status=HttpStatusCode.ServiceUnavailable,Body="{\"ok\":false}" };
+        var config=Config();var env=new Env(_root);SignalLogService? ledger=null;
+        var queue=new TelegramDeliveryOutbox(http,config,env,NullLogger.Instance,
+            canDeliver:id=>ledger!.EntryAllowedForDelivery(id,now));
+        var notifier=new TelegramNotifier(queue,config);
+        ledger=new SignalLogService(notifier,env,NullLogger<SignalLogService>.Instance,clock:()=>now);
+        var alerts=new SignalAlertService(notifier,ledger,env,NullLogger<SignalAlertService>.Instance,clock:()=>now);
+        await alerts.CheckAndNotifyAsync([Triggered()]);await ledger.RecordAndTrackAsync([Triggered()]);
+        var id=Assert.Single(ledger.GetAll()).EntryNotificationId!;
+        Assert.True(ledger.EntryAllowedForDelivery(id,now));await queue.FlushAsync();Assert.Equal(1,http.Calls);
+        now=Now.AddMinutes(20);http.Status=HttpStatusCode.OK;http.Body="{\"ok\":true}";
+        ledger=new SignalLogService(notifier,env,NullLogger<SignalLogService>.Instance,clock:()=>now);
+        Assert.False(ledger.EntryAllowedForDelivery(id,now));await queue.FlushAsync();Assert.Equal(1,http.Calls);
+    }
+
+    [Fact]
     public async Task AFailedAcceptanceRetriesTheSameQualificationInsteadOfSilentlyDeduplicatingIt()
     {
         var http = new Http();

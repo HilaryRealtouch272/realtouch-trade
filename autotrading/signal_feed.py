@@ -40,6 +40,8 @@ def verify_feed(body, secret, now):
         data = json.loads(payload)
         if data["version"] != 1 or not isinstance(data["signals"], list) or len(data["signals"]) > 512:
             raise FeedError("Unsupported feed format")
+        if "telegramSignals" in data and (not isinstance(data["telegramSignals"], list) or len(data["telegramSignals"]) > 512):
+            raise FeedError("Invalid Telegram instruction stream")
         age = (now - timestamp(data["generatedAtUtc"])).total_seconds()
         if age < -30:
             raise FeedError("Feed timestamp is in the future")
@@ -64,6 +66,10 @@ class SignedSignalFeed:
         self.next_poll = 0
         self.status_path = Path(status_path)
         self.opener = urllib.request.build_opener(NoRedirect())
+        self.telegram_policy = config.get("entryExecutionPolicy") == "telegram"
+        self.max_snapshot_age = 1200 if self.telegram_policy else 300
+        self.active_signals = {}
+        self.generated_at = None
 
     def fetch(self, now):
         request = urllib.request.Request(self.url + "?checked=" + str(int(now.timestamp())),
@@ -75,7 +81,19 @@ class SignedSignalFeed:
             raise FeedError(f"Execution feed returned HTTP {exc.code}") from None
         except (OSError, urllib.error.URLError):
             raise FeedError("Cannot reach the deployed execution feed") from None
-        return verify_feed(body, self.secret, now)
+        data = verify_feed(body, self.secret, now)
+        if self.telegram_policy:
+            if "telegramSignals" not in data:
+                raise FeedError("Scanner does not yet publish Telegram instructions")
+            data["signals"] = data["telegramSignals"]
+            data["stale"] = (now - timestamp(data["generatedAtUtc"])).total_seconds() > self.max_snapshot_age
+        return data
+
+    def is_current(self, now):
+        return self.generated_at is not None and -30 <= (now - self.generated_at).total_seconds() <= self.max_snapshot_age
+
+    def authorizes(self, signal, now):
+        return self.is_current(now) and self.active_signals.get(signal.get("id")) == signal
 
     def status(self, **values):
         self.status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -90,10 +108,13 @@ class SignedSignalFeed:
         try:
             data = self.fetch(now)
             if data["stale"]:
+                self.active_signals = {}; self.generated_at = None
                 self.status(state="WaitingForNextScan", checkedAtUtc=now.isoformat(),
                             generatedAtUtc=data["generatedAtUtc"], accepted=0)
                 return
             accepted, ignored = 0, 0
+            self.generated_at = timestamp(data["generatedAtUtc"])
+            self.active_signals = {}
             spool.mkdir(parents=True, exist_ok=True)
             for s in data["signals"]:
                 try:
@@ -103,11 +124,14 @@ class SignedSignalFeed:
                     delivered = timestamp(s["telegramDeliveredAtUtc"])
                     if delivered > now or delivered < timestamp(s["qualifiedAtUtc"]):
                         raise FeedError("Invalid Telegram delivery timestamp")
+                    if self.telegram_policy and (s.get("entryPolicy") != "telegram" or s.get("contractVersion") != 2):
+                        raise FeedError("Legacy signal cannot authorize Telegram-policy execution")
                 except (Exception,) as exc:
                     # Invalid, expired or Sunday-blocked entries never reach the broker queue.
                     # Do not log the envelope or signing material.
                     ignored += 1
                     continue
+                self.active_signals[s["id"]] = s
                 name = hashlib.sha256(s["id"].encode()).hexdigest().upper()
                 destination = spool / (name + ".json")
                 if destination.exists():
@@ -119,5 +143,6 @@ class SignedSignalFeed:
             self.status(state="Verified", checkedAtUtc=now.isoformat(), generatedAtUtc=data["generatedAtUtc"],
                         accepted=accepted, ignored=ignored)
         except FeedError as exc:
+            self.active_signals = {}; self.generated_at = None
             self.status(state="Unavailable", checkedAtUtc=now.isoformat(), reason=str(exc))
             raise

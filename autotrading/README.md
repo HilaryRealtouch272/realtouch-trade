@@ -2,9 +2,15 @@
 
 ## Owner-controlled real profile
 
+The current owner-selected policy is `entryExecutionPolicy: "telegram"`. Its separately signed `telegramSignals` stream contains only newly captured entry events with confirmed Telegram delivery and a still-open matching ledger record. Drift, spread and minimum remaining reward/risk filters are disabled in this policy; main entries use their original zone. There is no separate 5/15-minute entry deadline after announcement. The instruction ends when the ledger closes/cancels it or its existing holding lifetime ends. Old ledger rows and pre-contract candidates are never imported.
+
+Source freshness is enforced **before Telegram**, including queued delivery retries. A fresh signed snapshot is still required: the updated stream permits the normal 15-minute scan cadence (20-minute snapshot tolerance). This is a feed-liveness check, not an entry-age cutoff. Missing or stale feed data cannot authorize an order. The worker compares the entire local payload against the current signed instruction before each submission; removing an instruction revokes unsubmitted work even if its queue file remains. Main entries outside their zone wait and recheck while still active. Beta distinguishes waiting, rejected and broker-confirmed filled events.
+
+The owner-applied `Apply-TelegramPolicy.ps1` update leaves entries disabled and never starts the real worker. Legacy workers continue using the original `signals` stream and existing configuration until explicitly updated. Publishing source changes does not update a running AWS worker.
+
 The isolated real profile is described in [LIVE-SETUP.md](LIVE-SETUP.md). It requires an explicit login/server binding, fixed 0.01-lot entries, main TP2 without partial exits, and the owner's `--allow-real-orders` launch option. WTI is blocked in code. Setup and update scripts leave entries disabled; pushing this repository does not update or start an AWS execution worker.
 
-For main signals, `mainEntryPolicy: "zone"` uses the signal's entry zone at both preflight and submission without the additional 0.1R drift cap. The legacy `"drift-and-zone"` default preserves existing demo configurations. Stale entries, invalid stops/targets, excess spread, insufficient remaining reward/risk, broker minimum lots/margin and overlapping positions can still reject a trade. Rejections are reported to beta explicitly; they are not broker fills.
+For the legacy execution policy, `mainEntryPolicy: "zone"` removes only the extra drift cap, and legacy spread/reward filters remain. The new Telegram execution policy above removes all three extra price filters. Invalid broker stops/targets, unsupported lots, insufficient margin, overlapping positions, disabled algorithmic trading and disconnected accounts can still prevent a fill. Rejections are reported to beta explicitly; they are not broker fills.
 
 Fresh opposite VTB signals can replace an existing VTB position. The signed intent names its predecessor. Only a matching tracked VTB position can be closed; manual and main positions remain protected. The replacement waits for broker-confirmed closure and uncertain close requests are never resent blindly. SPX stays long-only and is not enabled for broker execution.
 

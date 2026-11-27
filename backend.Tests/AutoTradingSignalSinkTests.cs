@@ -90,6 +90,43 @@ public class AutoTradingSignalSinkTests : IDisposable
         using(var data=ReadPayload()) Assert.Empty(data.RootElement.GetProperty("signals").EnumerateArray());
     }
 
+    [Fact]
+    public void TelegramStreamHasNoShortEntryCutoffButRequiresStillActiveDeliveredInstruction()
+    {
+        var sink=Sink(true);var entry=Entry();sink.Vtb(entry,"id:open");
+        var confirmed=entry.EntryTimeUtc.AddDays(1);var now=confirmed.AddHours(2);
+        var receipt=new TelegramDeliveryReceipt("id:open","Delivered",confirmed,1,confirmed.AddMinutes(1));
+        var output=Path.Combine(root,"feed.json");
+        JsonDocument Payload() => JsonDocument.Parse(Convert.FromBase64String(
+            JsonDocument.Parse(File.ReadAllText(output)).RootElement.GetProperty("payload").GetString()!));
+        Assert.True(sink.Publish([], [entry],_=>null,_=>receipt,output,now));
+        using(var data=Payload())
+        {
+            Assert.Empty(data.RootElement.GetProperty("signals").EnumerateArray());
+            var instruction=Assert.Single(data.RootElement.GetProperty("telegramSignals").EnumerateArray());
+            Assert.Equal("telegram",instruction.GetProperty("entryPolicy").GetString());
+            Assert.Equal(instruction.GetProperty("closeByUtc").GetString(),instruction.GetProperty("entryDeadlineUtc").GetString());
+        }
+        Assert.True(sink.Publish([], [entry with { Status="Cancelled" }],_=>null,_=>receipt,output,now));
+        using(var data=Payload()) Assert.Empty(data.RootElement.GetProperty("telegramSignals").EnumerateArray());
+    }
+
+    [Fact]
+    public void LegacyCandidatesNeverBecomeNewTelegramInstructions()
+    {
+        var sink=Sink(true);var entry=Entry();sink.Vtb(entry,"id:open");
+        var path=Path.Combine(root,".cache","auto-trading-candidates.json");
+        var candidates=DiskCache.Load<Dictionary<string,AutoTradingSignalSink.Candidate>>(path)!;
+        var key=candidates.Keys.Single();
+        candidates[key]=new(candidates[key].Signal with { ContractVersion=0 });DiskCache.Save(path,candidates);
+        var now=entry.EntryTimeUtc.AddDays(1).AddMinutes(1);var output=Path.Combine(root,"feed.json");
+        var receipt=new TelegramDeliveryReceipt("id:open","Delivered",now,1,now);
+        Assert.True(sink.Publish([], [entry],_=>null,_=>receipt,output,now));
+        using var payload=JsonDocument.Parse(Convert.FromBase64String(JsonDocument.Parse(File.ReadAllText(output)).RootElement.GetProperty("payload").GetString()!));
+        Assert.Empty(payload.RootElement.GetProperty("telegramSignals").EnumerateArray());
+        Assert.Single(payload.RootElement.GetProperty("signals").EnumerateArray());
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(root)) Directory.Delete(root, true);

@@ -11,6 +11,15 @@ SPX execution is not enabled. Unsupported minimum lots are rejected, not rounded
 Fixed volume does not cap cash losses; the loss at the stop depends on the market
 and stop distance. Gaps and slippage can increase it.
 
+The Telegram execution policy follows current signed, still-active delivered entry
+instructions. It has no additional drift/spread/reward-risk filter or 5/15-minute
+entry timer. Main prices must remain inside the signal's entry zone; an outside-zone
+instruction waits and rechecks. Closed/cancelled instructions and old ledger rows
+cannot open new trades. Source freshness is checked before sending Telegram.
+Feed freshness, original SL/TP validity, broker constraints, duplicate protection,
+WTI exclusion and weekend policy remain enforced. An execution attempt is not a
+guarantee of a broker fill.
+
 ## On the remote Windows desktop
 
 1. Open **MT5 REAL - MANUAL ONLY**. Confirm it is the real account you intend to
@@ -42,8 +51,8 @@ phrase only if correct. This is the step that enables real-money execution. It
 creates/starts RealtouchRealWorker and RealtouchRealReporter. The reporter sends
 broker-confirmed entry/exit notices to the existing beta group, labelled LIVE.
 No old Telegram signals are replayed. New entries still require valid signed fresh
-signals, delivered entry alerts, available margin, valid stops, fresh broker quotes,
-acceptable price drift/spread and an available explicitly mapped broker symbol.
+instructions, delivered entry alerts, available margin, valid stops, fresh broker quotes,
+the main entry zone and an available explicitly mapped broker symbol.
 
 4. Check status:
 

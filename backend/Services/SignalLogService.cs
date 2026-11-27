@@ -94,7 +94,8 @@ public record QualificationLogEntry(
     string? EntryTimeframe = null,
     DateTime? ConfirmationCandleUtc = null,
     string? EntryNotificationId = null,
-    bool EntryAlertDelivered = false
+    bool EntryAlertDelivered = false,
+    DateTime? EntryAlertValidUntilUtc = null
 );
 
 // A permanent ledger of every real qualification (grade B or better) the
@@ -120,7 +121,7 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
     private readonly object _lock = new();
     private DateTime UtcNow => clock?.Invoke() ?? DateTime.UtcNow;
 
-    public record EntryAlertLink(string NotificationId, bool Delivered, DateTime DetectedAtUtc);
+    public record EntryAlertLink(string NotificationId, bool Delivered, DateTime DetectedAtUtc, DateTime? ValidUntilUtc = null);
     private readonly string _entryAlertPath = Path.Combine(env.ContentRootPath, ".cache", "pending-entry-alerts.json");
     private readonly Dictionary<string, EntryAlertLink> _pendingEntryAlerts =
         DiskCache.Load<Dictionary<string, EntryAlertLink>>(Path.Combine(env.ContentRootPath, ".cache", "pending-entry-alerts.json")) ?? new();
@@ -143,10 +144,12 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
                 if (entry.Entry != signal.PreferredEntry || entry.Stop != signal.Stop ||
                     entry.Tp1 != signal.Tp1 || entry.Tp2 != signal.Tp2 || entry.Tp3 != signal.Tp3 ||
                     entry.Direction != signal.Direction.ToString()) return;
-                _entries[index] = _entries[index] with { EntryNotificationId = notificationId, EntryAlertDelivered = delivered };
+                _entries[index] = _entries[index] with { EntryNotificationId = notificationId, EntryAlertDelivered = delivered,
+                    EntryAlertValidUntilUtc = EntryAlertValidUntil(result.Signal!) };
             }
             else
-                _pendingEntryAlerts[EntryAlertKey(result)] = new(notificationId, delivered, result.Signal!.DetectedAtUtc);
+                _pendingEntryAlerts[EntryAlertKey(result)] = new(notificationId, delivered, result.Signal!.DetectedAtUtc,
+                    EntryAlertValidUntil(result.Signal!));
             DiskCache.Save(_entryAlertPath, _pendingEntryAlerts);
             Persist();
         }
@@ -154,6 +157,23 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
 
     private bool EntryWasDelivered(QualificationLogEntry entry) => entry.EntryAlertDelivered ||
         (entry.EntryNotificationId is not null && delivery?.Get(entry.EntryNotificationId)?.Status == "Delivered");
+
+    public static DateTime EntryAlertValidUntil(SignalResult signal) =>
+        signal.ExpiryUtc < signal.DetectedAtUtc.AddMinutes(15) ? signal.ExpiryUtc : signal.DetectedAtUtc.AddMinutes(15);
+
+    public bool EntryAllowedForDelivery(string notificationId, DateTime now)
+    {
+        lock (_lock)
+        {
+            var entry = _entries.FirstOrDefault(e => e.EntryNotificationId == notificationId);
+            if (entry is not null)
+                return entry.Status == "Open" && entry.QualifiedAtUtc <= now && entry.EntryAlertValidUntilUtc > now
+                    && MarketHours.NewEntryBlockReason(entry.Symbol, entry.Timeframe, entry.Grade, now) is null;
+            var pending = _pendingEntryAlerts.FirstOrDefault(e => e.Value.NotificationId == notificationId);
+            return pending.Value is not null && pending.Value.DetectedAtUtc <= now && pending.Value.ValidUntilUtc > now
+                && MarketHours.NewEntriesAllowed(pending.Key.Split('|')[0], now);
+        }
+    }
 
     public bool EntryDeliveredForOutcome(string notificationId)
     {
@@ -375,7 +395,8 @@ public class SignalLogService(TelegramNotifier telegram, IHostEnvironment env, I
         if (_pendingEntryAlerts.Remove(EntryAlertKey(result), out var announcement))
         {
             if (announcement.DetectedAtUtc == result.Signal!.DetectedAtUtc)
-                entry = entry with { EntryNotificationId = announcement.NotificationId, EntryAlertDelivered = announcement.Delivered };
+                entry = entry with { EntryNotificationId = announcement.NotificationId, EntryAlertDelivered = announcement.Delivered,
+                    EntryAlertValidUntilUtc = announcement.ValidUntilUtc };
             DiskCache.Save(_entryAlertPath, _pendingEntryAlerts);
         }
 
