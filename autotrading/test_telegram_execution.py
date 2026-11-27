@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from exness_worker import Store, Worker
+from exness_worker import Store, Worker, Blocked
 from execution_reporter import Reporter
 from signal_feed import DOMAIN, EXPECTED_URL, SignedSignalFeed
 from test_exness_worker import Broker, NOW, signal, NS
@@ -129,6 +129,41 @@ class TelegramExecutionTests(unittest.TestCase):
         self.mt.orders_get=lambda:[NS(symbol='EURUSDm')]
         self.publish([self.s]);self.worker.cycle(self.root/'spool',NOW)
         self.assertEqual(1,len(self.mt.sent))
+
+    def enable_market_entry(self):
+        self.worker.c['mainEntryPolicy']='market'
+        self.worker=Worker(self.mt,self.worker.c,self.db,self.source)
+        self.s['targets']=[1.30998,1.3109,1.31242]
+        self.mt.tick.ask=1.3097;self.mt.tick.bid=1.3096
+
+    def test_market_policy_submits_immediately_outside_zone_once_with_original_sl_tp2(self):
+        self.enable_market_entry();self.publish([self.s])
+        self.worker.cycle(self.root/'spool',NOW);self.worker.cycle(self.root/'spool',NOW)
+        self.assertEqual(1,len(self.mt.sent))
+        order=self.mt.sent[0]
+        self.assertGreater(order['price'],self.s['zoneMax'])
+        self.assertEqual((.01,1.3097,1.30878,1.3109),tuple(order[k] for k in ('volume','price','sl','tp')))
+
+    def test_market_policy_still_submits_after_quote_moves_farther_outside_zone(self):
+        self.enable_market_entry()
+        original=self.mt.order_check;calls=0
+        def check(request):
+            nonlocal calls
+            calls+=1;result=original(request)
+            if calls==1:self.mt.tick.ask=1.3098;self.mt.tick.bid=1.3097
+            return result
+        self.mt.order_check=check;self.publish([self.s]);self.worker.cycle(self.root/'spool',NOW)
+        self.assertEqual(1,len(self.mt.sent));self.assertEqual(1.3098,self.mt.sent[0]['price'])
+
+    def test_market_policy_cannot_rebase_a_crossed_original_target(self):
+        self.enable_market_entry();self.mt.tick.ask=1.311;self.mt.tick.bid=1.31099
+        self.publish([self.s]);self.worker.cycle(self.root/'spool',NOW)
+        self.assertEqual([],self.mt.sent)
+        self.assertIn('crossed',self.db.db.execute('select reason from signals').fetchone()[0])
+
+    def test_market_entry_is_not_enabled_in_legacy_configuration(self):
+        self.worker.c.update(mainEntryPolicy='market',entryExecutionPolicy='legacy')
+        with self.assertRaisesRegex(Blocked,'signed Telegram'):Worker(self.mt,self.worker.c,self.db,self.source)
 
     def test_removed_filters_do_not_require_unused_threshold_configuration(self):
         for key in ('maxEntryDriftR','maxSpreadR','minimumRewardRisk'):self.worker.c.pop(key)

@@ -67,6 +67,7 @@ if ($Action -eq 'Start') {
     if ($LASTEXITCODE -ne 0) { throw 'Account verification failed.' }
     if (!(Test-Path -LiteralPath (Join-Path $realCode 'telegram.private.json'))) { throw 'Beta reporter configuration is missing.' }
     Write-Host ('REAL account ' + $realSettings.expectedLogin + ': 0.01 lot, main TP2, VTB single target, no partial exits, NO WTI.')
+    Write-Host ('Entry policy: ' + $realSettings.entryExecutionPolicy + ' / main ' + $realSettings.mainEntryPolicy)
     Write-Host 'Fixed volume does not cap cash losses. This starts automatic real-money orders from fresh signals.'
     $ownerConfirm = Read-Host ('To activate yourself, type START REAL ' + $realSettings.expectedLogin)
     if ($ownerConfirm -cne ('START REAL ' + $realSettings.expectedLogin)) { throw 'Not activated.' }

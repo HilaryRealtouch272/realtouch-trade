@@ -150,8 +150,10 @@ class Worker:
         self.telegram_execution = config.get("entryExecutionPolicy", "legacy") == "telegram"
         if config.get("entryExecutionPolicy", "legacy") not in ("legacy", "telegram"):
             raise Blocked("Unknown execution policy")
-        if self.main_entry_policy not in ("drift-and-zone", "zone"):
-            raise Blocked("mainEntryPolicy must be drift-and-zone or zone")
+        if self.main_entry_policy not in ("drift-and-zone", "zone", "market"):
+            raise Blocked("mainEntryPolicy must be drift-and-zone, zone or market")
+        if self.main_entry_policy == "market" and not self.telegram_execution:
+            raise Blocked("Market entry requires the signed Telegram execution policy")
         self.allowed_flows = config.get("allowedFlows", ["main", "vtb"])
         if (not isinstance(self.allowed_flows, list) or not self.allowed_flows
                 or any(flow not in ("main", "vtb") for flow in self.allowed_flows)):
@@ -281,7 +283,7 @@ class Worker:
                           f"reference={s['entry']:.8f}, drift={abs(price-s['entry']):.8f}, "
                           f"allowed={reference_risk*self.c['maxEntryDriftR']:.8f}, "
                           f"zone={s['zoneMin']:.8f}..{s['zoneMax']:.8f}")
-        if s["flow"] == "main" and not s["zoneMin"] <= price <= s["zoneMax"]:
+        if self.requires_entry_zone(s) and not s["zoneMin"] <= price <= s["zoneMax"]:
             raise Blocked(f"Broker entry is outside the qualified zone: broker={price:.8f}, "
                           f"zone={s['zoneMin']:.8f}..{s['zoneMax']:.8f}")
         if not self.telegram_execution and tick.ask - tick.bid > reference_risk * self.c["maxSpreadR"]:
@@ -352,6 +354,9 @@ class Worker:
             return False  # Main's published entry zone is its price boundary.
         return abs(price - signal["entry"]) > abs(signal["entry"] - signal["stop"]) * self.c["maxEntryDriftR"]
 
+    def requires_entry_zone(self, signal):
+        return signal["flow"] == "main" and self.main_entry_policy != "market"
+
     def execute(self, s, now):
         self.submission_permission()
         started = time.monotonic()
@@ -375,13 +380,13 @@ class Worker:
             send_now = now + timedelta(seconds=time.monotonic() - started)
             validate_intent(s, send_now)
             self.require_active_intent(s, send_now)
-            # Check each leg against a fresh executable quote. Preflight estimates
-            # do not authorize chasing a price during a slow broker submission.
+            # Refresh the executable quote and enforce the owner's selected
+            # market/zone policy, preserving the signal's original stop and target.
             info, tick = self.quote(request["symbol"], send_now)
             current = tick.ask if s["side"] == "Long" else tick.bid
             if (self.entry_drift_exceeded(s, current)
                     or (not self.telegram_execution and tick.ask - tick.bid > abs(s["entry"] - s["stop"]) * self.c["maxSpreadR"])
-                    or (s["flow"] == "main" and not s["zoneMin"] <= current <= s["zoneMax"])):
+                    or (self.requires_entry_zone(s) and not s["zoneMin"] <= current <= s["zoneMax"])):
                 self.store.leg_status(leg_id, "Cancelled", "Quote drifted before submission")
                 break
             request["price"] = current
@@ -622,7 +627,8 @@ def main():
                          and -30 <= (datetime.now(UTC) - utc(feed["generatedAtUtc"])).total_seconds() <= 1200)
         print(json.dumps({"worker": health, "ready": ready,
                           "entriesEnabled": c.get("entriesEnabled") is True,
-                          "entryExecutionPolicy": c.get("entryExecutionPolicy", "legacy"), "feed": feed,
+                          "entryExecutionPolicy": c.get("entryExecutionPolicy", "legacy"),
+                          "mainEntryPolicy": c.get("mainEntryPolicy", "drift-and-zone"), "feed": feed,
                           "signals": [dict(r) for r in db.execute("SELECT id,status,reason FROM signals")],
                           "legs": [dict(r) for r in db.execute("SELECT * FROM legs")]}, indent=2))
         return

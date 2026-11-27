@@ -20,6 +20,13 @@ Feed freshness, original SL/TP validity, broker constraints, duplicate protectio
 WTI exclusion and weekend policy remain enforced. An execution attempt is not a
 guarantee of a broker fill.
 
+For explicitly selected immediate market entry, apply the staged update using
+`Apply-TelegramPolicy.ps1 -MainEntryPolicy market` while the worker is stopped.
+This removes the wait for the main entry zone. It submits at the available broker
+price with the same original SL and TP2; prices and the resulting risk/reward can
+differ from the Telegram reference. It does not rebase crossed or invalid stops or
+targets, and broker constraints still apply. The update leaves entries OFF.
+
 ## On the remote Windows desktop
 
 1. Open **MT5 REAL - MANUAL ONLY**. Confirm it is the real account you intend to

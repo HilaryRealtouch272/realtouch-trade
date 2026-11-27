@@ -1,3 +1,4 @@
+param([ValidateSet('zone','market')][string]$MainEntryPolicy = 'zone')
 $ErrorActionPreference = 'Stop'
 $realRoot = 'C:\RealtouchManual'
 $realCode = Join-Path $realRoot 'autotrading'
@@ -13,17 +14,18 @@ foreach ($name in @('exness_worker.py','signal_feed.py','execution_reporter.py')
     if ($LASTEXITCODE -ne 0) { throw 'Update syntax check failed. Nothing installed.' }
 }
 Stop-ScheduledTask RealtouchRealReporter
-foreach ($name in @('exness_worker.py','signal_feed.py','execution_reporter.py')) {
+foreach ($name in @('exness_worker.py','signal_feed.py','execution_reporter.py','start-real.ps1')) {
     Copy-Item -LiteralPath (Join-Path $realCode $name) -Destination (Join-Path $backupFolder $name)
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination (Join-Path $realCode $name) -Force
 }
 $profile | Add-Member entryExecutionPolicy 'telegram' -Force
-$profile | Add-Member mainEntryPolicy 'zone' -Force
+$profile | Add-Member mainEntryPolicy $MainEntryPolicy -Force
 $profile.entriesEnabled = $false
 $temporaryProfile = $profilePath + '.tmp'
 $profile | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $temporaryProfile -Encoding UTF8
 Move-Item -LiteralPath $temporaryProfile -Destination $profilePath -Force
 Write-Host 'Telegram-entry policy installed. Entries OFF; no worker started and no order sent.'
 Write-Host 'Extra drift/spread/reward-risk filters and short entry timers are disabled in this policy.'
+Write-Host ('Main entry policy: ' + $MainEntryPolicy + '. Market submits at the available broker price without waiting for the entry zone.')
 Write-Host 'Only current signed active Telegram instructions can authorize new entries. Existing records are not replayed.'
 Write-Host 'Run start-real.ps1 -Action Check, then activate yourself with -Action Start if checks pass.'
